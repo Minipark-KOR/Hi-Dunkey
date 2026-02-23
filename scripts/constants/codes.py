@@ -3,11 +3,14 @@
 공통 상수 (API 키, 엔드포인트, 지역 코드, 배치 설정 등)
 """
 import os
+from dotenv import load_dotenv
 from typing import Dict, List
+
+load_dotenv()  # .env 파일 로드
 
 # =====================[ API Keys ]=====================
 NEIS_API_KEY = os.environ.get("NEIS_API_KEY", "")
-SCHOOL_ALRIMI_API_KEY = os.environ.get("SCHOOL_ALRIMI_API_KEY", "")
+SCHOOL_INFO_API_KEY = os.environ.get("SCHOOL_INFO_API_KEY", "")
 KASI_API_KEY = os.environ.get("KASI_API_KEY", "")
 VWORLD_API_KEY = os.environ.get("VWORLD_API_KEY", "")
 

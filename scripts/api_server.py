@@ -3,19 +3,19 @@
 FastAPI 기반 API 서버
 실행: uvicorn api_server:app --reload --host 0.0.0.0 --port 8000
 """
-import os
 import sys
-import sqlite3
-from typing import List, Optional
+import os
+
+# scripts 디렉토리를 path에 추가 (현재 파일의 디렉토리)
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+import sqlite3
+from typing import List, Optional
 import uvicorn
 
-# 프로젝트 루트를 path에 추가 (core 모듈 임포트용)
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from core.database import get_db_connection  # ✅ 컨텍스트 매니저 사용
+from core.database import get_db_connection
 
 app = FastAPI(title="NEIS 데이터 API", description="급식, 학사일정, 시간표 API")
 

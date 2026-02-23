@@ -153,6 +153,11 @@ class BaseCollector(ABC):
         """DB 스키마 초기화 (하위 클래스에서 구현)"""
         pass
     
+    def _init_db_common(self, conn):
+        """공통 체크포인트 테이블 생성"""
+        from .database import init_checkpoint_table
+        init_checkpoint_table(conn)
+
     @abstractmethod
     def _get_target_key(self) -> str:
         """체크포인트용 대상 키 (예: 날짜, 학년도)"""
@@ -201,32 +206,33 @@ class BaseCollector(ABC):
     # 쓰기 스레드 (배치 처리)
     # --------------------------------------------------------
     def _writer_loop(self):
-        """백그라운드 쓰기 스레드"""
         while True:
             item = self.q.get()
             if item is None:
                 self.q.task_done()
                 break
-            
+
+            items_processed = 1  # 꺼낸 아이템 수
             batch = self._flatten(item)
-            # 간단한 배치 크기 제한 (500건)
+
             while len(batch) < 500:
                 try:
                     nxt = self.q.get_nowait()
                     if nxt is None:
                         self.q.put(None)
                         break
+                    items_processed += 1
                     batch.extend(self._flatten(nxt))
                 except queue.Empty:
                     break
-            
+
             if batch:
                 try:
                     self._save_batch(batch)
                 except Exception as e:
                     self.logger.error(f"배치 저장 실패: {e}")
                 finally:
-                    for _ in range(len(batch)):
+                    for _ in range(items_processed):
                         self.q.task_done()
     
     def _flatten(self, data) -> List:
@@ -251,27 +257,23 @@ class BaseCollector(ABC):
     # 날짜 백업 생성 및 정리
     # --------------------------------------------------------
     def create_dated_backup(self):
-        """
-        active 주 파일의 날짜 백업 생성 (VACUUM INTO)
-        - 같은 날짜 백업이 이미 있으면 생성하지 않음
-        - 30일 초과된 날짜 백업 삭제
-        """
         if not os.path.exists(self.db_path):
             return
         today = now_kst().strftime("%Y%m%d")
         backup_path = self.db_path.replace('.db', f'_{today}.db')
-        
+
         if not os.path.exists(backup_path):
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute(f"VACUUM INTO '{backup_path}'")
             self.logger.info(f"📅 날짜 백업 생성: {backup_path}")
-        
-        # 30일 초과된 날짜 백업 삭제
+
         base = self.db_path.replace('.db', '')
+        from core.kst_time import KST
         for f in glob.glob(f"{base}_*.db"):
             try:
                 fdate_str = f.split('_')[-1].replace('.db', '')
                 fdate = datetime.strptime(fdate_str, '%Y%m%d')
+                fdate = KST.localize(fdate)
                 if (now_kst() - fdate) > timedelta(days=30):
                     os.remove(f)
                     self.logger.info(f"🗑️ 오래된 날짜 백업 삭제: {f}")
