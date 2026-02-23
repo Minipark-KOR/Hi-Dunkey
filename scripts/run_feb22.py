@@ -4,15 +4,23 @@ import shutil
 import glob
 import sqlite3
 from datetime import datetime, timedelta
+
+# 프로젝트 루트를 path에 추가
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from core.logger import build_logger
 from core.kst_time import now_kst
 from core.backup import vacuum_into, move_files_by_age, cleanup_files_older_than
 
 logger = build_logger("feb22", "../logs/feb22.log")
-BASE_DIR = "../data"
-ACTIVE = os.path.join(BASE_DIR, "active")
-BACKUP = os.path.join(BASE_DIR, "backup")
-ARCHIVE = os.path.join(BASE_DIR, "archive")
+
+# ✅ 절대 경로로 변경
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 프로젝트 루트
+ACTIVE = os.path.join(BASE_DIR, "data", "active")
+BACKUP = os.path.join(BASE_DIR, "data", "backup")
+ARCHIVE = os.path.join(BASE_DIR, "data", "archive")
+
 DOMAINS = ['meal', 'schedule', 'timetable', 'school']
 SHARDS = ['even', 'odd']
 
@@ -39,24 +47,40 @@ def move_to_archive():
     for f in moved:
         logger.info(f"Moved to archive: {f}")
 
+def get_table_schema(conn, table_name):
+    """테이블의 컬럼 정보를 가져옴"""
+    cursor = conn.execute(f"PRAGMA table_info({table_name})")
+    columns = [row[1] for row in cursor.fetchall()]
+    return columns
+
 def update_archive_merged():
     for block_dir in glob.glob(os.path.join(ARCHIVE, "*-*")):
         if not os.path.isdir(block_dir):
             continue
         block_name = os.path.basename(block_dir)
         start, end = map(int, block_name.split('-'))
+        
         for d in DOMAINS:
             merged_path = os.path.join(block_dir, f"{block_name}_{d}_merged.db")
+            
+            sample_files = glob.glob(os.path.join(block_dir, f"*_{d}_*.db"))
+            if not sample_files:
+                continue
+            
+            with sqlite3.connect(sample_files[0]) as sample_conn:
+                src_columns = get_table_schema(sample_conn, d)
+                if not src_columns:
+                    continue
+            
             with sqlite3.connect(merged_path) as dest:
-                # 간단히 year 컬럼 추가한 테이블 생성 (실제 컬럼은 각 도메인에 맞게)
+                # 통합본 테이블 생성 (year 컬럼 추가)
                 dest.execute(f"""
                     CREATE TABLE IF NOT EXISTS {d} (
                         year INTEGER,
-                        sc_code TEXT,
-                        meal_date INTEGER,
-                        PRIMARY KEY (year, sc_code, meal_date)
+                        {', '.join([f'{col} TEXT' for col in src_columns])}
                     )
                 """)
+                
                 for year_file in glob.glob(os.path.join(block_dir, f"*_{d}_*.db")):
                     if "_merged" in year_file:
                         continue
@@ -67,10 +91,15 @@ def update_archive_merged():
                         continue
                     if y < start or y > end:
                         continue
+                    
                     dest.execute(f"ATTACH DATABASE '{year_file}' AS src")
-                    # 가정: src의 테이블명도 d와 같음
-                    dest.execute(f"INSERT OR REPLACE INTO main.{d} SELECT {y}, * FROM src.{d}")
+                    col_list = ", ".join(src_columns)
+                    dest.execute(f"""
+                        INSERT OR REPLACE INTO main.{d} (year, {col_list})
+                        SELECT {y}, {col_list} FROM src.{d}
+                    """)
                     dest.execute("DETACH DATABASE src")
+                
                 dest.execute("VACUUM")
             logger.info(f"Updated merged: {merged_path}")
 
