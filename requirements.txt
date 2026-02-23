@@ -1,0 +1,5 @@
+requests>=2.28.0
+urllib3>=1.26.0
+pytz>=2021.3
+# GA4 연동 시 필요
+# google-analytics-data>=0.14.0
