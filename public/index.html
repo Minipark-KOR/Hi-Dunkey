@@ -279,7 +279,8 @@
     <div id="toast"></div>
 
     <script>
-        const API_BASE = 'http://localhost:8000/api';
+        // API 주소를 직접 지정
+        const API_BASE = 'http://127.0.0.1:8000/api';
 
         let selectedSchool = null;
         let selectedSchoolName = '';
@@ -333,21 +334,24 @@
         document.getElementById('popup-close').addEventListener('click', closePopup);
         document.getElementById('popup-overlay').addEventListener('click', closePopup);
 
-        // =====================[ 학교 검색 (디바운스) ]=====================
+        // =====================[ 학교 검색 ]=====================
         const searchInput = document.getElementById('school-input');
         const searchBtn = document.getElementById('search-btn');
         const searchResults = document.getElementById('search-results');
 
         async function searchSchools(query) {
             console.log('🔍 searchSchools 호출됨, query:', query);
+            
             if (query.length < 2) {
                 searchResults.style.display = 'none';
                 return;
             }
+            
             try {
                 console.log('📡 API 요청 시작:', `${API_BASE}/schools?query=${encodeURIComponent(query)}`);
                 const res = await fetch(`${API_BASE}/schools?query=${encodeURIComponent(query)}`);
                 console.log('📡 응답 상태:', res.status);
+                
                 const schools = await res.json();
                 console.log('📦 받은 데이터:', schools);
                 
@@ -365,43 +369,68 @@
         function displaySearchResults(schools) {
             console.log('✅ displaySearchResults 실행됨', schools);
             
+            // 결과 컨테이너 찾기
+            const resultsDiv = document.getElementById('search-results');
+            if (!resultsDiv) {
+                console.error('❌ #search-results 요소 없음');
+                return;
+            }
+            
+            // 기존 내용 비우기
+            resultsDiv.innerHTML = '';
+            
+            // 결과가 없으면 숨기고 종료
             if (!schools || schools.length === 0) {
-                searchResults.style.display = 'none';
-                console.log('🔍 표시할 학교 없음');
+                resultsDiv.style.display = 'none';
                 showToast('검색 결과가 없습니다.');
                 return;
             }
-
-            searchResults.innerHTML = '';
             
+            // 결과 목록 생성
             schools.forEach(s => {
                 const div = document.createElement('div');
                 div.className = 'school-item';
                 div.textContent = `${s.sc_name} (${s.sc_code})`;
+                
+                // 클릭 이벤트에 stopPropagation 추가
                 div.onclick = (e) => {
                     e.preventDefault();
-                    e.stopPropagation();
+                    e.stopPropagation();  // 이벤트 버블링 차단
                     selectSchool(s.sc_code, s.sc_name);
                 };
-                searchResults.appendChild(div);
+                
+                resultsDiv.appendChild(div);
                 console.log('➕ 자식 추가됨:', div.textContent);
             });
             
-            searchResults.style.display = 'block';
-            console.log('✅ 검색 결과 표시 완료, display = block, 자식 수:', searchResults.children.length);
+            // 결과 표시
+            resultsDiv.style.display = 'block';
+            console.log('✅ 검색 결과 표시 완료, 자식 수:', resultsDiv.children.length);
+            
+            // 1초 후에도 display가 block인지 확인 (디버깅용)
+            setTimeout(() => {
+                console.log('⏰ 1초 후 display:', resultsDiv.style.display);
+                console.log('📏 offsetHeight:', resultsDiv.offsetHeight);
+            }, 1000);
         }
 
         function selectSchool(code, name) {
             console.log('🎯 selectSchool 실행됨', code, name);
+            
             selectedSchool = code;
             selectedSchoolName = name;
             searchInput.value = name;
+            
+            // 결과 컨테이너 숨기기
             searchResults.style.display = 'none';
+            
             showToast(`🏫 ${name} 선택됨`);
 
+            // 검색창을 위로 올리고 캘린더 표시
             document.getElementById('search-container').classList.add('with-calendar');
             document.getElementById('calendar-wrapper').style.display = 'block';
 
+            // 캘린더가 아직 생성되지 않았다면 생성
             if (!calendar) {
                 console.log('📅 캘린더 생성 시작');
                 initCalendar();
@@ -418,6 +447,7 @@
             searchTimeout = setTimeout(() => searchSchools(query), 300);
         });
 
+        // 검색 버튼 클릭 이벤트
         searchBtn.addEventListener('click', function(e) {
             e.preventDefault();
             e.stopPropagation();
@@ -425,6 +455,7 @@
             searchSchools(query);
         });
 
+        // Enter 키 이벤트
         searchInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
                 e.preventDefault();
@@ -437,9 +468,27 @@
         document.addEventListener('click', (e) => {
             console.log('🖱️ 문서 클릭됨', e.target);
             
-            if (!searchResults.contains(e.target) && e.target !== searchInput) {
-                console.log('➡️ 검색 결과 숨김');
+            // 검색 결과가 없으면 무시
+            if (!searchResults || searchResults.style.display !== 'block') return;
+            
+            // 클릭된 요소가 검색 결과나 입력창의 자식인지 확인
+            let target = e.target;
+            let isClickInside = false;
+            
+            while (target) {
+                if (target === searchResults || target === searchInput) {
+                    isClickInside = true;
+                    break;
+                }
+                target = target.parentNode;
+            }
+            
+            // 결과 영역 바깥을 클릭했을 때만 숨김
+            if (!isClickInside) {
+                console.log('➡️ 검색 결과 숨김 (바깥 클릭)');
                 searchResults.style.display = 'none';
+            } else {
+                console.log('➡️ 검색 결과 유지 (내부 클릭)');
             }
         });
 
@@ -545,6 +594,15 @@
 
             calendar.render();
             statusEl.textContent = '일정을 불러오는 중...';
+        }
+
+        // favicon.ico 오류 방지 (선택사항)
+        const favicon = document.querySelector('link[rel="icon"]');
+        if (!favicon) {
+            const link = document.createElement('link');
+            link.rel = 'icon';
+            link.href = 'data:,';
+            document.head.appendChild(link);
         }
     </script>
 </body>

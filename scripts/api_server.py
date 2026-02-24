@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 FastAPI 기반 API 서버
-실행: uvicorn api_server:app --reload --host 0.0.0.0 --port 8000
+실행: uvicorn scripts.api_server:app --reload --host 0.0.0.0 --port 8000
 """
 import sys
 import os
 
-# scripts 디렉토리를 path에 추가 (현재 파일의 디렉토리)
+# scripts 디렉토리를 path에 추가
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from fastapi import FastAPI, Query, HTTPException
@@ -17,12 +17,16 @@ import uvicorn
 
 from core.database import get_db_connection
 
+# ✅ 1. FastAPI 앱 생성 (먼저!)
 app = FastAPI(title="NEIS 데이터 API", description="급식, 학사일정, 시간표 API")
 
-# CORS 설정 (개발용, 배포 시 특정 도메인으로 변경)
+# ✅ 2. CORS 미들웨어 추가 (app 생성 후!)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 배포 시 프론트엔드 도메인으로 변경 (예: ["https://school.hi-dunkey.com"])
+    allow_origins=[
+        "http://localhost:5500",
+        "http://127.0.0.1:5500",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -174,12 +178,24 @@ def get_timetable(
 def search_schools(
     query: str = Query(..., min_length=2, description="검색어 (학교명 또는 코드)")
 ):
-    """학교 검색"""
+    """학교 검색 (원인 파악용 디버그 로그 추가)"""
+    print(f"\n========== 🔍 SEARCH DEBUG ==========")
+    print(f"1. 브라우저가 보낸 검색어: '{query}'")
+    print(f"2. 서버가 인식한 DB 경로: {MASTER_DB}")
+    print(f"3. 해당 경로에 DB 파일이 존재하나?: {os.path.exists(MASTER_DB)}")
+    
     if not os.path.exists(MASTER_DB):
-        raise HTTPException(status_code=500, detail="Master DB not found")
+        raise HTTPException(status_code=500, detail=f"Master DB not found at {MASTER_DB}")
     
     with get_db_connection(MASTER_DB) as conn:
         conn.row_factory = sqlite3.Row
+        
+        # 4. DB 전체 데이터 개수 확인
+        count_cur = conn.execute("SELECT COUNT(*) FROM schools")
+        total_schools = count_cur.fetchone()[0]
+        print(f"4. DB에 들어있는 전체 학교 수: {total_schools}개")
+        
+        # 5. 실제 검색 수행
         cur = conn.execute("""
             SELECT sc_code, sc_name, atpt_code
             FROM schools
@@ -187,9 +203,10 @@ def search_schools(
             LIMIT 20
         """, (f"%{query}%", f"%{query}%"))
         rows = cur.fetchall()
+        print(f"5. '%{query}%' 로 검색된 결과 수: {len(rows)}개")
+        print(f"=====================================\n")
     
     return [dict(r) for r in rows]
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
-    
