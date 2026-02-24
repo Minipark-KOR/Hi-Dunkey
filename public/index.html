@@ -364,14 +364,13 @@
             return m >= 3 ? y : y - 1;
         }
 
-        //주석처리
-        //function updatePageTitle() {
-        //    const titleEl = document.getElementById('page-title');
-        //    if (!titleEl) return;
-        //    const currentYear = getSchoolYear(new Date());
-        //    titleEl.textContent = `📅 ${currentYear}학년도 학사일정`;
-        //}
-        //updatePageTitle();
+        function updatePageTitle() {
+            const titleEl = document.getElementById('page-title');
+            if (!titleEl) return;
+            const currentYear = getSchoolYear(new Date());
+            titleEl.textContent = `📅 ${currentYear}학년도 학사일정`;
+        }
+        updatePageTitle();
 
         let toastTimer = null;
         function showToast(msg, duration = 3000) {
@@ -644,94 +643,7 @@
             link.href = 'data:,';
             document.head.appendChild(link);
         }
-        // =====================[ 학년도 계산 ]=====================
-        function getSchoolYear(date) {
-            const m = date.getMonth() + 1;
-            const y = date.getFullYear();
-            return m >= 3 ? y : y - 1;
-        }
-
-        // =====================[ 여기에 새 함수 추가! ]=====================
-        // =====================[ 오행 + 띠 계산 함수 ]=====================
-        function getYearElement(year) {
-            const heavenlyStems = [
-                { name: '갑', element: '목', color: '청', bgColor: '#4CAF50' },  // 녹색
-                { name: '을', element: '목', color: '청', bgColor: '#4CAF50' },
-                { name: '병', element: '화', color: '적', bgColor: '#F44336' },  // 빨간색
-                { name: '정', element: '화', color: '적', bgColor: '#F44336' },
-                { name: '무', element: '토', color: '황', bgColor: '#FFC107' },  // 노란색
-                { name: '기', element: '토', color: '황', bgColor: '#FFC107' },
-                { name: '경', element: '금', color: '백', bgColor: '#E0E0E0' },  // 회색
-                { name: '신', element: '금', color: '백', bgColor: '#E0E0E0' },
-                { name: '임', element: '수', color: '흑', bgColor: '#333333' },  // 검정
-                { name: '계', element: '수', color: '흑', bgColor: '#333333' }
-            ];
-            
-            const earthlyBranches = [
-                { animal: '🐭', name: '자' },  // 쥐
-                { animal: '🐮', name: '축' },  // 소
-                { animal: '🐯', name: '인' },  // 호랑이
-                { animal: '🐰', name: '묘' },  // 토끼
-                { animal: '🐲', name: '진' },  // 용
-                { animal: '🐍', name: '사' },  // 뱀
-                { animal: '🐴', name: '오' },  // 말
-                { animal: '🐏', name: '미' },  // 양
-                { animal: '🐵', name: '신' },  // 원숭이
-                { animal: '🐔', name: '유' },  // 닭
-                { animal: '🐶', name: '술' },  // 개
-                { animal: '🐷', name: '해' }   // 돼지
-            ];
-            
-            const baseYear = 1984; // 갑자년
-            const diff = year - baseYear;
-            
-            const stemIndex = diff % 10;
-            const branchIndex = diff % 12;
-            
-            const stem = heavenlyStems[stemIndex];
-            const branch = earthlyBranches[branchIndex];
-            
-            return {
-                year: year,
-                stem: stem,
-                branch: branch,
-                display: `<span style="display: inline-flex; align-items: center; gap: 4px;">
-                    <span style="display: inline-block; width: 28px; height: 28px; border-radius: 50%; background-color: ${stem.bgColor}; text-align: center; line-height: 28px; font-size: 18px; color: white;">${branch.animal}</span>
-                </span>`
-            };
-        }
-
-        // =====================[ 제목 업데이트 함수 ]=====================
-        function updateTitleByState(tab = 'schedule', grade = null, classNm = null) {
-            const titleEl = document.getElementById('page-title');
-            if (!titleEl) return;
-            
-            const currentYear = getSchoolYear(new Date());
-            const yearElement = getYearElement(currentYear);
-            
-            if (!selectedSchool) {
-                // 첫 페이지: 📅 2026학년도 [빨간 원 안에 말] 학교 정보
-                titleEl.innerHTML = `📅 ${currentYear}학년도 ${yearElement.display} 학교 정보`;
-                return;
-            }
-            
-            // 학교 선택 후
-            let title = `🏫 ${selectedSchoolName}`;
-            
-            if (tab === 'schedule') {
-                title += ` 학사일정`;
-            } else if (tab === 'meal') {
-                title += ` 급식`;
-            } else if (tab === 'timetable') {
-                if (grade && classNm) {
-                    title += ` 시간표 (${grade}학년 ${classNm}반)`;
-                } else {
-                    title += ` 시간표`;
-                }
-            }
-            
-            titleEl.innerHTML = title;
-        }
+        
     </script>
 </body>
 </html>
