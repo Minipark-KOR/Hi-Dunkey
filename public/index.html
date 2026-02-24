@@ -5,6 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
     <title>Hi-Dunkey 당나귀가 알려주는 학교정보</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css">
+    
+    <!-- ✅ FontAwesome 6.5.1 최신 버전 -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    
     <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.js"></script>
     <style>
         * {
@@ -49,11 +53,63 @@
             letter-spacing: -0.5px;
             text-shadow: 2px 2px 4px rgba(0,0,0,0.05);
             transition: all 0.3s ease;
-            white-space: nowrap;
+        }
+        
+        /* ✅ 폰트어썸 아이콘 스타일링 */
+        #page-title i {
+            color: #4c6ef5;
+            margin-right: 6px;
+        }
+
+        #page-title .fa-solid,
+        #page-title .fa-regular {
+            color: #4c6ef5;
+            margin-right: 6px;
         }
 
         #page-title.shrink {
             font-size: clamp(1.4rem, 5vw, 1.8rem);
+        }
+
+        .tab-menu {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin: 5px 0;
+            width: 100%;
+        }
+
+        .tab-btn {
+            background: transparent;
+            border: none;
+            padding: 8px 16px;
+            font-size: 1rem;
+            font-weight: 600;
+            color: #888;
+            cursor: pointer;
+            border-radius: 20px;
+            transition: all 0.2s;
+        }
+
+        .tab-btn i {
+            margin-right: 6px;
+        }
+
+        .tab-btn.active {
+            background: #4c6ef5;
+            color: white;
+        }
+
+        .tab-btn.active i {
+            color: white;
+        }
+
+        .tab-btn:hover {
+            background: #e0e0e0;
+        }
+
+        .tab-btn.active:hover {
+            background: #3b5bdb;
         }
 
         #search-container {
@@ -96,6 +152,10 @@
             white-space: nowrap;
         }
 
+        #search-btn i {
+            margin-right: 6px;
+        }
+
         #search-btn:hover {
             background: #3b5bdb;
         }
@@ -112,7 +172,8 @@
             border-radius: 16px;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
             display: none;
-            overflow: hidden;
+            overflow-y: auto;
+            max-height: 300px;
         }
 
         .school-item {
@@ -127,7 +188,8 @@
             border-bottom: none;
         }
 
-        .school-item:hover {
+        .school-item:hover,
+        .school-item.selected {
             background: #f0f2f5;
         }
 
@@ -308,7 +370,7 @@
         }
 
         /* 모바일 터치 최적화 */
-        .school-item, .fc-event, #search-btn, #popup-close {
+        .school-item, .fc-event, #search-btn, #popup-close, .tab-btn {
             -webkit-tap-highlight-color: transparent;
         }
 
@@ -325,10 +387,17 @@
     <div id="main-header">
         <h1 id="page-title"></h1>
         
+        <!-- 탭 메뉴 -->
+        <div class="tab-menu">
+            <button class="tab-btn active" data-tab="schedule"><i class="fa-regular fa-calendar"></i> 학사일정</button>
+            <button class="tab-btn" data-tab="meal"><i class="fa-solid fa-utensils"></i> 급식</button>
+            <button class="tab-btn" data-tab="timetable"><i class="fa-solid fa-table-list"></i> 시간표</button>
+        </div>
+        
         <div id="search-container">
             <div id="school-search">
                 <input type="text" id="school-input" placeholder="학교명 또는 학교 코드를 입력하세요" autofocus>
-                <button id="search-btn">검색</button>
+                <button id="search-btn"><i class="fa-solid fa-magnifying-glass"></i> 검색</button>
             </div>
             <div id="search-results"></div>
         </div>
@@ -357,6 +426,8 @@
         let selectedSchoolName = '';
         let searchTimeout = null;
         let calendar = null;
+        let currentTab = 'schedule';
+        let selectedIndex = -1;
 
         function getSchoolYear(date) {
             const m = date.getMonth() + 1;
@@ -364,13 +435,81 @@
             return m >= 3 ? y : y - 1;
         }
 
+        // ✅ 띠/오행 계산 함수 (이모지용)
+        function getYearElement(year) {
+            const heavenlyStems = [
+                { name: '갑', bgColor: '#4CAF50' }, { name: '을', bgColor: '#4CAF50' },
+                { name: '병', bgColor: '#F44336' }, { name: '정', bgColor: '#F44336' },
+                { name: '무', bgColor: '#FFC107' }, { name: '기', bgColor: '#FFC107' },
+                { name: '경', bgColor: '#E0E0E0' }, { name: '신', bgColor: '#E0E0E0' },
+                { name: '임', bgColor: '#333333' }, { name: '계', bgColor: '#333333' }
+            ];
+            const earthlyBranches = [
+                { animal: '🐭' }, { animal: '🐮' }, { animal: '🐯' }, { animal: '🐰' },
+                { animal: '🐲' }, { animal: '🐍' }, { animal: '🐴' }, { animal: '🐏' },
+                { animal: '🐵' }, { animal: '🐔' }, { animal: '🐶' }, { animal: '🐷' }
+            ];
+            const diff = year - 1984;
+            const stem = heavenlyStems[diff % 10];
+            const branch = earthlyBranches[diff % 12];
+            
+            return `<span style="display: inline-block; width: 28px; height: 28px; border-radius: 50%; background-color: ${stem.bgColor}; text-align: center; line-height: 28px; font-size: 16px; margin: 0 4px;">${branch.animal}</span>`;
+        }
+
+        // =====================[ 제목 업데이트 함수 ]=====================
         function updatePageTitle() {
             const titleEl = document.getElementById('page-title');
             if (!titleEl) return;
+            
             const currentYear = getSchoolYear(new Date());
-            titleEl.textContent = `📅 ${currentYear}학년도 학사일정`;
+            const yearElementIcon = getYearElement(currentYear);
+            
+            if (!selectedSchool) {
+                // 초기 화면: 폰트어썸 학교 + 이모지 띠 + 년도
+                titleEl.innerHTML = `<i class="fa-solid fa-school"></i> ${yearElementIcon} ${currentYear}학년도 학교정보`;
+            } else {
+                let faIcon = '';
+                let emojiIcon = '';
+                
+                if (currentTab === 'schedule') {
+                    faIcon = 'fa-calendar-check';
+                    emojiIcon = '📅';
+                } else if (currentTab === 'meal') {
+                    faIcon = 'fa-utensils';
+                    emojiIcon = '🍱';
+                } else if (currentTab === 'timetable') {
+                    faIcon = 'fa-table-list';
+                    emojiIcon = '⏰';
+                }
+                
+                // 학교 선택 후: 폰트어썸 + 이모지 + 학교이름
+                titleEl.innerHTML = `<i class="fa-solid ${faIcon}"></i> ${emojiIcon} ${selectedSchoolName}`;
+            }
         }
-        updatePageTitle();
+
+        // =====================[ 탭 전환 함수 ]=====================
+        function switchTab(tab) {
+            currentTab = tab;
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                if (btn.dataset.tab === tab) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            });
+            
+            updatePageTitle();
+            
+            if (tab === 'schedule') {
+                if (selectedSchool && calendar) calendar.refetchEvents();
+            } else if (tab === 'meal') {
+                console.log('🍱 급식 탭');
+                // 급식 기능은 나중에 구현
+            } else if (tab === 'timetable') {
+                console.log('📚 시간표 탭');
+                // 시간표 기능은 나중에 구현
+            }
+        }
 
         let toastTimer = null;
         function showToast(msg, duration = 3000) {
@@ -419,11 +558,27 @@
         const searchBtn = document.getElementById('search-btn');
         const searchResults = document.getElementById('search-results');
 
+        function highlightSelectedItem() {
+            const items = document.querySelectorAll('.school-item');
+            items.forEach((item, index) => {
+                if (index === selectedIndex) {
+                    item.classList.add('selected');
+                } else {
+                    item.classList.remove('selected');
+                }
+            });
+            
+            if (selectedIndex >= 0 && items[selectedIndex]) {
+                items[selectedIndex].scrollIntoView({ block: 'nearest' });
+            }
+        }
+
         async function searchSchools(query) {
             console.log('🔍 searchSchools 호출됨, query:', query);
             
             if (query.length < 2) {
                 searchResults.style.display = 'none';
+                selectedIndex = -1;
                 return;
             }
             
@@ -444,6 +599,7 @@
             if (!resultsDiv) return;
             
             resultsDiv.innerHTML = '';
+            selectedIndex = -1;
             
             if (!schools || schools.length === 0) {
                 resultsDiv.style.display = 'none';
@@ -451,15 +607,21 @@
                 return;
             }
             
-            schools.forEach(s => {
+            schools.forEach((s, index) => {
                 const div = document.createElement('div');
                 div.className = 'school-item';
+                div.dataset.index = index;
                 div.innerHTML = `${s.sc_name} <small>${s.sc_code}</small>`;
                 
                 div.onclick = (e) => {
                     e.preventDefault();
                     e.stopPropagation();
                     selectSchool(s.sc_code, s.sc_name);
+                };
+                
+                div.onmouseenter = () => {
+                    selectedIndex = index;
+                    highlightSelectedItem();
                 };
                 
                 resultsDiv.appendChild(div);
@@ -474,12 +636,14 @@
             searchInput.value = name;
             
             searchResults.style.display = 'none';
-            
+            selectedIndex = -1;
             showToast(`🏫 ${name} 선택됨`);
 
             document.body.classList.add('has-calendar');
             document.getElementById('page-title').classList.add('shrink');
             document.getElementById('calendar-wrapper').style.display = 'block';
+            
+            switchTab('schedule');
 
             if (!calendar) {
                 initCalendar();
@@ -494,19 +658,36 @@
             searchTimeout = setTimeout(() => searchSchools(query), 300);
         });
 
+        searchInput.addEventListener('keydown', function(e) {
+            const items = document.querySelectorAll('.school-item');
+            
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                if (items.length > 0) {
+                    selectedIndex = (selectedIndex + 1) % items.length;
+                    highlightSelectedItem();
+                }
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (items.length > 0) {
+                    selectedIndex = selectedIndex <= 0 ? items.length - 1 : selectedIndex - 1;
+                    highlightSelectedItem();
+                }
+            } else if (e.key === 'Enter') {
+                if (selectedIndex >= 0 && items[selectedIndex]) {
+                    e.preventDefault();
+                    const schoolCode = items[selectedIndex].querySelector('small').textContent;
+                    const schoolName = items[selectedIndex].childNodes[0].nodeValue.trim();
+                    selectSchool(schoolCode, schoolName);
+                }
+            }
+        });
+
         searchBtn.addEventListener('click', function(e) {
             e.preventDefault();
             e.stopPropagation();
             const query = searchInput.value.trim();
             searchSchools(query);
-        });
-
-        searchInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                if (searchTimeout) clearTimeout(searchTimeout);
-                searchSchools(searchInput.value.trim());
-            }
         });
 
         document.addEventListener('click', (e) => {
@@ -525,7 +706,15 @@
             
             if (!isClickInside) {
                 searchResults.style.display = 'none';
+                selectedIndex = -1;
             }
+        });
+
+        // 탭 버튼 이벤트 리스너
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                switchTab(this.dataset.tab);
+            });
         });
 
         function initCalendar() {
@@ -636,6 +825,9 @@
             statusEl.textContent = '일정 로딩중...';
         }
 
+        // 페이지 로드 시 제목 설정
+        updatePageTitle();
+
         const favicon = document.querySelector('link[rel="icon"]');
         if (!favicon) {
             const link = document.createElement('link');
@@ -643,7 +835,6 @@
             link.href = 'data:,';
             document.head.appendChild(link);
         }
-        
     </script>
 </body>
 </html>
