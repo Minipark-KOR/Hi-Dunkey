@@ -112,7 +112,7 @@
             padding: 24px;
             border-radius: 16px;
             box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
-            display: none;  /* 초기에는 숨김 */
+            display: none;
         }
 
         #status-bar {
@@ -125,7 +125,7 @@
         #status-bar.error { color: #e53e3e; }
         #status-bar.warn  { color: #f59f00; }
 
-        /* FullCalendar 스타일 커스터마이징 (기존과 동일) */
+        /* FullCalendar 스타일 */
         .fc-header-toolbar {
             margin-bottom: 0 !important;
         }
@@ -167,7 +167,7 @@
             border-color: #1a1a2e !important;
         }
 
-        /* 팝업 스타일 (기존과 동일) */
+        /* 팝업 스타일 */
         #popup-overlay {
             display: none;
             position: fixed;
@@ -279,12 +279,12 @@
     <div id="toast"></div>
 
     <script>
-        const API_BASE = window.location.origin + '/api';
+        const API_BASE = 'http://localhost:8000/api';
 
         let selectedSchool = null;
         let selectedSchoolName = '';
         let searchTimeout = null;
-        let calendar = null;  // FullCalendar 인스턴스
+        let calendar = null;
 
         // =====================[ 학년도 계산 ]=====================
         function getSchoolYear(date) {
@@ -339,51 +339,74 @@
         const searchResults = document.getElementById('search-results');
 
         async function searchSchools(query) {
+            console.log('🔍 searchSchools 호출됨, query:', query);
             if (query.length < 2) {
                 searchResults.style.display = 'none';
                 return;
             }
             try {
+                console.log('📡 API 요청 시작:', `${API_BASE}/schools?query=${encodeURIComponent(query)}`);
                 const res = await fetch(`${API_BASE}/schools?query=${encodeURIComponent(query)}`);
+                console.log('📡 응답 상태:', res.status);
                 const schools = await res.json();
-                displaySearchResults(schools);
+                console.log('📦 받은 데이터:', schools);
+                
+                // 빈 이름 필터링
+                const validSchools = schools.filter(s => s.sc_name && s.sc_name.trim() !== '');
+                console.log('📊 유효한 학교 수:', validSchools.length, '원본:', schools.length);
+                
+                displaySearchResults(validSchools);
             } catch (e) {
+                console.error('❌ 오류 발생:', e);
                 showToast('검색 중 오류가 발생했습니다.');
             }
         }
 
         function displaySearchResults(schools) {
-            searchResults.innerHTML = '';
-            if (schools.length === 0) {
+            console.log('✅ displaySearchResults 실행됨', schools);
+            
+            if (!schools || schools.length === 0) {
                 searchResults.style.display = 'none';
+                console.log('🔍 표시할 학교 없음');
+                showToast('검색 결과가 없습니다.');
                 return;
             }
+
+            searchResults.innerHTML = '';
+            
             schools.forEach(s => {
                 const div = document.createElement('div');
                 div.className = 'school-item';
                 div.textContent = `${s.sc_name} (${s.sc_code})`;
-                div.onclick = () => selectSchool(s.sc_code, s.sc_name);
+                div.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    selectSchool(s.sc_code, s.sc_name);
+                };
                 searchResults.appendChild(div);
+                console.log('➕ 자식 추가됨:', div.textContent);
             });
+            
             searchResults.style.display = 'block';
+            console.log('✅ 검색 결과 표시 완료, display = block, 자식 수:', searchResults.children.length);
         }
 
         function selectSchool(code, name) {
+            console.log('🎯 selectSchool 실행됨', code, name);
             selectedSchool = code;
             selectedSchoolName = name;
             searchInput.value = name;
             searchResults.style.display = 'none';
             showToast(`🏫 ${name} 선택됨`);
 
-            // 검색창을 위로 올리고 캘린더 표시
             document.getElementById('search-container').classList.add('with-calendar');
             document.getElementById('calendar-wrapper').style.display = 'block';
 
-            // 캘린더가 아직 생성되지 않았다면 생성
             if (!calendar) {
+                console.log('📅 캘린더 생성 시작');
                 initCalendar();
             } else {
-                // 이미 있으면 이벤트 다시 로드
+                console.log('🔄 캘린더 리프레시');
                 calendar.refetchEvents();
             }
         }
@@ -395,21 +418,27 @@
             searchTimeout = setTimeout(() => searchSchools(query), 300);
         });
 
-        searchBtn.addEventListener('click', function() {
+        searchBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
             const query = searchInput.value.trim();
             searchSchools(query);
         });
 
         searchInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
+                e.preventDefault();
                 if (searchTimeout) clearTimeout(searchTimeout);
-                const query = searchInput.value.trim();
-                searchSchools(query);
+                searchSchools(searchInput.value.trim());
             }
         });
 
+        // 바깥 클릭 시 검색 결과 숨기기 (디버깅 로그 추가)
         document.addEventListener('click', (e) => {
+            console.log('🖱️ 문서 클릭됨', e.target);
+            
             if (!searchResults.contains(e.target) && e.target !== searchInput) {
+                console.log('➡️ 검색 결과 숨김');
                 searchResults.style.display = 'none';
             }
         });
@@ -449,19 +478,22 @@
                     }
 
                     const year = getSchoolYear(fetchInfo.start);
+                    console.log('📅 학사일정 요청:', selectedSchool, year);
+                    
                     try {
                         const res = await fetch(`${API_BASE}/schedule?school_code=${selectedSchool}&year=${year}`);
                         if (!res.ok) throw new Error('API error');
                         const data = await res.json();
+                        console.log('📅 학사일정 데이터:', data);
                         successCallback(data);
                     } catch (e) {
+                        console.error('❌ 학사일정 오류:', e);
                         failureCallback(e);
                     }
                 },
                 datesSet: function (info) {
                     currentViewStart = info.start;
                     currentViewEnd = info.end;
-                    // 캘린더 제목 업데이트 (학교명 포함)
                     const titleEl = document.querySelector('.fc-toolbar-title');
                     if (titleEl && selectedSchoolName) {
                         const year = getSchoolYear(info.view.currentStart);
@@ -512,12 +544,8 @@
             });
 
             calendar.render();
-            // 초기 상태 업데이트
             statusEl.textContent = '일정을 불러오는 중...';
         }
-
-        // 초기화 시 아무것도 하지 않음 (캘린더 없음)
-        // 모든 것은 학교 선택 후 시작됨
     </script>
 </body>
 </html>
