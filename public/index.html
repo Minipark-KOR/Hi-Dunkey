@@ -249,10 +249,27 @@
             from { opacity: 0; transform: translateX(-50%) translateY(10px); }
             to   { opacity: 1; transform: translateX(-50%) translateY(0); }
         }
+        #page-title {
+            font-size: 2.2rem;
+            font-weight: 800;
+            color: #1a1a2e;
+            margin-bottom: 30px;
+            text-align: center;
+            letter-spacing: -0.5px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.05);
+            transition: all 0.3s ease;
+        }
+
+        #search-container.with-calendar + #page-title {
+            font-size: 1.8rem;
+            margin-bottom: 20px;
+        }    
     </style>
 </head>
 <body>
-
+<!-- 학년도 자동 표시 제목 -->
+    <h1 id="page-title"></h1>
+    
     <div id="search-container">
         <div id="school-search">
             <input type="text" id="school-input" placeholder="학교명 또는 학교 코드를 입력하세요" autofocus>
@@ -293,6 +310,16 @@
             const y = date.getFullYear();
             return m >= 3 ? y : y - 1;
         }
+        // =====================[ 페이지 제목 설정 ]=====================
+        // =====================[ 페이지 제목 설정 ]=====================
+        function updatePageTitle() {
+            const titleEl = document.getElementById('page-title');
+            if (!titleEl) return;  // 요소가 없으면 종료
+            const currentYear = getSchoolYear(new Date());
+            titleEl.textContent = `📅 ${currentYear}학년도 학사일정`;
+        }
+        // 페이지 로드 시 제목 설정
+        updatePageTitle();
 
         // =====================[ 토스트 메시지 ]=====================
         let toastTimer = null;
@@ -604,6 +631,7 @@
             link.href = 'data:,';
             document.head.appendChild(link);
         }
+    
     </script>
 </body>
 </html>
