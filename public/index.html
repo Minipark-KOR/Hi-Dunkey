@@ -21,17 +21,42 @@
             display: flex;
             flex-direction: column;
             align-items: center;
+            justify-content: center;
+            transition: all 0.5s ease;
+        }
+
+        body.has-calendar {
+            justify-content: flex-start;
+        }
+
+        #main-header {
+            width: 100%;
+            max-width: 600px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+            transition: all 0.5s ease;
+        }
+
+        #page-title {
+            font-size: 2.2rem;
+            font-weight: 800;
+            color: #1a1a2e;
+            margin: 0;
+            text-align: center;
+            letter-spacing: -0.5px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.05);
+            transition: all 0.3s ease;
+        }
+
+        #page-title.shrink {
+            font-size: 1.8rem;
         }
 
         #search-container {
             width: 100%;
-            max-width: 600px;
-            margin-top: 80px;
-            transition: all 0.3s ease;
-        }
-
-        #search-container.with-calendar {
-            margin-top: 20px;
+            position: relative;
         }
 
         #school-search {
@@ -73,8 +98,12 @@
         }
 
         #search-results {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            z-index: 100;
             width: 100%;
-            max-width: 600px;
             margin-top: 10px;
             background: white;
             border-radius: 16px;
@@ -249,33 +278,19 @@
             from { opacity: 0; transform: translateX(-50%) translateY(10px); }
             to   { opacity: 1; transform: translateX(-50%) translateY(0); }
         }
-        #page-title {
-            font-size: 2.2rem;
-            font-weight: 800;
-            color: #1a1a2e;
-            margin-bottom: 30px;
-            text-align: center;
-            letter-spacing: -0.5px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.05);
-            transition: all 0.3s ease;
-        }
-
-        #page-title.shrink {
-            font-size: 1.8rem;
-            margin-bottom: 20px;
-        }    
     </style>
 </head>
 <body>
-<!-- 학년도 자동 표시 제목 -->
-    <h1 id="page-title"></h1>
-    
-    <div id="search-container">
-        <div id="school-search">
-            <input type="text" id="school-input" placeholder="학교명 또는 학교 코드를 입력하세요" autofocus>
-            <button id="search-btn">검색</button>
+    <div id="main-header">
+        <h1 id="page-title"></h1>
+        
+        <div id="search-container">
+            <div id="school-search">
+                <input type="text" id="school-input" placeholder="학교명 또는 학교 코드를 입력하세요" autofocus>
+                <button id="search-btn">검색</button>
+            </div>
+            <div id="search-results"></div>
         </div>
-        <div id="search-results"></div>
     </div>
 
     <div id="calendar-wrapper" style="display: none;">
@@ -310,15 +325,14 @@
             const y = date.getFullYear();
             return m >= 3 ? y : y - 1;
         }
-        // =====================[ 페이지 제목 설정 ]=====================
+        
         // =====================[ 페이지 제목 설정 ]=====================
         function updatePageTitle() {
             const titleEl = document.getElementById('page-title');
-            if (!titleEl) return;  // 요소가 없으면 종료
+            if (!titleEl) return;
             const currentYear = getSchoolYear(new Date());
             titleEl.textContent = `📅 ${currentYear}학년도 학사일정`;
         }
-        // 페이지 로드 시 제목 설정
         updatePageTitle();
 
         // =====================[ 토스트 메시지 ]=====================
@@ -382,7 +396,6 @@
                 const schools = await res.json();
                 console.log('📦 받은 데이터:', schools);
                 
-                // 빈 이름 필터링
                 const validSchools = schools.filter(s => s.sc_name && s.sc_name.trim() !== '');
                 console.log('📊 유효한 학교 수:', validSchools.length, '원본:', schools.length);
                 
@@ -396,33 +409,28 @@
         function displaySearchResults(schools) {
             console.log('✅ displaySearchResults 실행됨', schools);
             
-            // 결과 컨테이너 찾기
             const resultsDiv = document.getElementById('search-results');
             if (!resultsDiv) {
                 console.error('❌ #search-results 요소 없음');
                 return;
             }
             
-            // 기존 내용 비우기
             resultsDiv.innerHTML = '';
             
-            // 결과가 없으면 숨기고 종료
             if (!schools || schools.length === 0) {
                 resultsDiv.style.display = 'none';
                 showToast('검색 결과가 없습니다.');
                 return;
             }
             
-            // 결과 목록 생성
             schools.forEach(s => {
                 const div = document.createElement('div');
                 div.className = 'school-item';
                 div.textContent = `${s.sc_name} (${s.sc_code})`;
                 
-                // 클릭 이벤트에 stopPropagation 추가
                 div.onclick = (e) => {
                     e.preventDefault();
-                    e.stopPropagation();  // 이벤트 버블링 차단
+                    e.stopPropagation();
                     selectSchool(s.sc_code, s.sc_name);
                 };
                 
@@ -430,15 +438,8 @@
                 console.log('➕ 자식 추가됨:', div.textContent);
             });
             
-            // 결과 표시
             resultsDiv.style.display = 'block';
             console.log('✅ 검색 결과 표시 완료, 자식 수:', resultsDiv.children.length);
-            
-            // 1초 후에도 display가 block인지 확인 (디버깅용)
-            setTimeout(() => {
-                console.log('⏰ 1초 후 display:', resultsDiv.style.display);
-                console.log('📏 offsetHeight:', resultsDiv.offsetHeight);
-            }, 1000);
         }
 
         function selectSchool(code, name) {
@@ -448,17 +449,14 @@
             selectedSchoolName = name;
             searchInput.value = name;
             
-            // 결과 컨테이너 숨기기
             searchResults.style.display = 'none';
             
             showToast(`🏫 ${name} 선택됨`);
 
-            // 검색창을 위로 올리고 캘린더 표시
-            document.getElementById('search-container').classList.add('with-calendar');
-            document.getElementById('calendar-wrapper').style.display = 'block';
+            document.body.classList.add('has-calendar');
             document.getElementById('page-title').classList.add('shrink');
+            document.getElementById('calendar-wrapper').style.display = 'block';
 
-            // 캘린더가 아직 생성되지 않았다면 생성
             if (!calendar) {
                 console.log('📅 캘린더 생성 시작');
                 initCalendar();
@@ -468,14 +466,12 @@
             }
         }
 
-        // 디바운스: 입력 후 300ms 대기
         searchInput.addEventListener('input', function(e) {
             if (searchTimeout) clearTimeout(searchTimeout);
             const query = e.target.value.trim();
             searchTimeout = setTimeout(() => searchSchools(query), 300);
         });
 
-        // 검색 버튼 클릭 이벤트
         searchBtn.addEventListener('click', function(e) {
             e.preventDefault();
             e.stopPropagation();
@@ -483,7 +479,6 @@
             searchSchools(query);
         });
 
-        // Enter 키 이벤트
         searchInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
                 e.preventDefault();
@@ -492,14 +487,11 @@
             }
         });
 
-        // 바깥 클릭 시 검색 결과 숨기기 (디버깅 로그 추가)
         document.addEventListener('click', (e) => {
             console.log('🖱️ 문서 클릭됨', e.target);
             
-            // 검색 결과가 없으면 무시
             if (!searchResults || searchResults.style.display !== 'block') return;
             
-            // 클릭된 요소가 검색 결과나 입력창의 자식인지 확인
             let target = e.target;
             let isClickInside = false;
             
@@ -511,7 +503,6 @@
                 target = target.parentNode;
             }
             
-            // 결과 영역 바깥을 클릭했을 때만 숨김
             if (!isClickInside) {
                 console.log('➡️ 검색 결과 숨김 (바깥 클릭)');
                 searchResults.style.display = 'none';
@@ -624,7 +615,6 @@
             statusEl.textContent = '일정을 불러오는 중...';
         }
 
-        // favicon.ico 오류 방지 (선택사항)
         const favicon = document.querySelector('link[rel="icon"]');
         if (!favicon) {
             const link = document.createElement('link');
@@ -632,7 +622,6 @@
             link.href = 'data:,';
             document.head.appendChild(link);
         }
-    
     </script>
 </body>
 </html>
