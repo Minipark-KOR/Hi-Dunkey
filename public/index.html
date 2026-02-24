@@ -260,7 +260,7 @@
             transition: all 0.3s ease;
         }
 
-        #search-container.with-calendar + #page-title {
+        #page-title.shrink {
             font-size: 1.8rem;
             margin-bottom: 20px;
         }    
@@ -456,6 +456,7 @@
             // 검색창을 위로 올리고 캘린더 표시
             document.getElementById('search-container').classList.add('with-calendar');
             document.getElementById('calendar-wrapper').style.display = 'block';
+            document.getElementById('page-title').classList.add('shrink');
 
             // 캘린더가 아직 생성되지 않았다면 생성
             if (!calendar) {
