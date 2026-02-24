@@ -6,7 +6,7 @@
     <title>Hi-Dunkey 당나귀가 알려주는 학교정보</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css">
     
-    <!-- ✅ FontAwesome 6.5.1 최신 버전 -->
+    <!-- FontAwesome 6.5.1 최신 버전 -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     
     <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.js"></script>
@@ -55,7 +55,7 @@
             transition: all 0.3s ease;
         }
         
-        /* ✅ 폰트어썸 아이콘 스타일링 */
+        /* 폰트어썸 아이콘 스타일링 */
         #page-title i {
             color: #4c6ef5;
             margin-right: 6px;
@@ -71,12 +71,18 @@
             font-size: clamp(1.4rem, 5vw, 1.8rem);
         }
 
+        /* 탭 메뉴 - 기본 숨김 */
         .tab-menu {
-            display: flex;
+            display: none;
             justify-content: center;
             gap: 10px;
             margin: 5px 0;
             width: 100%;
+        }
+
+        /* 학교 선택 후 탭 메뉴 표시 */
+        body.has-calendar .tab-menu {
+            display: flex;
         }
 
         .tab-btn {
@@ -387,7 +393,7 @@
     <div id="main-header">
         <h1 id="page-title"></h1>
         
-        <!-- 탭 메뉴 -->
+        <!-- 탭 메뉴 - 첫 페이지에서는 숨겨짐 -->
         <div class="tab-menu">
             <button class="tab-btn active" data-tab="schedule"><i class="fa-regular fa-calendar"></i> 학사일정</button>
             <button class="tab-btn" data-tab="meal"><i class="fa-solid fa-utensils"></i> 급식</button>
@@ -435,7 +441,7 @@
             return m >= 3 ? y : y - 1;
         }
 
-        // ✅ 띠/오행 계산 함수 (이모지용)
+        // 띠/오행 계산 함수 (이모지용)
         function getYearElement(year) {
             const heavenlyStems = [
                 { name: '갑', bgColor: '#4CAF50' }, { name: '을', bgColor: '#4CAF50' },
@@ -456,7 +462,7 @@
             return `<span style="display: inline-block; width: 28px; height: 28px; border-radius: 50%; background-color: ${stem.bgColor}; text-align: center; line-height: 28px; font-size: 16px; margin: 0 4px;">${branch.animal}</span>`;
         }
 
-        // =====================[ 제목 업데이트 함수 ]=====================
+        // 제목 업데이트 함수
         function updatePageTitle() {
             const titleEl = document.getElementById('page-title');
             if (!titleEl) return;
@@ -465,7 +471,7 @@
             const yearElementIcon = getYearElement(currentYear);
             
             if (!selectedSchool) {
-                // 초기 화면: 폰트어썸 학교 + 이모지 띠 + 년도
+                // 초기 화면: 폰트어썸 학교 + 이모지 띠 + 년도 + 학교정보
                 titleEl.innerHTML = `<i class="fa-solid fa-school"></i> ${yearElementIcon} ${currentYear}학년도 학교정보`;
             } else {
                 let faIcon = '';
@@ -487,7 +493,7 @@
             }
         }
 
-        // =====================[ 탭 전환 함수 ]=====================
+        // 탭 전환 함수
         function switchTab(tab) {
             currentTab = tab;
             document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -506,7 +512,7 @@
                 console.log('🍱 급식 탭');
                 // 급식 기능은 나중에 구현
             } else if (tab === 'timetable') {
-                console.log('📚 시간표 탭');
+                console.log('⏰ 시간표 탭');
                 // 시간표 기능은 나중에 구현
             }
         }
