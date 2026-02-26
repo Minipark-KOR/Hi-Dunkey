@@ -417,7 +417,6 @@
     <div id="popup-overlay"></div>
     <div id="event-popup">
         <h2 id="popup-title"></h2>
-        <div class="popup-row" id="popup-date"></div>
         <div class="popup-row" id="popup-grade"></div>
         <div id="popup-tags"></div>
         <div class="popup-row" id="popup-content"></div>
@@ -602,14 +601,26 @@
             }
             
             try {
-                const res = await fetch(`${API_BASE}/schools?query=${encodeURIComponent(query)}`);
-                const schools = await res.json();
+                // 1. 서버 코드에 @app.get("/api/schools") 라고 되어 있으므로
+                // 만약 API_BASE가 "/api"라면 호출 경로는 "/api/schools"가 됩니다.
+                const response = await fetch(`${API_BASE}/schools?query=${encodeURIComponent(query)}`);
                 
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const schools = await response.json();
+                console.log('📦 서버 응답 원본:', schools);
+
+                // 2. 서버가 [ {sc_code, sc_name, atpt_code}, ... ] 형태의 배열을 반환하므로
+                // 바로 필터링이 가능합니다.
                 const validSchools = schools.filter(s => s.sc_name && s.sc_name.trim() !== '');
+                
+                console.log('✅ 필터링된 결과:', validSchools);
                 displaySearchResults(validSchools);
+
             } catch (e) {
-                console.error('❌ 오류 발생:', e);
-                showToast('검색 중 오류가 발생했습니다.');
+                console.error('❌ 검색 중 오류 발생:', e);
             }
         }
 
