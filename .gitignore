@@ -31,3 +31,7 @@ ENV/
 # 임시 파일
 *.tmp
 *.temp
+
+# 오라클 보안키 파일(로컬작업시 사용)
+echo "ssh-oracle.key" >> .gitignore
+echo "ssh-oracle.key.pub" >> .gitignore
