@@ -6,7 +6,7 @@ import os
 import argparse
 import sqlite3
 import time
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from typing import List, Dict
 
 import sys
@@ -19,6 +19,7 @@ from core.shard import should_include
 from parsers.schedule_parser import parse_schedule_row
 from constants.codes import NEIS_API_KEY, NEIS_ENDPOINTS, ALL_REGIONS
 from core.kst_time import now_kst
+from core.school_year import get_current_school_year
 
 BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "../data/active")
 os.makedirs(BASE_DIR, exist_ok=True)
@@ -35,7 +36,6 @@ class ScheduleCollector(BaseCollector):
     
     def _init_db(self):
         with get_db_connection(self.db_path) as conn:
-            # 이벤트 vocab
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS vocab_event (
                     ev_id INTEGER PRIMARY KEY,
@@ -43,7 +43,6 @@ class ScheduleCollector(BaseCollector):
                     ev_date INTEGER
                 )
             """)
-            # 학사일정 테이블
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS schedule (
                     school_id    INTEGER NOT NULL,
@@ -105,13 +104,11 @@ class ScheduleCollector(BaseCollector):
     
     def _save_batch(self, batch: List[dict]):
         with get_db_connection(self.db_path) as conn:
-            # vocab_event 저장
             vocab_set = {(it['ev_id'], it['ev_nm'], it['ev_date']) for it in batch}
             conn.executemany(
                 "INSERT OR IGNORE INTO vocab_event VALUES (?,?,?)",
                 list(vocab_set)
             )
-            # schedule 저장
             sched_data = [
                 (
                     it['school_id'], it['ev_date'], it['ev_id'], it['ay'],
@@ -130,17 +127,22 @@ class ScheduleCollector(BaseCollector):
                     load_dt = excluded.load_dt
             """, sched_data)
     
-    def fetch_region(self, region: str, date: str):
+    def fetch_region(self, region: str, year: int):
+        """year = 학년도 (예: 2026 → 2026-03-01 ~ 2027-02-28)"""
         p_idx = 1
         consecutive_errors = 0
-        while p_idx <= 50:
+        date_from = f"{year}0301"
+        date_to = (date(year + 1, 3, 1) - timedelta(days=1)).strftime("%Y%m%d")
+
+        while p_idx <= 200:
             params = {
                 "KEY": NEIS_API_KEY,
                 "Type": "json",
                 "pIndex": p_idx,
                 "pSize": 1000,
                 "ATPT_OFCDC_SC_CODE": region,
-                "AA_YMD": date
+                "AA_YMD_FROM": date_from,
+                "AA_YMD_TO":   date_to,
             }
             try:
                 res = safe_json_request(self.session, NEIS_URL, params, self.logger)
@@ -186,7 +188,7 @@ class ScheduleCollector(BaseCollector):
 def main():
     parser = argparse.ArgumentParser(description="학사일정 수집기")
     parser.add_argument("--regions", required=True, help="B10,C10,... 또는 ALL")
-    parser.add_argument("--date", default=now_kst().strftime("%Y%m%d"))
+    parser.add_argument("--year", type=int, default=get_current_school_year(), help="수집 학년도 (예: 2026)")
     parser.add_argument("--shard", default="none", choices=["none", "odd", "even"])
     parser.add_argument("--incremental", action="store_true")
     parser.add_argument("--full", action="store_true")
@@ -207,7 +209,7 @@ def main():
 
     for region in regions:
         collector.logger.info(f"🚀 {region} 수집 시작")
-        collector.fetch_region(region, args.date)
+        collector.fetch_region(region, args.year)
 
     collector.close()
     collector.logger.info("🏁 수집 완료")
@@ -215,4 +217,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    

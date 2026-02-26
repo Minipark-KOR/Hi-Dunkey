@@ -33,40 +33,37 @@ class TimetableCollector(BaseCollector):
         self.incremental = incremental
         self.full = full
         self.run_ay = get_current_school_year()
-    
+
     def _init_db(self):
         with get_db_connection(self.db_path) as conn:
-            # 과목 vocab
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS vocab_subject (
-                    subject_id INTEGER PRIMARY KEY,
-                    subject_name TEXT NOT NULL UNIQUE,
+                    subject_id     INTEGER PRIMARY KEY,
+                    subject_name   TEXT NOT NULL UNIQUE,
                     normalized_key TEXT,
-                    level TEXT,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    level          TEXT,
+                    created_at     TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            # 교사 vocab
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS vocab_teacher (
-                    teacher_id INTEGER PRIMARY KEY,
+                    teacher_id   INTEGER PRIMARY KEY,
                     teacher_name TEXT NOT NULL UNIQUE,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    created_at   TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            # 시간표 테이블
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS timetable (
-                    school_id    INTEGER NOT NULL,
-                    ay           INTEGER NOT NULL,
-                    semester     INTEGER NOT NULL,
-                    grade        INTEGER NOT NULL,
-                    class_nm     TEXT NOT NULL,
-                    day_of_week  INTEGER NOT NULL,
-                    period       INTEGER NOT NULL,
-                    subject_id   INTEGER NOT NULL,
-                    teacher_id   INTEGER,
-                    load_dt      TEXT,
+                    school_id   INTEGER NOT NULL,
+                    ay          INTEGER NOT NULL,
+                    semester    INTEGER NOT NULL,
+                    grade       INTEGER NOT NULL,
+                    class_nm    TEXT NOT NULL,
+                    day_of_week INTEGER NOT NULL,
+                    period      INTEGER NOT NULL,
+                    subject_id  INTEGER NOT NULL,
+                    teacher_id  INTEGER,
+                    load_dt     TEXT,
                     PRIMARY KEY (school_id, ay, semester, grade, class_nm, day_of_week, period),
                     FOREIGN KEY (subject_id) REFERENCES vocab_subject(subject_id),
                     FOREIGN KEY (teacher_id) REFERENCES vocab_teacher(teacher_id)
@@ -74,59 +71,62 @@ class TimetableCollector(BaseCollector):
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_timetable_school ON timetable(school_id, ay)")
             self._init_db_common(conn)
-    
+
     def _get_target_key(self) -> str:
         return str(self.run_ay)
-    
-    def _process_item(self, raw_item: dict) -> dict:
+
+    def _process_item(self, raw_item: dict) -> List[dict]:
         sc_code = raw_item.get("SD_SCHUL_CODE")
         if not sc_code:
-            return {}
+            return []
         school_info = self.get_school_info(sc_code)
         if not school_info:
-            return {}
+            return []
         school_id = school_info['school_id']
-        
+
         parsed = parse_timetable_row(raw_item)
         if not parsed.get("subject_id"):
-            return {}
-        
-        return {
-            "school_id": school_id,
-            "ay": parsed["ay"],
-            "semester": parsed["semester"],
-            "grade": parsed["grade"],
-            "class_nm": parsed["class_nm"],
-            "day_of_week": parsed["day_of_week"],
-            "period": parsed["period"],
-            "subject_id": parsed["subject_id"],
-            "subject_name": parsed["subject_name"],
+            return []
+
+        return [{
+            "school_id":      school_id,
+            "ay":             parsed["ay"],
+            "semester":       parsed["semester"],
+            "grade":          parsed["grade"],
+            "class_nm":       parsed["class_nm"],
+            "day_of_week":    parsed["day_of_week"],
+            "period":         parsed["period"],
+            "subject_id":     parsed["subject_id"],
+            "subject_name":   parsed["subject_name"],
             "normalized_key": parsed["normalized_key"],
-            "level": parsed["level"],
-            "teacher_id": parsed["teacher_id"],
-            "teacher_name": parsed["teacher_name"],
-            "load_dt": now_kst().isoformat()
-        }
-    
+            "level":          parsed["level"],
+            "teacher_id":     parsed["teacher_id"],
+            "teacher_name":   parsed["teacher_name"],
+            "load_dt":        now_kst().isoformat()
+        }]
+
     def _save_batch(self, batch: List[dict]):
         with get_db_connection(self.db_path) as conn:
-            # subject vocab
-            subj_set = {(it['subject_id'], it['subject_name'], it['normalized_key'], it['level'])
-                        for it in batch if it['subject_id']}
+            subj_set = {
+                (it['subject_id'], it['subject_name'], it['normalized_key'], it['level'])
+                for it in batch if it.get('subject_id')
+            }
             if subj_set:
                 conn.executemany(
-                    "INSERT OR IGNORE INTO vocab_subject (subject_id, subject_name, normalized_key, level) VALUES (?,?,?,?)",
+                    "INSERT OR IGNORE INTO vocab_subject "
+                    "(subject_id, subject_name, normalized_key, level) VALUES (?,?,?,?)",
                     list(subj_set)
                 )
-            # teacher vocab
-            teacher_set = {(it['teacher_id'], it['teacher_name'])
-                           for it in batch if it['teacher_id']}
+            teacher_set = {
+                (it['teacher_id'], it['teacher_name'])
+                for it in batch if it.get('teacher_id')
+            }
             if teacher_set:
                 conn.executemany(
-                    "INSERT OR IGNORE INTO vocab_teacher (teacher_id, teacher_name) VALUES (?,?)",
+                    "INSERT OR IGNORE INTO vocab_teacher "
+                    "(teacher_id, teacher_name) VALUES (?,?)",
                     list(teacher_set)
                 )
-            # timetable
             tt_data = [
                 (
                     it['school_id'], it['ay'], it['semester'], it['grade'], it['class_nm'],
@@ -134,63 +134,70 @@ class TimetableCollector(BaseCollector):
                 )
                 for it in batch
             ]
-            conn.executemany("""
-                INSERT OR REPLACE INTO timetable
-                VALUES (?,?,?,?,?,?,?,?,?,?)
-            """, tt_data)
-    
+            conn.executemany(
+                "INSERT OR REPLACE INTO timetable VALUES (?,?,?,?,?,?,?,?,?,?)",
+                tt_data
+            )
+
+    # --------------------------------------------------------
+    # 학교별 시간표 수집
+    # --------------------------------------------------------
     def fetch_school_timetable(self, school_code: str, ay: int, semester: int):
         """특정 학교의 시간표 수집 (학년/반 순회)"""
         school_info = self.get_school_info(school_code)
         if not school_info:
             return
-        school_id = school_info['school_id']
-        
-        # 학교급에 따른 학년 범위
+
         level = school_info.get('level', '')
-        if level == '초':
-            grades = range(1, 7)
-        elif level in ('중', '고'):
-            grades = range(1, 4)
-        else:
-            grades = range(1, 4)  # 기본
-        
+        grades = range(1, 7) if level == '초' else range(1, 4)
+
         for grade in grades:
+            empty_count = 0
             for class_nm in map(str, range(1, 21)):  # 1~20반
-                # 체크포인트 확인 (생략 가능)
                 params = {
-                    "KEY": NEIS_API_KEY,
+                    "KEY":  NEIS_API_KEY,
                     "Type": "json",
                     "pIndex": 1,
-                    "pSize": 1000,
+                    "pSize":  1000,
                     "ATPT_OFCDC_SC_CODE": school_info['atpt_code'],
                     "SD_SCHUL_CODE": school_code,
-                    "AY": str(ay),
-                    "GRADE": str(grade),
+                    "AY":       str(ay),
+                    "GRADE":    str(grade),
                     "CLASS_NM": class_nm,
-                    "SEM": str(semester)
+                    "SEM":      str(semester)
                 }
                 try:
                     res = safe_json_request(self.session, NEIS_URL, params, self.logger)
                     if not res or "classTimeTable" not in res:
-                        break
+                        empty_count += 1
+                        if empty_count >= 3:
+                            break
+                        continue
+
                     rows = res["classTimeTable"][1].get("row", [])
                     if not rows:
-                        break
-                    
+                        empty_count += 1
+                        if empty_count >= 3:
+                            break
+                        continue
+
+                    # 데이터 있으면 empty_count 리셋
+                    empty_count = 0
                     batch = []
                     for r in rows:
-                        item = self._process_item(r)
-                        if item:
-                            batch.append(item)
-                    
+                        batch.extend(self._process_item(r))
+
                     if batch:
                         self.enqueue(batch)
-                    self.logger.info(f"{school_code} {grade}학년 {class_nm}반 → {len(rows)}건")
+                    self.logger.info(
+                        f"{school_code} {grade}학년 {class_nm}반 → {len(rows)}건"
+                    )
                 except Exception as e:
-                    self.logger.error(f"{school_code} {grade}학년 {class_nm}반 실패: {e}")
+                    self.logger.error(
+                        f"{school_code} {grade}학년 {class_nm}반 실패: {e}"
+                    )
                 time.sleep(0.1)
-    
+
     def close(self):
         if self.full:
             self.create_dated_backup()
@@ -200,8 +207,8 @@ class TimetableCollector(BaseCollector):
 def main():
     parser = argparse.ArgumentParser(description="시간표 수집기")
     parser.add_argument("--ay", type=int, default=get_current_school_year(), help="학년도")
-    parser.add_argument("--semester", type=int, default=1, choices=[1,2])
-    parser.add_argument("--regions", help="B10,C10,... 또는 ALL (미지정시 master DB의 모든 학교)")
+    parser.add_argument("--semester", type=int, default=1, choices=[1, 2])
+    parser.add_argument("--regions", help="B10,C10,... 또는 ALL (미지정시 모든 학교)")
     parser.add_argument("--shard", default="none", choices=["none", "odd", "even"])
     parser.add_argument("--incremental", action="store_true")
     parser.add_argument("--full", action="store_true")
@@ -219,21 +226,24 @@ def main():
 
     # 수집 대상 학교 결정
     if args.regions:
-        regions = ALL_REGIONS if args.regions.upper() == "ALL" else [r.strip() for r in args.regions.split(",")]
-        # 각 지역의 모든 학교 코드를 API로 조회? 간단히 학교 캐시에서 지역별 필터링
-        schools = []
-        for sc_code, info in collector.school_cache.items():
-            if info['atpt_code'] in regions:
-                schools.append(sc_code)
+        regions = (
+            set(ALL_REGIONS) if args.regions.upper() == "ALL"
+            else {r.strip() for r in args.regions.split(",")}
+        )
+        schools = [
+            sc_code for sc_code, info in collector.school_cache.items()
+            if info['atpt_code'] in regions
+        ]
     else:
         schools = list(collector.school_cache.keys())
-    
-    collector.logger.info(f"🚀 시간표 수집 시작: {len(schools)}개 학교")
+
+    collector.logger.info(f"🚀 시간표 수집 시작: {len(schools)}개 학교, {args.ay}학년도 {args.semester}학기")
+
     for sc_code in schools:
         if not should_include(args.shard, sc_code):
             continue
         collector.fetch_school_timetable(sc_code, args.ay, args.semester)
-    
+
     collector.close()
     collector.logger.info("🏁 수집 완료")
 
