@@ -159,22 +159,32 @@ class MetaVocabManager:
         Examples:
             "212" → {"type": "single", "value": 212}
             "295-658" → {"type": "range", "start": 295, "end": 658}
+            "일광로" → {"type": "none", "value": 0}  # ✅ 숫자가 아닌 경우 처리
         """
         if not number_str:
-            return {"type": "none", "value": 0}
+            return {"type": "none", "value": 0
+            }
         
         if '-' in number_str:
-            start, end = number_str.split('-')
-            return {
-                "type": "range",
-                "start": int(start),
-                "end": int(end)
-            }
+            try:
+                start, end = number_str.split('-')
+                return {
+                    "type": "range",
+                    "start": int(start),
+                    "end": int(end)
+                }
+            except ValueError:
+                return {"type": "none", "value": 0
+                }
         else:
-            return {
-                "type": "single",
-                "value": int(number_str)
-            }
+            try:
+                return {
+                    "type": "single",
+                    "value": int(number_str)
+                }
+            except ValueError:
+                return {"type": "none", "value": 0
+                }
     
     def save_address(self, full_address: str) -> dict:
         """
