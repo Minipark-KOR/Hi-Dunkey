@@ -427,7 +427,20 @@
     <div id="toast"></div>
 
     <script>
-        const API_BASE = 'http://158.179.168.109:8000/api';
+        // 1. 현재 접속한 주소를 확인해서 로컬인지 배포 환경인지 판단
+        const host = window.location.hostname;
+        const isLocal = host === 'localhost' || host === '127.0.0.1' || host === '[::1]';
+
+        // 2. 환경에 따라 API 주소를 자동으로 선택
+        // 로컬(맥북)일 때는 직접 IP로, 배포(Vercel)일 때는 리라이트(/api) 경로 사용
+        const API_BASE = isLocal 
+            ? 'http://158.179.168.109:8000/api' 
+            : '/api';
+
+        // 확인을 위해 콘솔에 로그 출력 (개발자 도구 F12에서 확인 가능)
+        console.log(`현재 모드: ${isLocal ? '로컬 테스트' : 'Vercel 배포'}`);
+        console.log(`사용 중인 API 주소: ${API_BASE}`);
+
         let selectedSchool = null;
         let selectedSchoolName = '';
         let searchTimeout = null;
