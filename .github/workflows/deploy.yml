@@ -1,0 +1,45 @@
+name: Deploy to Oracle Cloud
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:  # 수동 실행 가능
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to Oracle Server
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.ORACLE_HOST }}
+          username: ${{ secrets.ORACLE_USER }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
+          script: |
+            # 서버 업데이트
+            sudo apt update
+            sudo apt install -y python3-pip python3-venv nginx
+
+            # 프로젝트 클론/업데이트
+            if [ ! -d "/home/ubuntu/Hi-Dunkey" ]; then
+              git clone https://github.com/Minipark-KOR/Hi-Dunkey.git /home/ubuntu/Hi-Dunkey
+            else
+              cd /home/ubuntu/Hi-Dunkey
+              git pull origin main
+            fi
+
+            # 가상환경 설정
+            cd /home/ubuntu/Hi-Dunkey
+            python3 -m venv venv
+            source venv/bin/activate
+            pip install -r requirements.txt
+
+            # 환경변수 설정
+            echo "NEIS_API_KEY=${{ secrets.NEIS_API_KEY }}" >> .env
+
+            # 서비스 재시작
+            sudo systemctl restart hi-dunkey || true
+            
