@@ -27,7 +27,7 @@ def main():
 
     domains = [
         ("collectors/meal.py", ["--regions", "ALL", "--date", today]),
-        ("collectors/schedule.py", ["--regions", "ALL", "--date", today]),
+        ("collectors/schedule.py", ["--regions", "ALL", "--year", str(now_kst().year)]),
         ("collectors/timetable.py", ["--ay", str(year), "--semester", "2"]),
         ("collectors/school_master.py", ["--regions", "ALL"]),
     ]
