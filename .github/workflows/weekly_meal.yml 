@@ -1,0 +1,238 @@
+name: Weekly Meal Collection
+on:
+  schedule:
+    - cron: '20 21 * * 1'  # 월요일 6:20 KST
+  workflow_dispatch:
+    inputs:
+      month:
+        description: '수집할 월 (YYYYMM)'
+        required: false
+        default: ''
+
+jobs:
+  # 0단계: 이전 vocab DB 다운로드
+  prepare-vocab:
+    runs-on: ubuntu-latest
+    outputs:
+      vocab_exists: ${{ steps.check-vocab.outputs.exists }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Check if vocab exists
+        id: check-vocab
+        run: |
+          mkdir -p data/active/
+          if gh release view latest-vocab --repo ${{ github.repository }} > /dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            gh release download latest-vocab --pattern "global_vocab.db" --dir data/active/
+            echo "✅ 기존 vocab DB 다운로드 완료"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "🆕 새로운 vocab DB 생성 예정"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Upload vocab for matrix jobs
+        uses: actions/upload-artifact@v3
+        with:
+          name: global-vocab
+          path: data/active/global_vocab.db
+          if-no-files-found: ignore
+
+  collect:
+    needs: prepare-vocab
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 경기 (J10) - 4개 봇
+          - name: "Gyeonggi-odd-A"
+            region: "J10"
+            shard: "odd"
+            range: "A"
+          - name: "Gyeonggi-odd-B"
+            region: "J10"
+            shard: "odd"
+            range: "B"
+          - name: "Gyeonggi-even-A"
+            region: "J10"
+            shard: "even"
+            range: "A"
+          - name: "Gyeonggi-even-B"
+            region: "J10"
+            shard: "even"
+            range: "B"
+          
+          # 서울 (B10) - 2개 봇
+          - name: "Seoul-odd"
+            region: "B10"
+            shard: "odd"
+            range: "none"
+          - name: "Seoul-even"
+            region: "B10"
+            shard: "even"
+            range: "none"
+          
+          # 부산 (C10) - 2개 봇
+          - name: "Busan-odd"
+            region: "C10"
+            shard: "odd"
+            range: "none"
+          - name: "Busan-even"
+            region: "C10"
+            shard: "even"
+            range: "none"
+          
+          # 대구 (D10) - 2개 봇
+          - name: "Daegu-odd"
+            region: "D10"
+            shard: "odd"
+            range: "none"
+          - name: "Daegu-even"
+            region: "D10"
+            shard: "even"
+            range: "none"
+          
+          # 인천 (E10) - 2개 봇
+          - name: "Incheon-odd"
+            region: "E10"
+            shard: "odd"
+            range: "none"
+          - name: "Incheon-even"
+            region: "E10"
+            shard: "even"
+            range: "none"
+          
+          # 광주 (F10) - 1개 봇
+          - name: "Gwangju"
+            region: "F10"
+            shard: "none"
+            range: "none"
+          
+          # 대전 (G10) - 1개 봇
+          - name: "Daejeon"
+            region: "G10"
+            shard: "none"
+            range: "none"
+          
+          # 울산 (H10) - 1개 봇
+          - name: "Ulsan"
+            region: "H10"
+            shard: "none"
+            range: "none"
+          
+          # 세종 (I10) - 1개 봇
+          - name: "Sejong"
+            region: "I10"
+            shard: "none"
+            range: "none"
+          
+          # 강원 (K10) - 1개 봇
+          - name: "Gangwon"
+            region: "K10"
+            shard: "none"
+            range: "none"
+          
+          # 제주 (T10) - 1개 봇
+          - name: "Jeju"
+            region: "T10"
+            shard: "none"
+            range: "none"
+
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download shared vocab
+        uses: actions/download-artifact@v3
+        with:
+          name: global-vocab
+          path: data/active/
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Install dependencies
+        run: |
+          pip install requests
+      
+      - name: Create data directories
+        run: |
+          mkdir -p data/active/meal
+          mkdir -p data/active/backups
+      
+      - name: Run Meal Collector (${{ matrix.name }})
+        env:
+          NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
+        run: |
+          # 월 계산
+          if [ -n "${{ github.event.inputs.month }}" ]; then
+            MONTH="${{ github.event.inputs.month }}"
+          else
+            MONTH=$(date -d "9 hours ago" '+%Y%m')  # KST 기준
+          fi
+          
+          # 명령어 구성
+          CMD="python collectors/meal_collector.py \
+            --regions ${{ matrix.region }} \
+            --shard ${{ matrix.shard }} \
+            --month ${MONTH}"
+          
+          # range가 'none'이 아니면 추가
+          if [ "${{ matrix.range }}" != "none" ] && [ -n "${{ matrix.range }}" ]; then
+            CMD="${CMD} --school_range ${{ matrix.range }}"
+          fi
+          
+          echo "실행: ${CMD}"
+          eval ${CMD}
+      
+      - name: Upload shard DB
+        uses: actions/upload-artifact@v3
+        with:
+          name: shard-${{ matrix.name }}
+          path: data/active/meal/meal_*.db
+      
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.name }}-logs
+          path: data/active/meal/*.log
+          retention-days: 7
+
+  merge:
+    needs: [prepare-vocab, collect]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: artifacts
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Merge databases with vocab consolidation
+        run: |
+          # 모든 샤드 DB를 artifacts에서 data/active/meal로 복사
+          mkdir -p data/active/meal
+          find artifacts -name "*.db" -exec cp {} data/active/meal/ \;
+          
+          # 병합 실행 (vocab 통합 포함)
+          python scripts/merge_meal_dbs.py --consolidate-vocab
+      
+      - name: Upload merged DB
+        uses: actions/upload-artifact@v3
+        with:
+          name: meal-total-db
+          path: data/active/meal/meal_total.db
+          retention-days
+          

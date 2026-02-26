@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """
-급식 정보 수집기 (meal)
-- 매일 (--date):          오늘 + 내일 수집
-- 매주 월요일 (--month):   이번 달 + 다음 달 diff 증분
-- 말일 -3일 (--endmonth):  이번 달 + 다음 달 마지막 diff
+급식 정보 수집기 (meal) - 15개 봇 공통 운영 버전
+- BaseCollector의 _include_school()로 샤드 + 범위 필터링 (2번 베이스 방식)
 """
 import os
 import argparse
 import sqlite3
 import time
 from datetime import datetime, date, timedelta
-from typing import List, Dict, Set, Tuple
+from typing import List, Dict, Set, Tuple, Optional
 
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -18,7 +16,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.base_collector import BaseCollector
 from core.database import get_db_connection
 from core.network import safe_json_request
-from core.shard import should_include
 from parsers.meal_parser import parse_meal_html, normalize_allergy_info
 from constants.codes import NEIS_API_KEY, NEIS_ENDPOINTS, ALL_REGIONS
 from core.kst_time import now_kst
@@ -35,8 +32,9 @@ NEIS_URL = NEIS_ENDPOINTS['meal']
 def _month_last_day(year: int, month: int) -> date:
     """해당 월의 말일 date 반환"""
     next_month = month % 12 + 1
-    next_year  = year + (1 if month == 12 else 0)
+    next_year = year + (1 if month == 12 else 0)
     return date(next_year, next_month, 1) - timedelta(days=1)
+
 
 def _next_month(year: int, month: int) -> Tuple[int, int]:
     """다음 달 (year, month) 반환"""
@@ -46,14 +44,22 @@ def _next_month(year: int, month: int) -> Tuple[int, int]:
 
 
 class MealCollector(BaseCollector):
-    def __init__(self, shard="none", incremental=False, full=False):
-        super().__init__("meal", BASE_DIR, shard)
+    def __init__(self, shard: str = "none", school_range: Optional[str] = None,
+                 incremental: bool = False, full: bool = False):
+        """급식 수집기 초기화"""
+        super().__init__("meal", BASE_DIR, shard, school_range)
         self.incremental = incremental
         self.full = full
         self.run_date = now_kst().strftime("%Y%m%d")
 
+        # 어휘 사전 캐시
+        self.vocab_cache = {}
+        self._load_vocab_cache()
+
     def _init_db(self):
+        """DB 테이블 초기화"""
         with get_db_connection(self.db_path) as conn:
+            # 어휘 사전 테이블
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS vocab_meal (
                     menu_id INTEGER PRIMARY KEY,
@@ -61,6 +67,8 @@ class MealCollector(BaseCollector):
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+
+            # 급식 메인 테이블
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS meal (
                     school_id    INTEGER NOT NULL,
@@ -77,16 +85,34 @@ class MealCollector(BaseCollector):
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_meal_date ON meal(meal_date)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_meal_menu ON meal(menu_id)")
+
+            # 공통 체크포인트 테이블
             self._init_db_common(conn)
+
+    def _load_vocab_cache(self):
+        """어휘 사전 캐시 로드"""
+        try:
+            with get_db_connection(self.db_path) as conn:
+                cur = conn.execute("SELECT menu_id, menu_name FROM vocab_meal")
+                for menu_id, menu_name in cur:
+                    self.vocab_cache[menu_id] = menu_name
+        except Exception as e:
+            self.logger.error(f"어휘 사전 캐시 로드 실패: {e}")
 
     def _get_target_key(self) -> str:
         return self.run_date
 
     def _process_item(self, raw_item: dict) -> List[dict]:
-        sc_code = raw_item.get('SD_SCHUL_CODE')
-        if not sc_code:
+        """API 응답 아이템 처리"""
+        school_code = raw_item.get('SD_SCHUL_CODE')
+        if not school_code:
             return []
-        school_info = self.get_school_info(sc_code)
+
+        # ✅ 2번 베이스 방식: 단 1줄로 샤드 + 범위 필터링 완료
+        if not self._include_school(school_code):
+            return []
+
+        school_info = self.get_school_info(school_code)
         if not school_info:
             return []
         school_id = school_info['school_id']
@@ -105,34 +131,44 @@ class MealCollector(BaseCollector):
             "school_id": school_id,
             "meal_date": int(meal_date),
             "meal_type": int(meal_type),
-            "cal_info":  raw_item.get('CAL_INFO', ''),
-            "ntr_info":  raw_item.get('NTR_INFO', ''),
-            "load_dt":   raw_item.get('LOAD_DTM') or now_kst().isoformat(),
-            "vocab":     parsed["vocab"]
+            "cal_info": raw_item.get('CAL_INFO', ''),
+            "ntr_info": raw_item.get('NTR_INFO', ''),
+            "load_dt": raw_item.get('LOAD_DTM') or now_kst().isoformat(),
+            "vocab": parsed["vocab"]
         }
+
         for item in parsed["items"]:
             d = base.copy()
-            d["menu_id"]      = item["menu_id"]
+            d["menu_id"] = item["menu_id"]
             d["allergy_info"] = normalize_allergy_info(item["allergies"])
             results.append(d)
+
         return results
 
     def _save_batch(self, batch: List[dict]):
+        """배치 데이터 저장"""
         with get_db_connection(self.db_path) as conn:
+            # 어휘 사전 저장
             vocab_set = set()
             for item in batch:
                 for mid, name in item.get('vocab', {}).items():
                     vocab_set.add((mid, name))
+
             if vocab_set:
                 conn.executemany(
                     "INSERT OR IGNORE INTO vocab_meal (menu_id, menu_name) VALUES (?, ?)",
                     list(vocab_set)
                 )
+                # 캐시 업데이트
+                for mid, name in vocab_set:
+                    self.vocab_cache[mid] = name
+
+            # 급식 데이터 저장
             meal_data = [
                 (
                     item['school_id'], item['meal_date'], item['meal_type'],
-                    item['menu_id'],   item['allergy_info'],
-                    item['cal_info'],  item['ntr_info'], item['load_dt']
+                    item['menu_id'], item['allergy_info'],
+                    item['cal_info'], item['ntr_info'], item['load_dt']
                 )
                 for item in batch
             ]
@@ -163,7 +199,7 @@ class MealCollector(BaseCollector):
         for y, mo in [(year, m), _next_month(year, m)]:
             month_str = f"{y}{mo:02d}"
             date_from = f"{month_str}01"
-            date_to   = _month_last_day(y, mo).strftime("%Y%m%d")
+            date_to = _month_last_day(y, mo).strftime("%Y%m%d")
 
             existing = self._load_existing_month(region, date_from, date_to)
             self.logger.info(f"[{region}][{label}] {month_str} 기존 DB: {len(existing)}건")
@@ -175,7 +211,7 @@ class MealCollector(BaseCollector):
                 return (d['allergy_info'], d['cal_info'], d['ntr_info'])
 
             existing_keys = set(existing.keys())
-            fetched_keys  = set(fetched.keys())
+            fetched_keys = set(fetched.keys())
 
             to_insert = fetched_keys - existing_keys
             to_delete = existing_keys - fetched_keys
@@ -193,7 +229,7 @@ class MealCollector(BaseCollector):
             if to_insert or to_update:
                 self._save_batch([fetched[k] for k in to_insert | to_update])
 
-            # 🛡️ 삭제 안전장치: API 응답이 기존 DB의 30% 미만이면 삭제 중단
+            # 🛡️ 삭제 안전장치
             if to_delete:
                 if len(fetched) < len(existing) * 0.3 and len(existing) > 50:
                     self.logger.warning(
@@ -216,7 +252,7 @@ class MealCollector(BaseCollector):
         self._collect_two_months_diff(region, year, m, label="말일마감")
 
     # --------------------------------------------------------
-    # 공통 날짜 범위 수집 (enqueue)
+    # 공통 날짜 범위 수집
     # --------------------------------------------------------
     def _fetch_date_range(self, region: str, date_from: str, date_to: str, max_page: int = 200):
         """날짜 범위 수집 → enqueue"""
@@ -226,35 +262,37 @@ class MealCollector(BaseCollector):
 
         while p_idx <= max_page:
             params = {
-                "KEY":  NEIS_API_KEY,
+                "KEY": NEIS_API_KEY,
                 "Type": "json",
                 "pIndex": p_idx,
-                "pSize":  1000,
+                "pSize": 1000,
                 "ATPT_OFCDC_SC_CODE": region,
             }
             if single:
                 params["MLSV_YMD"] = date_from
             else:
                 params["MLSV_FROM_YMD"] = date_from
-                params["MLSV_TO_YMD"]   = date_to
+                params["MLSV_TO_YMD"] = date_to
 
             try:
                 res = safe_json_request(self.session, NEIS_URL, params, self.logger)
                 if not res or "mealServiceDietInfo" not in res:
                     break
+
                 rows = res["mealServiceDietInfo"][1].get("row", [])
                 if not rows:
                     break
 
                 batch = []
                 for r in rows:
-                    sc_code = r.get('SD_SCHUL_CODE')
-                    if not sc_code or not should_include(self.shard, sc_code):
-                        continue
-                    batch.extend(self._process_item(r))
+                    # ✅ 여기서도 _process_item()이 내부에서 _include_school() 호출
+                    parsed_items = self._process_item(r)
+                    if parsed_items:
+                        batch.extend(parsed_items)
 
                 if batch:
                     self.enqueue(batch)
+
                 self.logger.info(
                     f"[{region}] {date_from}~{date_to} p={p_idx} → {len(rows)}건, 메뉴 {len(batch)}개"
                 )
@@ -264,6 +302,7 @@ class MealCollector(BaseCollector):
                     break
                 p_idx += 1
                 time.sleep(0.05)
+
             except Exception as e:
                 consecutive_errors += 1
                 self.logger.error(f"[{region}] p={p_idx} 에러: {e}")
@@ -273,10 +312,10 @@ class MealCollector(BaseCollector):
                 time.sleep(2 ** min(consecutive_errors, 5))
 
     # --------------------------------------------------------
-    # 증분용 DB 로드 (900개 청크)
+    # 증분용 DB 로드
     # --------------------------------------------------------
     def _load_existing_month(self, region: str, date_from: str, date_to: str) -> Dict:
-        """DB에서 해당 월 해당 지역 데이터 로드 (SQLite 999 파라미터 제한 대응)"""
+        """DB에서 해당 월 데이터 로드"""
         result = {}
         try:
             atpt_school_ids = [
@@ -288,72 +327,80 @@ class MealCollector(BaseCollector):
                 return result
 
             with get_db_connection(self.db_path) as conn:
+                # 900개씩 청크로 나눠서 처리 (SQLite 파라미터 제한)
                 chunk_size = 900
                 for i in range(0, len(atpt_school_ids), chunk_size):
                     chunk = atpt_school_ids[i:i + chunk_size]
                     placeholders = ",".join("?" * len(chunk))
-                    cur = conn.execute(f"""
+
+                    query = f"""
                         SELECT school_id, meal_date, meal_type, menu_id,
                                allergy_info, cal_info, ntr_info
                         FROM meal
                         WHERE meal_date BETWEEN ? AND ?
                           AND school_id IN ({placeholders})
-                    """, (int(date_from), int(date_to), *chunk))
+                    """
+                    params = (int(date_from), int(date_to), *chunk)
 
+                    cur = conn.execute(query, params)
                     for row in cur:
                         key = (row[0], row[1], row[2], row[3])
                         result[key] = {
-                            "school_id":    row[0],
-                            "meal_date":    row[1],
-                            "meal_type":    row[2],
-                            "menu_id":      row[3],
+                            "school_id": row[0],
+                            "meal_date": row[1],
+                            "meal_type": row[2],
+                            "menu_id": row[3],
                             "allergy_info": row[4],
-                            "cal_info":     row[5],
-                            "ntr_info":     row[6],
-                            "load_dt":      now_kst().isoformat(),
-                            "vocab":        {}
+                            "cal_info": row[5],
+                            "ntr_info": row[6],
+                            "load_dt": now_kst().isoformat(),
+                            "vocab": {}
                         }
         except Exception as e:
             self.logger.error(f"기존 데이터 로드 실패: {e}")
+
         return result
 
     def _fetch_all_month(self, region: str, date_from: str, date_to: str) -> Dict:
-        """API에서 한 달치 전체 수집 → dict (큐 사용 안 함, diff용)"""
+        """API에서 한 달치 전체 수집 (diff용)"""
         result = {}
         p_idx = 1
         consecutive_errors = 0
+
         while p_idx <= 200:
             params = {
-                "KEY":  NEIS_API_KEY,
+                "KEY": NEIS_API_KEY,
                 "Type": "json",
                 "pIndex": p_idx,
-                "pSize":  1000,
+                "pSize": 1000,
                 "ATPT_OFCDC_SC_CODE": region,
                 "MLSV_FROM_YMD": date_from,
-                "MLSV_TO_YMD":   date_to,
+                "MLSV_TO_YMD": date_to,
             }
+
             try:
                 res = safe_json_request(self.session, NEIS_URL, params, self.logger)
                 if not res or "mealServiceDietInfo" not in res:
                     break
+
                 rows = res["mealServiceDietInfo"][1].get("row", [])
                 if not rows:
                     break
 
                 for r in rows:
-                    sc_code = r.get('SD_SCHUL_CODE')
-                    if not sc_code or not should_include(self.shard, sc_code):
-                        continue
+                    # ✅ 여기서도 _process_item()이 내부에서 _include_school() 호출
                     for item in self._process_item(r):
                         key = (item['school_id'], item['meal_date'],
-                               item['meal_type'],  item['menu_id'])
+                               item['meal_type'], item['menu_id'])
                         result[key] = item
 
                 consecutive_errors = 0
+
                 if len(rows) < 1000:
                     break
                 p_idx += 1
                 time.sleep(0.05)
+
             except Exception as e:
                 consecutive_errors += 1
                 self.logger.error(f"[{region}] p={p_idx} 에러: {e}")
@@ -361,6 +408,7 @@ class MealCollector(BaseCollector):
                     break
                 p_idx += 1
                 time.sleep(2 ** min(consecutive_errors, 5))
+
         return result
 
     def _delete_batch(self, keys: Set[Tuple]):
@@ -376,21 +424,36 @@ class MealCollector(BaseCollector):
             self.logger.error(f"삭제 실패: {e}")
 
     def close(self):
+        """정리 작업"""
         if self.full:
             self.create_dated_backup()
         super().close()
 
 
+# --------------------------------------------------------
+# MAIN - 15개 봇 공통 인터페이스
+# --------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser(description="급식 수집기")
-    parser.add_argument("--regions", required=True, help="B10,C10,... 또는 ALL")
-    parser.add_argument("--shard", default="none", choices=["none", "odd", "even"])
-    parser.add_argument("--incremental", action="store_true")
-    parser.add_argument("--full", action="store_true")
+    parser = argparse.ArgumentParser(description="급식 15개 봇 공통 수집기")
 
+    # 공통 필수 옵션
+    parser.add_argument("--regions", required=True,
+                        help="교육청 코드 (콤마 구분, 예: B10,C10 또는 ALL)")
+    parser.add_argument("--shard", choices=["odd", "even", "none"], default="none",
+                        help="샤드 필터 (odd=홀수, even=짝수, none=전체)")
+
+    # school_range는 완전 선택사항 (None 기본값)
+    parser.add_argument("--school_range", choices=["A", "B"], default=None,
+                        help="범위 필터 (A=1-4, B=5-9) - 생략하면 미사용")
+
+    # 수집 모드
+    parser.add_argument("--incremental", action="store_true", help="증분 수집 모드")
+    parser.add_argument("--full", action="store_true", help="전체 수집 후 백업 생성")
+
+    # 날짜 모드 (상호 배타적)
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--date",     help="하루 수집 YYYYMMDD (매일)")
-    group.add_argument("--month",    help="월간 증분 수집 YYYYMM (매주 월요일)")
+    group.add_argument("--date", help="하루 수집 YYYYMMDD (매일)")
+    group.add_argument("--month", help="월간 증분 수집 YYYYMM (매주 월요일)")
     group.add_argument("--endmonth", help="말일 마지막 수집 YYYYMM (말일 -3일)")
 
     args = parser.parse_args()
@@ -399,27 +462,38 @@ def main():
         print("❌ NEIS_API_KEY 환경변수가 없습니다.")
         return
 
-    regions = ALL_REGIONS if args.regions.upper() == "ALL" else \
-              [r.strip() for r in args.regions.split(",")]
-
+    # school_range=None 그대로 전달 → 범위 필터 미사용
+    # school_range="A" 또는 "B" 전달 → 범위 필터 적용
     collector = MealCollector(
         shard=args.shard,
+        school_range=args.school_range,  # None이면 범위 필터 스킵
         incremental=args.incremental,
         full=args.full
     )
 
-    for region in regions:
-        collector.logger.info(f"🚀 {region} 수집 시작")
-        if args.month:
-            collector.fetch_monthly_incremental(region, args.month)
-        elif args.endmonth:
-            collector.fetch_end_of_month(region, args.endmonth)
-        else:
-            collector.fetch_daily(region, args.date)
+    # regions 처리
+    if args.regions.upper() == "ALL":
+        regions = ALL_REGIONS
+    else:
+        regions = [r.strip() for r in args.regions.split(",")]
 
-    collector.close()
-    collector.logger.info("🏁 수집 완료")
+    try:
+        for region in regions:
+            range_info = f", range={args.school_range}" if args.school_range else ""
+            collector.logger.info(f"🚀 {region} 수집 시작 (shard={args.shard}{range_info})")
+
+            if args.month:
+                collector.fetch_monthly_incremental(region, args.month)
+            elif args.endmonth:
+                collector.fetch_end_of_month(region, args.endmonth)
+            elif args.date:
+                collector.fetch_daily(region, args.date)
+
+    finally:
+        collector.close()
+        collector.logger.info("🏁 수집 완료")
 
 
 if __name__ == "__main__":
     main()
+    

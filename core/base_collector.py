@@ -16,22 +16,24 @@ from .database import get_db_connection, init_checkpoint_table
 from .logger import build_logger
 from .network import build_session
 from .school_id import create_school_id
-from .shard import should_include
+from .shard import should_include_school  # ✅ 한 번만 임포트
 from .kst_time import now_kst
 
 class BaseCollector(ABC):
     """
     공통 수집기 베이스 클래스
-    - 샤딩 지원
+    - 샤딩 지원 (odd/even)
+    - 범위 필터링 지원 (A/B/none)
     - 학교정보 캐싱
     - 날짜 백업 생성 및 30일 초과 백업 자동 삭제
     - 쓰기 스레드 (queue 기반)
     """
     
-    def __init__(self, name: str, base_dir: str, shard: str = "none"):
+    def __init__(self, name: str, base_dir: str, shard: str = "none", school_range: str | None = None):
         self.name = name
         self.base_dir = base_dir
         self.shard = shard
+        self.school_range = school_range  # ✅ 범위 필터 추가
         
         # DB 경로 설정 (샤딩)
         if shard == "none":
@@ -64,7 +66,19 @@ class BaseCollector(ABC):
         self.completed_items = set()
         self._load_checkpoints()
         
-        self.logger.info(f"🔥 {name} 수집기 초기화 완료 (샤드: {shard}, 학교 캐시: {len(self.school_cache)}개)")
+        self.logger.info(f"🔥 {name} 수집기 초기화 완료 (샤드: {shard}, 범위: {school_range}, 학교 캐시: {len(self.school_cache)}개)")
+    
+    # --------------------------------------------------------
+    # 학교 필터링 공통 메서드
+    # --------------------------------------------------------
+    def _include_school(self, school_code: str) -> bool:
+        """
+        공통 학교 필터 (모든 수집기에서 호출)
+        - 샤드 조건과 범위 조건을 동시에 검사
+        """
+        if not school_code:
+            return False
+        return should_include_school(self.shard, self.school_range, school_code)  # ✅ 바로 사용
     
     # --------------------------------------------------------
     # 학교정보 캐시
@@ -268,7 +282,7 @@ class BaseCollector(ABC):
             self.logger.info(f"📅 날짜 백업 생성: {backup_path}")
 
         base = self.db_path.replace('.db', '')
-        from core.kst_time import KST
+        from .kst_time import KST
         for f in glob.glob(f"{base}_*.db"):
             try:
                 fdate_str = f.split('_')[-1].replace('.db', '')
