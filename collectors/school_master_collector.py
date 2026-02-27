@@ -153,13 +153,11 @@ class SchoolMasterCollector(BaseCollector):
             """, school_data)
     
     def fetch_region(self, region_code: str):
-        """교육청별 학교 수집"""
         p_idx = 1
         consecutive_errors = 0
         max_page = 50
-        
-        self.logger.info(f"📡 {region_code} 수집 시작")
-        
+        max_retries_per_page = 5  # 페이지당 최대 재시도 횟수
+
         while p_idx <= max_page:
             params = {
                 "KEY": NEIS_API_KEY,
@@ -168,40 +166,38 @@ class SchoolMasterCollector(BaseCollector):
                 "pSize": 1000,
                 "ATPT_OFCDC_SC_CODE": region_code
             }
-            
-            try:
-                res = safe_json_request(self.session, NEIS_URL, params, self.logger)
-                if not res or "schoolInfo" not in res:
-                    break
-                
-                rows = res["schoolInfo"][1].get("row", [])
-                if not rows:
-                    break
-                
-                batch = []
-                for r in rows:
-                    items = self._process_item(r)
-                    if items:
-                        batch.extend(items)
-                
-                if batch:
-                    self.enqueue(batch)
-                
-                self.logger.info(f"[{region_code}] p={p_idx} → {len(rows)}건")
-                consecutive_errors = 0
-                
-                if len(rows) < 1000:
-                    break
-                p_idx += 1
-                time.sleep(0.1)
-                
-            except Exception as e:
-                consecutive_errors += 1
-                self.logger.error(f"[{region_code}] p={p_idx} 에러: {e}")
-                if consecutive_errors >= 5:
-                    break
-                p_idx += 1
-                time.sleep(2 ** min(consecutive_errors, 5))
+            retry_count = 0
+            success = False
+            while retry_count < max_retries_per_page and not success:
+                try:
+                    res = safe_json_request(self.session, NEIS_URL, params, self.logger)
+                    if not res or "schoolInfo" not in res:
+                        break
+                    rows = res["schoolInfo"][1].get("row", [])
+                    if not rows:
+                        success = True
+                        break
+                    batch = []
+                    for r in rows:
+                        items = self._process_item(r)
+                        if items:
+                            batch.extend(items)
+                    if batch:
+                        self.enqueue(batch)
+                    self.logger.info(f"[{region_code}] p={p_idx} → {len(rows)}건")
+                    success = True
+                    consecutive_errors = 0
+                    if len(rows) < 1000:
+                        return  # 정상 종료
+                    p_idx += 1
+                    time.sleep(0.1)
+                except Exception as e:
+                    retry_count += 1
+                    self.logger.error(f"[{region_code}] p={p_idx} 시도 {retry_count} 실패: {e}")
+                    if retry_count >= max_retries_per_page:
+                        self.logger.error(f"[{region_code}] p={p_idx} 최종 실패, 다음 지역으로 이동")
+                        return  # 이 지역 포기하고 다음 지역으로
+                    time.sleep(2 ** retry_count)  # 지수 백오프
     
     def close(self):
         """종료 처리"""
