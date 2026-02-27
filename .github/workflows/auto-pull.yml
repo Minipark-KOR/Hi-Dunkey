@@ -14,6 +14,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
           port: 22
+          host_key_check: false
           script: |
             cd /home/ubuntu/Hi-Dunkey
             git pull origin main
