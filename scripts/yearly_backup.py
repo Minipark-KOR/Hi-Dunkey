@@ -22,6 +22,16 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.kst_time import now_kst
 from core.backup import vacuum_into
 
+from dotenv import load_dotenv
+
+# 프로젝트 루트 경로를 찾아서 .env 파일을 로드합니다.
+# (scripts 폴더 안에 있으므로 부모 폴더로 이동)
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env")
+
+# 이제 환경 변수에서 키를 가져옵니다.
+NEIS_API_KEY = os.getenv("NEIS_API_KEY")
+
 # Collector들 import
 from collectors.school_master_collector import SchoolMasterCollector
 from collectors.meal_collector import MealCollector
@@ -694,4 +704,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
