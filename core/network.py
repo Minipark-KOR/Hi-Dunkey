@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-네트워크 요청 처리 - 지수 백오프 + Rate Limit 처리 + NEIS 에러 응답 처리
+네트워크 요청 처리 - 세션 생성 + 지수 백오프 + Rate Limit 처리
 """
 import time
 import random
@@ -14,6 +14,24 @@ from constants.codes import API_CONFIG
 class APILimitExceededException(Exception):
     """API 일일 한도 초과 예외"""
     pass
+
+
+def build_session() -> requests.Session:
+    """
+    HTTP 세션 생성 (재사용)
+    
+    Returns:
+        requests.Session 객체
+    """
+    session = requests.Session()
+    
+    # User-Agent 설정 (NEIS API 요구사항)
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (compatible; NEIS-Collector/2.0)',
+        'Accept': 'application/json'
+    })
+    
+    return session
 
 
 def safe_json_request(session, url: str, params: dict, logger, max_retries: int = 5) -> Optional[Dict[str, Any]]:
