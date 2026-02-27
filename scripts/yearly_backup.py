@@ -22,6 +22,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.kst_time import now_kst
 from core.backup import vacuum_into
 
+from pathlib import Path
 from dotenv import load_dotenv
 
 # 프로젝트 루트 경로를 찾아서 .env 파일을 로드합니다.
