@@ -10,10 +10,9 @@ jobs:
       - name: SSH and pull
         uses: appleboy/ssh-action@master
         with:
-          # 1. 시크릿 설정 이름 그대로 가져오기
-          host: ${{ secrets.SERVER_HOST }}     
-          username: ${{ secrets.SERVER_USER }} 
-          key: ${{ secrets.ORACLE_SSH_KEY }}   
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
           port: 22
           script: |
             cd /home/ubuntu/Hi-Dunkey
