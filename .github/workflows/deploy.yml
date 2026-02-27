@@ -15,8 +15,8 @@ jobs:
       - name: Deploy to Oracle Server
         uses: appleboy/ssh-action@master
         with:
-          host: ${{ secrets.ORACLE_HOST }}
-          username: ${{ secrets.ORACLE_USER }}
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
           script: |
             # 서버 업데이트

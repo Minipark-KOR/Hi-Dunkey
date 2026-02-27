@@ -234,5 +234,5 @@ jobs:
         with:
           name: meal-total-db
           path: data/active/meal/meal_total.db
-          retention-days
+          retention-days: 7
           

@@ -2,7 +2,6 @@ name: Auto Pull on Server
 on:
   push:
     branches: [ main ]
-
 jobs:
   pull:
     runs-on: ubuntu-latest
