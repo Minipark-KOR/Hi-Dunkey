@@ -1,58 +1,109 @@
 #!/usr/bin/env python3
 """
-네트워크 요청 공통 모듈 (재시도, 세션 관리)
+네트워크 요청 처리 - 지수 백오프 + Rate Limit 처리 + NEIS 에러 응답 처리
 """
+import time
+import random
 import requests
-import json
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from typing import Optional, Dict, Any
+import json
 
-# API 설정 (constants/codes.py 에서 import 가능)
-API_CONFIG = {
-    'timeout': 20,
-    'max_retries': 3,
-    'backoff': 1.0,
-    'retry_status': [429, 500, 502, 503, 504],
-}
+from constants.codes import API_CONFIG
 
-def build_session() -> requests.Session:
-    """재시도 기능이 내장된 세션 생성"""
-    session = requests.Session()
-    retry = Retry(
-        total=API_CONFIG['max_retries'],
-        backoff_factor=API_CONFIG['backoff'],
-        status_forcelist=API_CONFIG['retry_status'],
-        allowed_methods=['GET'],
-        raise_on_status=False
-    )
-    session.mount('https://', HTTPAdapter(max_retries=retry))
-    session.mount('http://', HTTPAdapter(max_retries=retry))
-    return session
 
-def safe_json_request(session: requests.Session, url: str, params: dict,
-                      logger=None) -> Optional[Dict[str, Any]]:
+class APILimitExceededException(Exception):
+    """API 일일 한도 초과 예외"""
+    pass
+
+
+def safe_json_request(session, url: str, params: dict, logger, max_retries: int = 5) -> Optional[Dict[str, Any]]:
     """
-    안전한 JSON 요청
-    - HTTP 에러 시 None 반환 (logger에 경고)
-    - JSON 디코딩 실패 시 None 반환
+    API 요청 + 재시도 + Rate Limit 처리 + NEIS 에러 응답 처리
     """
-    try:
-        resp = session.get(url, params=params, timeout=API_CONFIG['timeout'])
-        resp.raise_for_status()
-        # Content-Type 확인
-        content_type = resp.headers.get('Content-Type', '')
-        if 'application/json' not in content_type:
-            if logger:
-                logger.warning(f"Non-JSON response: {content_type}")
-            return None
-        return resp.json()
-    except json.JSONDecodeError as e:
-        if logger:
-            logger.error(f"JSON decode error: {e}")
-        return None
-    except requests.RequestException as e:
-        if logger:
-            logger.error(f"Request failed: {e}")
-        raise   # 재시도 데코레이터가 처리할 수 있도록 예외 다시 발생
+    for attempt in range(max_retries):
+        try:
+            start_time = time.time()
+            
+            resp = session.get(url, params=params, timeout=API_CONFIG.get('timeout', 10))
+            
+            # Rate Limit (429) 처리
+            if resp.status_code == 429:
+                retry_after = int(resp.headers.get('Retry-After', 60))
+                logger.warning(f"⏳ Rate limit 초과. {retry_after}초 대기 후 재시도")
+                time.sleep(retry_after)
+                continue
+            
+            # API 키 만료 (401)
+            if resp.status_code == 401:
+                logger.critical("❌ API 키 만료 또는 인증 오류! 관리자 확인 필요")
+                return None
+            
+            # 성공 (200)
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                except json.JSONDecodeError:
+                    logger.error(f"❌ JSON 파싱 실패: {resp.text[:100]}")
+                    continue
+                
+                # NEIS API 비즈니스 로직 에러 체크
+                if "RESULT" in data:
+                    code = data["RESULT"].get("CODE")
+                    msg = data["RESULT"].get("MESSAGE")
+                    
+                    # 데이터 없음 (정상)
+                    if code == "INFO-200":
+                        logger.debug(f"📭 데이터 없음: {msg}")
+                        return None
+                    
+                    # API 일일 한도 초과 - 즉시 전파
+                    if code == "ERROR-333":
+                        logger.critical(f"🚨 API 일일 한도 초과! 수집 중단 필요: {msg}")
+                        raise APILimitExceededException(f"API 일일 한도 초과: {msg}")
+                    
+                    # 인증/권한 오류 (재시도 무의미)
+                    if code == "INFO-300" or code.startswith("ERROR-"):
+                        logger.error(f"❌ NEIS API 오류 {code}: {msg}")
+                        return None
+                
+                elapsed = (time.time() - start_time) * 1000
+                logger.debug(f"✅ 응답 시간: {elapsed:.1f}ms")
+                return data
+            
+            # 서버 에러 (5xx)
+            if 500 <= resp.status_code < 600:
+                wait = (2 ** attempt) + random.uniform(0, 1)
+                logger.warning(f"⚠️ 서버 에러 {resp.status_code}. {wait:.1f}초 후 재시도")
+                time.sleep(wait)
+                continue
+            
+            # 기타 오류
+            logger.error(f"❌ HTTP 오류 {resp.status_code}: {resp.text[:200]}")
+            
+        except APILimitExceededException:
+            # 즉시 상위로 전파
+            raise
+            
+        except requests.exceptions.ConnectionError as e:
+            if "Name or service not known" in str(e):
+                logger.critical("🌐 DNS 조회 실패! 네트워크 연결 확인 필요")
+                return None
+            logger.error(f"🔌 연결 오류: {e}")
         
+        except requests.exceptions.Timeout:
+            logger.warning(f"⏱️ 타임아웃 (attempt {attempt+1}/{max_retries})")
+        
+        except requests.exceptions.RequestException as e:
+            logger.error(f"❌ 요청 예외: {e}")
+        
+        except Exception as e:
+            logger.error(f"💥 예상치 못한 오류: {e}")
+        
+        # 지수 백오프
+        if attempt < max_retries - 1:
+            wait = (2 ** attempt) + random.uniform(0, 1)
+            logger.info(f"🔄 {wait:.1f}초 후 재시도 (attempt {attempt+2}/{max_retries})")
+            time.sleep(wait)
+    
+    logger.error(f"❌ {max_retries}회 재시도 실패")
+    return None
