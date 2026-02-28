@@ -90,8 +90,12 @@ def safe_json_request(session, url: str, params: dict, logger, max_retries: int 
             
             # 서버 에러 (5xx)
             if 500 <= resp.status_code < 600:
+                # 🔍 서버가 보내주는 실제 에러 메시지(JSON 또는 HTML)를 로그에 찍습니다.
+                error_msg = resp.text.strip()
+                logger.error(f"❌ NEIS 서버 응답 에러({resp.status_code}): {error_msg}")
+                
                 wait = (2 ** attempt) + random.uniform(0, 1)
-                logger.warning(f"⚠️ 서버 에러 {resp.status_code}. {wait:.1f}초 후 재시도")
+                logger.warning(f"⚠️ {wait:.1f}초 후 재시도...")
                 time.sleep(wait)
                 continue
             
