@@ -276,25 +276,34 @@ class AnnualFullMealCollector(BaseCollector):
 
         original_menu = raw_item.get('DDISH_NM', '')
         parsed = parse_meal_html(original_menu)
-        if not parsed["items"]:
+        if not parsed.get("items"):
             return []
 
         results = []
         for item in parsed["items"]:
-            menu_id = self.menu_vocab.get_or_create(item["menu_name"])
+            # 🛡️ 방어 코드: item이 딕셔너리가 아니거나 menu_name이 없으면 건너뜀
+            if not isinstance(item, dict):
+                self.logger.warning(f"  예상치 못한 item 타입: {type(item)} - {item}")
+                continue
+            menu_name = item.get("menu_name")
+            if not menu_name:
+                self.logger.warning(f"  menu_name 없는 item: {item}")
+                continue
 
-            metas = self.meta_extractor.extract(item["menu_name"])
+            menu_id = self.menu_vocab.get_or_create(menu_name)
+
+            metas = self.meta_extractor.extract(menu_name)
             for meta_type, meta_value in metas:
                 meta_id = self.meta_vocab.get_or_create('meal', meta_type, meta_value)
                 self._save_meta(school_info['school_id'], int(meal_date),
-                               int(meal_type), menu_id, meta_id)
+                            int(meal_type), menu_id, meta_id)
 
             d = {
                 "school_id": school_info['school_id'],
                 "meal_date": int(meal_date),
                 "meal_type": int(meal_type),
                 "menu_id": menu_id,
-                "allergy_info": normalize_allergy_info(item["allergies"]),
+                "allergy_info": normalize_allergy_info(item.get("allergies", [])),
                 "original_menu": original_menu,
                 "cal_info": raw_item.get('CAL_INFO', ''),
                 "ntr_info": raw_item.get('NTR_INFO', ''),
@@ -303,7 +312,7 @@ class AnnualFullMealCollector(BaseCollector):
             results.append(d)
 
         return results
-
+        
     def _save_meta(self, school_id: int, meal_date: int, meal_type: int,
                    menu_id: int, meta_id: int):
         try:
