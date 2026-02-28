@@ -48,7 +48,7 @@ class SchoolMasterCollector(BaseCollector):
         
         # BaseCollector 초기화
         super().__init__("school", BASE_DIR, shard, school_range)
-        
+
         # ✅ 추가: 경로 강제 고정
         self.db_path = db_path
         print(f"DEBUG: 최종 확정 DB 경로 -> {self.db_path}")
@@ -171,7 +171,7 @@ class SchoolMasterCollector(BaseCollector):
                 "KEY": NEIS_API_KEY,
                 "Type": "json",
                 "pIndex": p_idx,
-                "pSize": 1000,
+                "pSize": 100,
                 "ATPT_OFCDC_SC_CODE": region_code
             }
             retry_count = 0
