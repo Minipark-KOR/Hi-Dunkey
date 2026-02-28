@@ -14,7 +14,6 @@ import time
 import glob
 import argparse
 import logging
-import json
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from pathlib import Path
@@ -34,12 +33,7 @@ except ImportError:
         return dt.year if dt.month >= 3 else dt.year - 1
 
 from core.kst_time import now_kst
-from core.metrics import (
-    build_summary_markdown,
-    save_summary,
-    collect_domain_metrics,
-    cleanup_old_metrics,
-)
+from core.metrics import generate_and_save_metrics, cleanup_old_metrics
 from constants.domains import DOMAIN_CONFIG, GLOBAL_DBS
 from dotenv import load_dotenv
 
@@ -52,7 +46,6 @@ from collectors.timetable_collector import TimetableCollector
 from collectors.schedule_collector import ScheduleCollector
 from constants.codes import ALL_REGIONS
 
-# collector class는 yearly_backup.py에서만 주입 (constants/domains.py 의존성 역전 방지)
 COLLECTOR_CLASSES = {
     "school":    SchoolMasterCollector,
     "meal":      MealCollector,
@@ -284,34 +277,18 @@ class YearlyBackup:
 
     def _save_metrics(self, year: int):
         backup_date = now_kst().strftime("%Y%m%d")
-
-        # 마크다운 생성 (순수 함수)
-        markdown = build_summary_markdown(
+        result = generate_and_save_metrics(
             backup_date=backup_date,
             base_dir=str(BASE_DIR),
+            metrics_dir=METRICS_DIR,
             domain_config=DOMAIN_CONFIG,
             global_dbs=GLOBAL_DBS,
             include_geo=True,
             include_global_tables=True,
+            print_to_stdout=True,
         )
-
-        # 파일 저장
-        summary_path = save_summary(markdown, METRICS_DIR, backup_date)
-        self.logger.info(f"📄 요약 저장: {summary_path}")
-
-        # JSON 메트릭 저장
-        metrics = {}
-        for name, cfg in DOMAIN_CONFIG.items():
-            db_path = os.path.join(BASE_DIR, cfg["db_path"])
-            metrics[name] = collect_domain_metrics(db_path, cfg["table"])
-
-        metrics_path = os.path.join(METRICS_DIR, f"metrics_{backup_date}.json")
-        with open(metrics_path, "w", encoding="utf-8") as f:
-            json.dump(metrics, f, indent=2, ensure_ascii=False)
-        self.logger.info(f"📊 메트릭 저장: {metrics_path}")
-
-        # Step Summary용 마크다운을 stdout으로도 출력 (워크플로우에서 캡처)
-        print(markdown)
+        self.logger.info(f"📄 요약 저장: {result['summary_path']}")
+        self.logger.info(f"📊 메트릭 저장: {result['metrics_path']}")
 
     # ──────────────────────────────────────────
     # Internal — collect & merge
@@ -460,7 +437,6 @@ class YearlyBackup:
                 else:
                     collector.fetch_region(**args)
             collector.close()
-
             module   = __import__(
                 f"scripts.{DOMAIN_CONFIG[name]['merge_script']}",
                 fromlist=["merge_databases"]
@@ -470,7 +446,6 @@ class YearlyBackup:
                 merge_fn(do_consolidate_vocab=True)
             else:
                 merge_fn()
-
             backup_date = now_kst().strftime("%Y%m%d")
             src = os.path.join(BASE_DIR, DOMAIN_CONFIG[name]["db_path"])
             dst = os.path.join(self.backup_dir, f"{backup_date}_{name}.db")
@@ -484,8 +459,7 @@ class YearlyBackup:
         name = issue["collector"]
         self.logger.info(f"  🔧 손상 파일 복구: {os.path.basename(dst)}")
         try:
-            corrupt_path = dst + ".corrupt"
-            os.rename(dst, corrupt_path)
+            os.rename(dst, dst + ".corrupt")
             src         = os.path.join(BASE_DIR, DOMAIN_CONFIG[name]["db_path"])
             backup_date = now_kst().strftime("%Y%m%d")
             new_dst     = os.path.join(self.backup_dir, f"{backup_date}_{name}.db")
@@ -564,4 +538,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-ᆫ

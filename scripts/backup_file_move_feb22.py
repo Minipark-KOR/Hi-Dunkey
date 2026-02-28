@@ -27,7 +27,7 @@ def move_old_backups(cutoff_years: int = 3):
         return
 
     cutoff = now_kst().date() - timedelta(days=365 * cutoff_years)
-    moved = 0
+    moved  = 0
 
     for fname in os.listdir(BACKUP_DIR):
         if not fname.endswith(".db"):

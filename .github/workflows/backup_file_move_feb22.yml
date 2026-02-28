@@ -2,7 +2,7 @@ name: Move Old Backups to Archive
 
 on:
   schedule:
-    - cron: "0 6 22 2 *"
+    - cron: "0 6 22 2 *"   # 2월 22일 06:00 UTC = 15:00 KST
   workflow_dispatch:
 
 jobs:

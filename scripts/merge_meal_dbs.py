@@ -11,7 +11,7 @@ import sys
 import sqlite3
 import glob
 import time
-import argparse
+import shutil
 from typing import List
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -23,13 +23,9 @@ GLOBAL_VOCAB_PATH = os.path.join(BASE_DIR, "data", "active", "global_vocab.db")
 
 def consolidate_vocab(shard_dbs: List[str]):
     """샤드 DB들의 어휘 정보를 전역 Vocab DB로 병합"""
-    if not os.path.exists(GLOBAL_VOCAB_PATH):
-        print(f"⚠️ Vocab DB 없음: {GLOBAL_VOCAB_PATH} (새로 생성)")
-
     conn_global = sqlite3.connect(GLOBAL_VOCAB_PATH)
     conn_global.execute("PRAGMA journal_mode=WAL")
 
-    # 테이블 스키마 보장 (global_vocab.db가 새로 생성되는 경우 대비)
     conn_global.execute("""
         CREATE TABLE IF NOT EXISTS vocab_meal (
             meal_id      INTEGER PRIMARY KEY,
@@ -62,7 +58,7 @@ def consolidate_vocab(shard_dbs: List[str]):
             for row in menus:
                 conn_global.execute(
                     "INSERT OR IGNORE INTO vocab_meal "
-                    "(meal_id, name_key, name, display_name) VALUES (?, ?, ?, ?)",
+                    "(meal_id, name_key, name, display_name) VALUES (?,?,?,?)",
                     row
                 )
             total_menus += len(menus)
@@ -75,14 +71,14 @@ def consolidate_vocab(shard_dbs: List[str]):
                 conn_global.execute(
                     "INSERT OR IGNORE INTO meta_vocab "
                     "(meta_id, domain, meta_type, meta_key, meta_value, display_value) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    "VALUES (?,?,?,?,?,?)",
                     row
                 )
             total_meta += len(metas)
         except sqlite3.OperationalError:
             pass
         finally:
-            conn_shard.close()   # 예외 발생 시에도 connection 보장
+            conn_shard.close()
 
     conn_global.commit()
     conn_global.close()
@@ -110,7 +106,6 @@ def merge_databases(do_consolidate_vocab: bool = False):
         backup_path = total_db_path.replace(
             ".db", f"_backup_{time.strftime('%Y%m%d_%H%M%S')}.db"
         )
-        import shutil
         shutil.copy2(total_db_path, backup_path)
         print(f"💾 기존 DB 백업: {os.path.basename(backup_path)}")
         os.remove(total_db_path)
@@ -152,6 +147,7 @@ def merge_databases(do_consolidate_vocab: bool = False):
         print(f"📦 병합 중: {os.path.basename(shard_db)}")
         conn.execute(f"ATTACH DATABASE '{shard_db}' AS shard")
 
+        # ⚠️ 스키마 변경 시 명시적 컬럼 목록으로 교체 필요
         c1 = conn.execute(
             "INSERT OR REPLACE INTO meal SELECT * FROM shard.meal"
         )
@@ -166,20 +162,22 @@ def merge_databases(do_consolidate_vocab: bool = False):
         print(f"  ✅ meal: {c1.rowcount}건, meal_meta: {c2.rowcount}건")
 
     print("🔨 인덱스 생성 중...")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_meal_date   ON meal(meal_date)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_meal_school ON meal(school_id)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_meta_school ON meal_meta(school_id)")
-
+    conn.execute("CREATE INDEX idx_meal_date  ON meal(meal_date)")
+    conn.execute("CREATE INDEX idx_meal_school ON meal(school_id)")
+    conn.execute("CREATE INDEX idx_meal_meta  ON meal_meta(meta_id)")
     conn.commit()
+
+    conn.execute("PRAGMA optimize")
     conn.close()
 
     elapsed = time.time() - start_time
-    print(f"\n✨ 병합 완료! meal: {total_rows:,}건, meta: {total_meta:,}건, 소요 {elapsed:.1f}초")
-    print(f"📂 결과 파일: {total_db_path}")
+    size    = os.path.getsize(total_db_path) / 1024 / 1024
+    print(f"\n✅ 병합 완료: meal {total_rows:,}건 | {size:.1f} MB | {elapsed:.1f}초")
 
 
 if __name__ == "__main__":
+    import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--consolidate-vocab", action="store_true")
+    parser.add_argument("--vocab", action="store_true", help="Vocab DB 통합 수행")
     args = parser.parse_args()
-    merge_databases(do_consolidate_vocab=args.consolidate_vocab)
+    merge_databases(do_consolidate_vocab=args.vocab)
