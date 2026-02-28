@@ -169,7 +169,7 @@ class SchoolMasterCollector(BaseCollector):
             "KEY": NEIS_API_KEY,
             "Type": "json",
             "pIndex": p_idx,
-            "pSize": 100,                     # ← 100 고정
+            "pSize": 1000,                     # ← 100 고정
             "ATPT_OFCDC_SC_CODE": region_code
         }
 
