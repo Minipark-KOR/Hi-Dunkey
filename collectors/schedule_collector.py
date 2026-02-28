@@ -21,7 +21,7 @@ from constants.codes import NEIS_API_KEY, NEIS_ENDPOINTS, ALL_REGIONS
 from core.kst_time import now_kst
 from core.school_year import get_current_school_year
 
-BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "../data/active")
+BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data/active")
 os.makedirs(BASE_DIR, exist_ok=True)
 
 GLOBAL_VOCAB_PATH = os.path.join(BASE_DIR, "global_vocab.db")
@@ -189,7 +189,7 @@ class ScheduleCollector(BaseCollector):
                 "KEY": NEIS_API_KEY,
                 "Type": "json",
                 "pIndex": p_idx,
-                "pSize": 1000,
+                "pSize": 50,
                 "ATPT_OFCDC_SC_CODE": region,
                 "AA_YMD_FROM": date_from,
                 "AA_YMD_TO": date_to,
