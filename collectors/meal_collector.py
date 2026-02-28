@@ -23,7 +23,7 @@ from parsers.meal_parser import parse_meal_html, normalize_allergy_info
 from constants.codes import NEIS_API_KEY, NEIS_ENDPOINTS, ALL_REGIONS
 from core.kst_time import now_kst
 
-BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "../data/active")
+BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data/active")
 os.makedirs(BASE_DIR, exist_ok=True)
 
 GLOBAL_VOCAB_PATH = os.path.join(BASE_DIR, "global_vocab.db")
@@ -183,7 +183,7 @@ class MealCollector(BaseCollector):
                 "KEY": NEIS_API_KEY,
                 "Type": "json",
                 "pIndex": p_idx,
-                "pSize": 1000,
+                "pSize": 100,
                 "ATPT_OFCDC_SC_CODE": region,
                 "MLSV_FROM_YMD": date_from,
                 "MLSV_TO_YMD": date_to,

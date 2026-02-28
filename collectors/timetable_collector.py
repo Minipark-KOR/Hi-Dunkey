@@ -266,7 +266,7 @@ class TimetableCollector(BaseCollector):
                     "KEY": NEIS_API_KEY,
                     "Type": "json",
                     "pIndex": 1,
-                    "pSize": 1000,
+                    "pSize": 100,
                     "ATPT_OFCDC_SC_CODE": school_info['atpt_code'],
                     "SD_SCHUL_CODE": school_code,
                     "AY": str(ay),
