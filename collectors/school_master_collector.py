@@ -40,7 +40,7 @@ class SchoolMasterCollector(BaseCollector):
             range_suffix = f"_{school_range}" if school_range else ""
             db_name = f"school_master_{shard}{range_suffix}.db"
         
-        db_path = os.path.join(BASE_DIR, db_name)
+        db_path = os.path.join(BASE_DIR, "data", "master", db_name)
         
         # BaseCollector 초기화
         super().__init__("school", BASE_DIR, shard, school_range)
