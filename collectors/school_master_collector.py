@@ -198,7 +198,7 @@ class SchoolMasterCollector(BaseCollector):
                     if len(rows) < 1000:
                         return  # 정상 종료
                     p_idx += 1
-                    time.sleep(0.1)
+                    time.sleep(0.5)
                 except Exception as e:
                     retry_count += 1
                     self.logger.error(f"[{region_code}] p={p_idx} 시도 {retry_count} 실패: {e}")
