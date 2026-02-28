@@ -1,0 +1,37 @@
+name: Full Yearly Collection
+
+on:
+  schedule:
+    - cron: "0 2 1 3 *"   # 3월 1일 02:00 UTC = 11:00 KST
+  workflow_dispatch:
+
+jobs:
+  full-collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run full collector
+        run: python collectors/full_collector.py --year $(date +%Y)
+        env:
+          NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
+
+      - name: Upload school master data
+        uses: actions/upload-artifact@v4
+        with:
+          name: school-master-data
+          path: data/master/school_master.db
+          overwrite: true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-full-collect-${{ github.run_id }}
+          path: logs/
+          

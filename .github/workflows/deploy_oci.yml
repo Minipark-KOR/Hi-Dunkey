@@ -3,7 +3,7 @@ name: Deploy to Oracle Cloud
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:  # 수동 실행 가능
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -18,7 +18,7 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
-          host_key_check: false
+          known_hosts: ${{ secrets.KNOWN_HOSTS }}
           script: |
             # 서버 업데이트
             sudo apt update
@@ -38,8 +38,14 @@ jobs:
             source venv/bin/activate
             pip install -r requirements.txt
 
-            # 환경변수 설정
-            echo "NEIS_API_KEY=${{ secrets.NEIS_API_KEY }}" >> .env
+            # 환경변수 파일 생성 (확장 가능)
+            cat << EOF > .env
+            NEIS_API_KEY=${{ secrets.NEIS_API_KEY }}
+            KASI_API_KEY=${{ secrets.KASI_API_KEY }}
+            SCHOOL_INFO_API_KEY=${{ secrets.SCHOOL_INFO_API_KEY }}
+            VWORLD_API_KEY=${{ secrets.VWORLD_API_KEY }}
+            # 향후 추가될 환경변수들
+            EOF
 
             # 서비스 재시작
             sudo systemctl restart hi-dunkey || true

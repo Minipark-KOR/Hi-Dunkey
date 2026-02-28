@@ -1,0 +1,36 @@
+name: School Master Monthly Update
+
+on:
+  schedule:
+    - cron: "0 2 1 * *"   # 매월 1일 02:00 UTC = 11:00 KST
+  workflow_dispatch:
+
+jobs:
+  update-school-master:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run school master collector
+        run: python collectors/school_master_collector.py --regions ALL
+        env:
+          NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
+
+      - name: Upload school master data
+        uses: actions/upload-artifact@v4
+        with:
+          name: school-master-data
+          path: data/master/school_master.db
+          overwrite: true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-school-master-${{ github.run_id }}
+          path: logs/
