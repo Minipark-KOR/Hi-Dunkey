@@ -25,10 +25,13 @@ def build_session() -> requests.Session:
     """
     session = requests.Session()
     
-    # User-Agent 설정 (NEIS API 요구사항)
+    # ✅ 브라우저와 동일한 User-Agent 및 헤더 설정 (NEIS API 차단 우회)
     session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (compatible; NEIS-Collector/2.0)',
-        'Accept': 'application/json'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Referer': 'https://open.neis.go.kr/',
+        'Connection': 'keep-alive',
     })
     
     return session
@@ -129,3 +132,4 @@ def safe_json_request(session, url: str, params: dict, logger, max_retries: int 
     
     logger.error(f"❌ {max_retries}회 재시도 실패")
     return None
+    
