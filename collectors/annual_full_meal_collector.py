@@ -158,13 +158,14 @@ class AnnualFullMealCollector(BaseCollector):
         p_idx = 1
         while p_idx <= max_page:
             params = {
-                "KEY":               NEIS_API_KEY,
-                "Type":              "json",
-                "pIndex":            p_idx,
-                "pSize":             100,
+                "KEY": NEIS_API_KEY,
+                "Type": "json",
+                "pIndex": p_idx,
+                "pSize": 100,
                 "ATPT_OFCDC_SC_CODE": region,
-                "MLSV_FROM_YMD":     date_from,
-                "MLSV_TO_YMD":       date_to,
+                # "SD_SCHUL_CODE": "...", # 만약 특정 학교를 지정하지 않는다면 이 값은 넣지 않아야 합니다.
+                "MLSV_FROM_YMD": date_from,
+                "MLSV_TO_YMD": date_to,
             }
             if self.debug_mode:
                 self.logger.info(f"DEBUG: KEY={NEIS_API_KEY[:5]}*** REGION={region} RANGE={date_from}-{date_to}")
