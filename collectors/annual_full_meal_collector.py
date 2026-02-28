@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
 급식 정보 수집기 - 학년도 전체 버전 (학교별 순회)
+- 지정한 학년도(3월~익년 2월) 전체 데이터를 수집합니다.
+- 수집 완료 후 --metrics 옵션으로 메트릭 요약 생성 가능
 """
 import os
 import sys
@@ -255,18 +257,77 @@ class AnnualFullMealCollector(BaseCollector):
                 time.sleep(2)
 
     # ──────────────────────────────────────────
-    # 데이터 처리 & 저장 (기존과 동일)
+    # 데이터 처리 & 저장 (원본 구현 포함)
     # ──────────────────────────────────────────
 
     def _process_item(self, raw_item: dict) -> List[dict]:
-        # ... (변경 없음, 기존 코드 그대로) ...
+        school_code = raw_item.get('SD_SCHUL_CODE')
+        if not school_code or not self._include_school(school_code):
+            return []
+
+        school_info = self.get_school_info(school_code)
+        if not school_info:
+            return []
+
+        meal_date = raw_item.get('MLSV_YMD')
+        meal_type = raw_item.get('MMEAL_SC_CODE')
+        if not meal_date or not meal_type:
+            return []
+
+        original_menu = raw_item.get('DDISH_NM', '')
+        parsed = parse_meal_html(original_menu)
+        if not parsed["items"]:
+            return []
+
+        results = []
+        for item in parsed["items"]:
+            menu_id = self.menu_vocab.get_or_create(item["menu_name"])
+
+            metas = self.meta_extractor.extract(item["menu_name"])
+            for meta_type, meta_value in metas:
+                meta_id = self.meta_vocab.get_or_create('meal', meta_type, meta_value)
+                self._save_meta(school_info['school_id'], int(meal_date),
+                               int(meal_type), menu_id, meta_id)
+
+            d = {
+                "school_id": school_info['school_id'],
+                "meal_date": int(meal_date),
+                "meal_type": int(meal_type),
+                "menu_id": menu_id,
+                "allergy_info": normalize_allergy_info(item["allergies"]),
+                "original_menu": original_menu,
+                "cal_info": raw_item.get('CAL_INFO', ''),
+                "ntr_info": raw_item.get('NTR_INFO', ''),
+                "load_dt": raw_item.get('LOAD_DTM') or now_kst().isoformat()
+            }
+            results.append(d)
+
+        return results
 
     def _save_meta(self, school_id: int, meal_date: int, meal_type: int,
                    menu_id: int, meta_id: int):
-        # ... (변경 없음) ...
+        try:
+            with get_db_connection(self.db_path) as conn:
+                conn.execute("""
+                    INSERT OR IGNORE INTO meal_meta
+                    VALUES (?, ?, ?, ?, ?)
+                """, (school_id, meal_date, meal_type, menu_id, meta_id))
+        except Exception as e:
+            self.logger.error(f"메타 저장 실패: {e}")
 
     def _save_batch(self, batch: List[dict]):
-        # ... (변경 없음) ...
+        with get_db_connection(self.db_path) as conn:
+            meal_data = [
+                (
+                    it['school_id'], it['meal_date'], it['meal_type'],
+                    it['menu_id'], it['allergy_info'], it['original_menu'],
+                    it['cal_info'], it['ntr_info'], it['load_dt']
+                )
+                for it in batch
+            ]
+            conn.executemany("""
+                INSERT OR REPLACE INTO meal VALUES (?,?,?,?,?,?,?,?,?)
+            """, meal_data)
 
     def close(self):
         self.menu_vocab.close()
@@ -276,11 +337,42 @@ class AnnualFullMealCollector(BaseCollector):
 
 
 # ──────────────────────────────────────────
-# 메트릭 저장 헬퍼 (변경 없음)
+# 메트릭 저장 헬퍼
 # ──────────────────────────────────────────
 
 def _save_meal_metrics():
-    # ... (생략) ...
+    if not METRICS_AVAILABLE:
+        print("⚠️ metrics 모듈 없음 (core.metrics 또는 constants.domains 확인)")
+        return
+
+    backup_date = now_kst().strftime("%Y%m%d")
+    os.makedirs(str(METRICS_DIR), exist_ok=True)
+
+    meal_cfg     = DOMAIN_CONFIG.get("meal", {
+        "db_path": "data/active/meal.db",
+        "table":   "meal",
+        "enabled": True,
+    })
+    domain_subset = {"meal": meal_cfg}
+
+    markdown = build_summary_markdown(
+        backup_date=backup_date,
+        base_dir=str(PROJECT_ROOT),
+        domain_config=domain_subset,
+        global_dbs=GLOBAL_DBS,
+        include_geo=False,
+        include_global_tables=True,
+    )
+
+    summary_path = save_summary(markdown, str(METRICS_DIR), backup_date)
+    print(f"📄 메트릭 요약 저장: {summary_path}")
+
+    db_path      = PROJECT_ROOT / meal_cfg["db_path"]
+    metrics      = {"meal": collect_domain_metrics(str(db_path), meal_cfg["table"])}
+    metrics_path = METRICS_DIR / f"metrics_{backup_date}.json"
+    with open(str(metrics_path), "w", encoding="utf-8") as f:
+        json.dump(metrics, f, indent=2, ensure_ascii=False)
+    print(f"📊 JSON 메트릭 저장: {metrics_path}")
 
 
 # ──────────────────────────────────────────
@@ -330,3 +422,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
