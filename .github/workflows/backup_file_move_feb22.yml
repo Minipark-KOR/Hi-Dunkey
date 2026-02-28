@@ -2,7 +2,7 @@ name: Move Old Backups to Archive
 
 on:
   schedule:
-    - cron: "0 6 22 2 *"      # 2월 22일 06:00 UTC = 15:00 KST
+    - cron: "0 6 22 2 *"
   workflow_dispatch:
 
 jobs:
@@ -10,9 +10,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Install dependencies
         run: pip install -r requirements.txt
 
@@ -20,7 +22,7 @@ jobs:
         run: |
           pip install oci-cli
           mkdir -p ~/.oci
-          echo "${{ secrets.OCI_CONFIG }}" > ~/.oci/config
+          echo "${{ secrets.OCI_CONFIG }}"   > ~/.oci/config
           echo "${{ secrets.OCI_KEY_FILE }}" > ~/.oci/oci_api_key.pem
           chmod 600 ~/.oci/oci_api_key.pem
 
@@ -38,13 +40,6 @@ jobs:
           path: data/archive/
         continue-on-error: true
 
-      - name: Download school master data
-        uses: actions/download-artifact@v4
-        with:
-          name: school-master-data
-          path: data/master/
-        continue-on-error: true
-
       - name: Run move script
         run: python scripts/move_feb22.py
 
@@ -54,7 +49,7 @@ jobs:
             oci os object sync \
               --bucket-name ${{ secrets.OCI_ARCHIVE_BUCKET }} \
               --src-dir data/archive/ \
-              --dest-dir archive/ && break || sleep 10
+              --dest-dir archive/ && break || sleep 15
           done
 
       - name: Upload updated archive
@@ -70,4 +65,3 @@ jobs:
         with:
           name: logs-move-feb22-${{ github.run_id }}
           path: logs/
-          

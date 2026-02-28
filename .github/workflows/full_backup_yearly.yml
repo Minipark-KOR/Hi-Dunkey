@@ -24,9 +24,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Install dependencies
         run: pip install -r requirements.txt
 
@@ -34,7 +36,7 @@ jobs:
         run: |
           pip install oci-cli
           mkdir -p ~/.oci
-          echo "${{ secrets.OCI_CONFIG }}" > ~/.oci/config
+          echo "${{ secrets.OCI_CONFIG }}"   > ~/.oci/config
           echo "${{ secrets.OCI_KEY_FILE }}" > ~/.oci/oci_api_key.pem
           chmod 600 ~/.oci/oci_api_key.pem
 
@@ -46,27 +48,47 @@ jobs:
         continue-on-error: true
 
       - name: Run school master fallback if needed
-        run: |
-          if [ ! -f data/master/school_master.db ]; then
-            echo "⚠️ school_master.db not found, running collector..."
-            python collectors/school_master_collector.py --regions ALL
-          fi
         env:
           NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
+        run: |
+          if [ ! -f data/master/school_master.db ]; then
+            echo "⚠️ school_master.db 없음 → 재수집"
+            python collectors/school_master_collector.py --regions ALL
+          fi
 
       - name: Run backup
+        env:
+          NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
         run: |
           COLLECTORS_ARG=""
           if [ -n "${{ github.event.inputs.collectors }}" ]; then
             COLLECTORS_ARG="--collectors ${{ github.event.inputs.collectors }}"
           fi
           MODE="${{ github.event.inputs.mode }}"
-          if [ -z "${MODE}" ]; then
-            MODE="full"
-          fi
+          [ -z "${MODE}" ] && MODE="full"
           python scripts/yearly_backup.py --${MODE} ${COLLECTORS_ARG}
-        env:
-          NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
+
+      - name: Generate step summary
+        run: |
+          SUMMARY_FILE=$(ls data/backup/summary_*.txt 2>/dev/null | sort -r | head -1)
+          if [ -f "$SUMMARY_FILE" ]; then
+            cat "$SUMMARY_FILE" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ summary 파일 없음" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload metrics to OCI
+        run: |
+          METRICS_FILE=$(ls data/backup/metrics_*.json 2>/dev/null | sort -r | head -1)
+          if [ -f "$METRICS_FILE" ]; then
+            YEAR=$(date -u +%Y)
+            oci os object put \
+              --bucket-name ${{ secrets.OCI_METRICS_BUCKET }} \
+              --file "$METRICS_FILE" \
+              --name "metrics/${YEAR}/$(basename $METRICS_FILE)"
+          else
+            echo "⚠️ metrics 파일 없음 (verify/list 모드이거나 백업 실패)"
+          fi
 
       - name: Sync backup to OCI
         run: |
@@ -74,7 +96,7 @@ jobs:
             oci os object sync \
               --bucket-name ${{ secrets.OCI_BACKUP_BUCKET }} \
               --src-dir data/backup/ \
-              --dest-dir backup/ && break || sleep 10
+              --dest-dir backup/ && break || sleep 15
           done
 
       - name: Sync archive to OCI
@@ -83,7 +105,7 @@ jobs:
             oci os object sync \
               --bucket-name ${{ secrets.OCI_ARCHIVE_BUCKET }} \
               --src-dir data/archive/ \
-              --dest-dir archive/ && break || sleep 10
+              --dest-dir archive/ && break || sleep 15
           done
 
       - name: Upload backup artifacts

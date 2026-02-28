@@ -1,9 +1,14 @@
-name: School Master Monthly Update
+name: Weekly Timetable Collection
 
 on:
   schedule:
-    - cron: "0 2 1 * *"
+    - cron: '30 21 * * 0'
   workflow_dispatch:
+    inputs:
+      month:
+        description: '수집할 월 (YYYYMM)'
+        required: false
+        default: ''
 
 jobs:
   collect:
@@ -38,7 +43,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-school-${{ matrix.name }}
+          key: ${{ runner.os }}-pip-timetable-${{ matrix.name }}
 
       - uses: actions/setup-python@v5
         with:
@@ -48,15 +53,21 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Create directories
-        run: mkdir -p data/master data/active/backups
+        run: mkdir -p data/active/timetable data/active/backups
 
-      - name: Run School Master Collector (${{ matrix.name }})
+      - name: Run Timetable Collector (${{ matrix.name }})
         env:
           NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
         run: |
-          CMD="python collectors/school_master_collector.py \
+          MONTH="${{ github.event.inputs.month }}"
+          if [ -z "${MONTH}" ]; then
+            MONTH=$(date -u -d '9 hours' '+%Y%m')
+          fi
+
+          CMD="python collectors/timetable_collector.py \
             --regions ${{ matrix.region }} \
-            --shard ${{ matrix.shard }}"
+            --shard ${{ matrix.shard }} \
+            --month ${MONTH}"
 
           if [ "${{ matrix.range }}" != "none" ]; then
             CMD="${CMD} --school_range ${{ matrix.range }}"
@@ -68,23 +79,23 @@ jobs:
       - name: Upload shard DB
         uses: actions/upload-artifact@v4
         with:
-          name: school-shard-${{ matrix.name }}
-          path: data/master/school_master_*.db
+          name: timetable-shard-${{ matrix.name }}
+          path: data/active/timetable/timetable_*.db
 
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: school-${{ matrix.name }}-logs
-          path: data/master/*.log
+          name: timetable-${{ matrix.name }}-logs
+          path: data/active/timetable/*.log
 
   finalize:
     needs: collect
     if: always()
     uses: ./.github/workflows/_collector-base.yml
     with:
-      collector-name: "school"
-      merge-script: "merge_school_master_dbs.py"
-      consolidate-vocab: false
+      collector-name: "timetable"
+      merge-script: "merge_timetable_dbs.py"
+      consolidate-vocab: true
     secrets:
       NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}

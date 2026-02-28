@@ -1,706 +1,625 @@
 #!/usr/bin/env python3
 """
-학년도 전체 백업 스크립트 (자동 복구 포함)
-- 급식(meal)과 동일한 패턴
-- 학년도 마지막에 전체 수집 후 백업
-- 3단계 검증 + 자동 복구
-- 상세 로깅
+학년도 전체 백업 스크립트 (자동 복구 + 메트릭 수집)
+- 백업 파일명: {yyyymmdd}_{domain}.db
+- 생성날짜 기준 3년 이상 된 파일은 archive로 자동 이동
+- 검증 실패 시 auto repair (최대 3회 재시도)
+- 메트릭(레코드 수, 파일 크기) 수집 및 저장
 """
 import os
 import sys
 import sqlite3
 import shutil
 import time
-import json
+import glob
 import argparse
-from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Tuple
 import logging
+import json
+from datetime import datetime, timedelta
+from typing import List, Dict, Optional
+from pathlib import Path
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.kst_time import now_kst
-from core.backup import vacuum_into
+try:
+    from core.backup import vacuum_into
+    from core.school_year import get_current_school_year
+except ImportError:
+    def vacuum_into(src, dst):
+        shutil.copy2(src, dst)
+        with sqlite3.connect(dst) as c:
+            c.execute("VACUUM")
 
-from pathlib import Path
+    def get_current_school_year(dt):
+        return dt.year if dt.month >= 3 else dt.year - 1
+
+from core.kst_time import now_kst
 from dotenv import load_dotenv
 
-# 프로젝트 루트 경로를 찾아서 .env 파일을 로드합니다.
-# (scripts 폴더 안에 있으므로 부모 폴더로 이동)
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
-# 이제 환경 변수에서 키를 가져옵니다.
-NEIS_API_KEY = os.getenv("NEIS_API_KEY")
-
-# Collector들 import
 from collectors.school_master_collector import SchoolMasterCollector
 from collectors.meal_collector import MealCollector
 from collectors.timetable_collector import TimetableCollector
 from collectors.schedule_collector import ScheduleCollector
+from constants.codes import ALL_REGIONS
+
+
+DOMAIN_CONFIG = {
+    "school": {
+        "class": SchoolMasterCollector,
+        "description": "학교 기본정보",
+        "db_path": "data/master/school_master.db",
+        "table": "schools",
+        "enabled": True,
+        "merge_script": "merge_school_master_dbs",
+        "fetch_args": lambda region, year: {"region": region},
+    },
+    "meal": {
+        "class": MealCollector,
+        "description": "급식 정보",
+        "db_path": "data/active/meal/meal.db",
+        "table": "meal",
+        "enabled": True,
+        "merge_script": "merge_meal_dbs",
+        "fetch_args": lambda region, year: {"region": region},
+    },
+    "timetable": {
+        "class": TimetableCollector,
+        "description": "시간표 정보",
+        "db_path": "data/active/timetable/timetable.db",
+        "table": "timetable",
+        "enabled": True,
+        "merge_script": "merge_timetable_dbs",
+        "fetch_args": lambda region, year: [
+            {"region": region, "year": year, "semester": 1},
+            {"region": region, "year": year, "semester": 2},
+        ],
+    },
+    "schedule": {
+        "class": ScheduleCollector,
+        "description": "학사일정 정보",
+        "db_path": "data/active/schedule/schedule.db",
+        "table": "schedule",
+        "enabled": True,
+        "merge_script": "merge_schedule_dbs",
+        "fetch_args": lambda region, year: {"region": region, "year": year},
+    },
+}
+
+GLOBAL_DBS = [
+    {"name": "global_vocab.db",     "path": "data/active/global_vocab.db",     "table": "meta_vocab"},
+    {"name": "unknown_patterns.db", "path": "data/active/unknown_patterns.db", "table": "unknown_patterns"},
+]
 
 
 class YearlyBackup:
-    """
-    학년도 전체 백업 + 자동 복구
-    
-    사용 예시:
-        python yearly_backup.py --year 2026 --full
-        python yearly_backup.py --year 2026 --verify
-        python yearly_backup.py --list
-        python yearly_backup.py --year 2026 --auto-repair
-    """
-    
-    # Collector 정의
-    COLLECTORS = {
-        "school": {
-            "class": SchoolMasterCollector,
-            "description": "학교 기본정보",
-            "db_file": "school_master.db",
-            "backup_file": "school_master_{year}1231.db",
-            "table": "schools",
-            "enabled": True
-        },
-        "meal": {
-            "class": MealCollector,
-            "description": "급식 정보",
-            "db_file": "meal_total.db",
-            "backup_file": "meal_total_{year}1231.db",
-            "table": "meal",
-            "enabled": True
-        },
-        "timetable": {
-            "class": TimetableCollector,
-            "description": "시간표 정보",
-            "db_file": "timetable_total.db",
-            "backup_file": "timetable_{year}1231.db",
-            "table": "timetable",
-            "enabled": True
-        },
-        "schedule": {
-            "class": ScheduleCollector,
-            "description": "학사일정 정보",
-            "db_file": "schedule_total.db",
-            "backup_file": "schedule_{year}1231.db",
-            "table": "schedule",
-            "enabled": True
-        }
-    }
-    
-    # 글로벌 DB
-    GLOBAL_DBS = [
-        {"name": "global_vocab.db", "table": "meta_vocab"},
-        {"name": "unknown_patterns.db", "table": "unknown_patterns"}
-    ]
-    
-    def __init__(self, base_dir: str = "data", backup_dir: str = "data/backup", 
-                 log_dir: str = "logs"):
-        """
-        Args:
-            base_dir: 데이터 기본 디렉토리
-            backup_dir: 백업 디렉토리
-            log_dir: 로그 디렉토리
-        """
-        self.base_dir = base_dir
-        self.backup_dir = backup_dir
-        self.log_dir = log_dir
-        
-        # 디렉토리 생성
-        for d in [base_dir, backup_dir, log_dir]:
-            os.makedirs(d, exist_ok=True)
-        
-        # 로거 설정
-        self._setup_logger()
-        
-        # 최대 재시도 횟수
+
+    def __init__(self, base_dir: str = "data", backup_dir: str = "data/backup",
+                 archive_dir: str = "data/archive", log_dir: str = "logs"):
+        self.base_dir    = base_dir
+        self.backup_dir  = backup_dir
+        self.archive_dir = archive_dir
+        self.log_dir     = log_dir
         self.max_retries = 3
-    
+
+        for d in [base_dir, backup_dir, archive_dir, log_dir]:
+            os.makedirs(d, exist_ok=True)
+
+        self._setup_logger()
+
     def _setup_logger(self):
-        """로거 설정"""
         self.logger = logging.getLogger("yearly_backup")
         self.logger.setLevel(logging.INFO)
-        
-        # 파일 핸들러
-        fh = logging.FileHandler(f"{self.log_dir}/yearly_backup.log", encoding='utf-8')
-        fh.setLevel(logging.INFO)
-        
-        # 콘솔 핸들러
-        ch = logging.StreamHandler()
-        ch.setLevel(logging.INFO)
-        
-        # 포맷터
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-        fh.setFormatter(formatter)
-        ch.setFormatter(formatter)
-        
+        fh  = logging.FileHandler(f"{self.log_dir}/yearly_backup.log", encoding="utf-8")
+        ch  = logging.StreamHandler()
+        fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+        fh.setFormatter(fmt)
+        ch.setFormatter(fmt)
         self.logger.addHandler(fh)
         self.logger.addHandler(ch)
-    
-    # ========================================================
-    # 1. 백업 실행
-    # ========================================================
-    
-    def run_full_backup(self, year: int, collectors: List[str] = None) -> bool:
-        """
-        학년도 전체 백업 수행 (자동 복구 포함)
-        
-        Args:
-            year: 학년도
-            collectors: 백업할 Collector 목록
-        
-        Returns:
-            성공 여부
-        """
-        self.logger.info(f"📅 학년도 {year} 전체 백업 시작 (최대 {self.max_retries}회 시도)")
-        
+
+    # ──────────────────────────────────────────
+    # Public API
+    # ──────────────────────────────────────────
+
+    def run_full_backup(self, year: Optional[int] = None,
+                        collectors: Optional[List[str]] = None) -> bool:
+        if year is None:
+            year = get_current_school_year(now_kst())
+            self.logger.info(f"📆 학년도 자동 설정: {year}")
+
+        self.logger.info(f"📅 학년도 {year} 전체 백업 시작 (최대 {self.max_retries}회)")
+
         for attempt in range(self.max_retries):
             self.logger.info(f"🔄 시도 {attempt + 1}/{self.max_retries}")
-            
             try:
-                # 1. Collector 실행
                 if not self._run_collectors(year, collectors):
-                    raise Exception("Collector 실행 실패")
-                
-                # 2. 통합 DB 생성
+                    raise RuntimeError("Collector 실행 실패")
+
                 self._create_total_dbs(year)
-                
-                # 3. 백업 생성
-                backup_dir = self._create_backup_dir(year)
-                self._backup_databases(year, backup_dir)
-                
-                # 4. 검증
-                issues = self.verify_backup(year)
-                
+                self._write_backups(year)
+
+                issues = self.verify_backup(year, self.backup_dir)
                 if not issues:
-                    self.logger.info(f"✅ 학년도 {year} 백업 성공 (attempt {attempt + 1})")
-                    
-                    # 성공 로그 저장
+                    self.logger.info(f"✅ 학년도 {year} 백업 성공")
                     self._save_success_log(year)
+
+                    # 메트릭 수집 및 저장
+                    backup_date  = now_kst().strftime("%Y%m%d")
+                    metrics      = self._collect_metrics()
+                    metrics_path = os.path.join(self.backup_dir, f"metrics_{backup_date}.json")
+                    summary_path = os.path.join(self.backup_dir, f"summary_{backup_date}.txt")
+
+                    with open(metrics_path, "w", encoding="utf-8") as f:
+                        json.dump(metrics, f, indent=2, ensure_ascii=False)
+                    with open(summary_path, "w", encoding="utf-8") as f:
+                        f.write(self._generate_summary(metrics))
+
+                    self.logger.info(f"📊 메트릭 저장: {os.path.basename(metrics_path)}")
+                    self.move_old_backups_to_archive()
                     return True
-                
-                # 문제 발견! 자동 복구
-                self.logger.warning(f"⚠️ {len(issues)}개 문제 발견, 자동 복구 시작...")
+
+                self.logger.warning(f"⚠️ {len(issues)}개 문제 발견 → 자동 복구 시작")
                 self._auto_repair(year, issues)
-                
-                # 다음 시도를 위해 대기
                 if attempt < self.max_retries - 1:
-                    self.logger.info("⏳ 10초 후 재시도...")
                     time.sleep(10)
-                
+
             except Exception as e:
                 self.logger.error(f"❌ 백업 실패: {e}")
-                
                 if attempt < self.max_retries - 1:
-                    self.logger.info("⏳ 10초 후 재시도...")
                     time.sleep(10)
-        
-        self.logger.critical(f"❌ {self.max_retries}회 시도 실패 - 수동 개입 필요")
+
+        self.logger.critical(f"❌ {self.max_retries}회 시도 모두 실패")
         return False
-    
-    def _run_collectors(self, year: int, collectors: List[str] = None) -> bool:
-        """Collector 실행"""
-        if collectors:
-            target_collectors = [c for c in collectors if c in self.COLLECTORS]
-        else:
-            target_collectors = [name for name, info in self.COLLECTORS.items() 
-                                if info["enabled"]]
-        
-        for name in target_collectors:
-            self.logger.info(f"🚀 {name} 수집 시작")
-            
-            try:
-                if name == "school":
-                    collector = self.COLLECTORS[name]["class"](shard="none", full=True)
-                elif name == "meal":
-                    collector = self.COLLECTORS[name]["class"](shard="none", full=True)
-                elif name == "timetable":
-                    collector = self.COLLECTORS[name]["class"](shard="none", full=True)
-                elif name == "schedule":
-                    collector = self.COLLECTORS[name]["class"](shard="none", full=True)
-                
-                # 전체 지역 수집
-                from constants.codes import ALL_REGIONS
-                for region in ALL_REGIONS:
-                    if name == "timetable":
-                        collector.fetch_region(region, year, 1)
-                        collector.fetch_region(region, year, 2)
-                    elif name == "schedule":
-                        collector.fetch_region(region, year)
-                    else:
-                        collector.fetch_region(region)
-                
-                collector.close()
-                self.logger.info(f"✅ {name} 수집 완료")
-                
-            except Exception as e:
-                self.logger.error(f"❌ {name} 수집 실패: {e}")
-                return False
-        
-        return True
-    
-    def _create_total_dbs(self, year: int):
-        """통합 DB 생성"""
-        self.logger.info("🔗 통합 DB 생성 중...")
-        
-        # meal_total.db
-        try:
-            from scripts.merge_meal_dbs import merge_databases
-            merge_databases(consolidate_vocab=True)
-            self.logger.info("  ✅ meal_total.db 생성 완료")
-        except Exception as e:
-            self.logger.error(f"  ❌ meal_total.db 생성 실패: {e}")
-            raise
-    
-    def _create_backup_dir(self, year: int) -> str:
-        """백업 디렉토리 생성"""
-        backup_dir = os.path.join(self.backup_dir, str(year))
-        os.makedirs(backup_dir, exist_ok=True)
-        return backup_dir
-    
-    def _backup_databases(self, year: int, backup_dir: str):
-        """DB 파일 백업"""
-        self.logger.info("💾 DB 파일 백업 중...")
-        
-        # Collector DB 백업
-        for name, info in self.COLLECTORS.items():
-            if info.get("db_file"):
-                src = os.path.join(self.base_dir, "active", info["db_file"])
-                if os.path.exists(src):
-                    dst = os.path.join(backup_dir, info["backup_file"].format(year=year))
-                    
-                    try:
-                        vacuum_into(src, dst)
-                        size = os.path.getsize(dst) / 1024 / 1024
-                        self.logger.info(f"  ✅ {name} 백업: {dst} ({size:.1f}MB)")
-                    except Exception as e:
-                        self.logger.error(f"  ❌ {name} 백업 실패: {e}")
-                        raise
-        
-        # 글로벌 DB 백업
-        for db in self.GLOBAL_DBS:
-            src = os.path.join(self.base_dir, db["name"])
-            if os.path.exists(src):
-                dst = os.path.join(backup_dir, f"{year}_{db['name']}")
-                try:
-                    vacuum_into(src, dst)
-                    size = os.path.getsize(dst) / 1024 / 1024
-                    self.logger.info(f"  ✅ 글로벌 백업: {dst} ({size:.1f}MB)")
-                except Exception as e:
-                    self.logger.error(f"  ❌ 글로벌 백업 실패: {e}")
-    
-    # ========================================================
-    # 2. 검증 (3단계)
-    # ========================================================
-    
-    def verify_backup(self, year: int) -> List[Dict]:
-        """
-        3단계 백업 검증
-        
-        Returns:
-            문제 리스트 (비어있으면 성공)
-        """
+
+    def verify_backup(self, year: int, backup_dir: str) -> List[Dict]:
         self.logger.info(f"🔍 학년도 {year} 백업 검증 시작")
-        
-        backup_dir = os.path.join(self.backup_dir, str(year))
         if not os.path.exists(backup_dir):
-            self.logger.error(f"❌ 백업 디렉토리 없음: {backup_dir}")
-            return [{"type": "no_backup", "year": year}]
-        
+            return [{"type": "no_backup_dir"}]
+
         issues = []
-        
-        for name, info in self.COLLECTORS.items():
-            if not info.get("db_file"):
+
+        for name, info in DOMAIN_CONFIG.items():
+            src = os.path.join(BASE_DIR, info["db_path"])
+            if not os.path.exists(src):
                 continue
-            
-            src = os.path.join(self.base_dir, "active", info["db_file"])
-            dst = os.path.join(backup_dir, info["backup_file"].format(year=year))
-            
-            if not os.path.exists(dst):
-                self.logger.error(f"  ❌ {name} 백업 파일 없음")
+
+            files = glob.glob(os.path.join(backup_dir, f"*_{name}.db"))
+            if not files:
                 issues.append({"type": "missing", "collector": name})
                 continue
-            
-            self.logger.info(f"  📋 {name} 검증 중...")
-            
-            # STEP 1: 개수 검증
-            step1_ok = self._verify_count(src, dst, info["table"])
-            if not step1_ok:
-                issues.append({
-                    "type": "count_mismatch",
-                    "collector": name,
-                    "src": src,
-                    "dst": dst,
-                    "table": info["table"]
-                })
+
+            latest = sorted(files, reverse=True)[0]
+            table  = info["table"]
+
+            if not self._verify_integrity(latest):
+                issues.append({"type": "corruption", "collector": name, "dst": latest})
+            elif not self._verify_count(src, latest, table):
+                issues.append({"type": "count_mismatch", "collector": name,
+                                "src": src, "dst": latest, "table": table})
+            elif not self._verify_samples(src, latest, table):
+                issues.append({"type": "sample_mismatch", "collector": name,
+                                "src": src, "dst": latest, "table": table})
+            else:
+                self.logger.info(f"  ✅ {name} 검증 완료")
+
+        for db in GLOBAL_DBS:
+            src = os.path.join(BASE_DIR, db["path"])
+            if not os.path.exists(src):
                 continue
-            
-            # STEP 2: 무결성 검증
-            step2_ok = self._verify_integrity(dst)
-            if not step2_ok:
-                issues.append({
-                    "type": "corruption",
-                    "collector": name,
-                    "dst": dst
-                })
+            files = glob.glob(os.path.join(backup_dir, f"*_{db['name']}"))
+            if not files:
+                issues.append({"type": "missing_global", "db": db["name"]})
                 continue
-            
-            # STEP 3: 샘플 검증
-            step3_ok = self._verify_samples(src, dst, info["table"])
-            if not step3_ok:
-                issues.append({
-                    "type": "sample_mismatch",
-                    "collector": name,
-                    "src": src,
-                    "dst": dst,
-                    "table": info["table"]
-                })
-                continue
-            
-            self.logger.info(f"  ✅ {name} 3단계 검증 완료")
-        
-        # 글로벌 DB 검증
-        for db in self.GLOBAL_DBS:
-            src = os.path.join(self.base_dir, db["name"])
-            dst = os.path.join(backup_dir, f"{year}_{db['name']}")
-            
-            if os.path.exists(dst):
-                if self._verify_count(src, dst, db["table"]):
-                    self.logger.info(f"  ✅ {db['name']} 검증 완료")
-                else:
-                    issues.append({
-                        "type": "global_count_mismatch",
-                        "db": db["name"]
-                    })
-        
-        if not issues:
-            self.logger.info(f"✅ 학년도 {year} 백업 검증 완료 (모두 정상)")
-        
+            latest = sorted(files, reverse=True)[0]
+            if not self._verify_count(src, latest, db["table"]):
+                issues.append({"type": "global_count_mismatch", "db": db["name"]})
+            else:
+                self.logger.info(f"  ✅ {db['name']} 검증 완료")
+
         return issues
-    
-    def _verify_count(self, src: str, dst: str, table: str) -> bool:
-        """STEP 1: 개수 검증"""
-        try:
-            with sqlite3.connect(src) as s_conn:
-                s_count = s_conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            
-            with sqlite3.connect(dst) as d_conn:
-                d_count = d_conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            
-            if s_count != d_count:
-                self.logger.error(f"    STEP 1 실패: 개수 불일치 ({s_count} vs {d_count})")
-                return False
-            
-            self.logger.info(f"    ✅ STEP 1: {s_count}개 일치")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"    STEP 1 오류: {e}")
-            return False
-    
-    def _verify_integrity(self, db_path: str) -> bool:
-        """STEP 2: 무결성 검증"""
-        try:
-            with sqlite3.connect(db_path) as conn:
-                cur = conn.execute("PRAGMA integrity_check")
-                result = cur.fetchone()[0]
-                
-                if result != "ok":
-                    self.logger.error(f"    STEP 2 실패: {result}")
-                    return False
-                
-                self.logger.info(f"    ✅ STEP 2: 무결성 정상")
-                return True
-                
-        except Exception as e:
-            self.logger.error(f"    STEP 2 오류: {e}")
-            return False
-    
-    def _verify_samples(self, src: str, dst: str, table: str, sample_size: int = 10) -> bool:
-        """STEP 3: 샘플 검증"""
-        try:
-            with sqlite3.connect(src) as s_conn:
-                # ID 컬럼 찾기
-                cur = s_conn.execute(f"PRAGMA table_info({table})")
-                columns = [col[1] for col in cur.fetchall()]
-                id_col = columns[0]  # 보통 첫 번째 컬럼이 PK
-                
-                # 랜덤 샘플 추출
-                samples = s_conn.execute(f"""
-                    SELECT * FROM {table} 
-                    ORDER BY RANDOM() 
-                    LIMIT {sample_size}
-                """).fetchall()
-            
-            with sqlite3.connect(dst) as d_conn:
-                for sample in samples:
-                    sample_id = sample[0]
-                    d_data = d_conn.execute(
-                        f"SELECT * FROM {table} WHERE {id_col} = ?",
-                        (sample_id,)
-                    ).fetchone()
-                    
-                    if not d_data or str(sample) != str(d_data):
-                        self.logger.error(f"    STEP 3 실패: ID {sample_id} 불일치")
-                        return False
-            
-            self.logger.info(f"    ✅ STEP 3: {sample_size}개 샘플 일치")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"    STEP 3 오류: {e}")
-            return False
-    
-    # ========================================================
-    # 3. 자동 복구
-    # ========================================================
-    
-    def _auto_repair(self, year: int, issues: List[Dict]):
-        """문제 자동 복구"""
-        self.logger.info("🔧 자동 복구 시작")
-        
-        for issue in issues:
-            if issue["type"] == "count_mismatch":
-                self._repair_count_mismatch(issue)
-            elif issue["type"] == "corruption":
-                self._repair_corruption(issue)
-            elif issue["type"] == "sample_mismatch":
-                self._repair_sample_mismatch(issue)
-            elif issue["type"] == "missing":
-                self._repair_missing_backup(issue, year)
-        
-        self.logger.info("✅ 자동 복구 완료")
-    
-    def _repair_count_mismatch(self, issue: Dict):
-        """개수 불일치 복구"""
-        collector = issue["collector"]
-        self.logger.info(f"  🔧 {collector} 개수 불일치 복구 중...")
-        
-        try:
-            # 해당 Collector만 다시 실행
-            if collector == "school":
-                c = SchoolMasterCollector(shard="none", full=True)
-            elif collector == "meal":
-                c = MealCollector(shard="none", full=True)
-            elif collector == "timetable":
-                c = TimetableCollector(shard="none", full=True)
-            elif collector == "schedule":
-                c = ScheduleCollector(shard="none", full=True)
-            
-            from constants.codes import ALL_REGIONS
-            for region in ALL_REGIONS:
-                if collector == "timetable":
-                    c.fetch_region(region, year, 1)
-                    c.fetch_region(region, year, 2)
-                else:
-                    c.fetch_region(region)
-            
-            c.close()
-            
-            # 다시 백업
-            backup_dir = os.path.join(self.backup_dir, str(year))
-            src = os.path.join(self.base_dir, "active", self.COLLECTORS[collector]["db_file"])
-            dst = os.path.join(backup_dir, self.COLLECTORS[collector]["backup_file"].format(year=year))
-            
-            vacuum_into(src, dst)
-            self.logger.info(f"  ✅ {collector} 복구 완료")
-            
-        except Exception as e:
-            self.logger.error(f"  ❌ {collector} 복구 실패: {e}")
-    
-    def _repair_corruption(self, issue: Dict):
-        """손상된 DB 복구"""
-        dst = issue["dst"]
-        self.logger.info(f"  🔧 손상된 DB 복구 중: {dst}")
-        
-        try:
-            # 손상된 파일 백업
-            corrupt_backup = dst + ".corrupt"
-            os.rename(dst, corrupt_backup)
-            
-            # 원본에서 다시 백업
-            collector = issue["collector"]
-            src = os.path.join(self.base_dir, "active", self.COLLECTORS[collector]["db_file"])
-            vacuum_into(src, dst)
-            
-            self.logger.info(f"  ✅ 복구 완료 (손상본: {corrupt_backup})")
-            
-        except Exception as e:
-            self.logger.error(f"  ❌ 복구 실패: {e}")
-    
-    def _repair_sample_mismatch(self, issue: Dict):
-        """샘플 불일치 복구"""
-        self.logger.info(f"  🔧 {issue['collector']} 샘플 불일치 복구 중...")
-        # 개수 불일치와 동일하게 처리
-        self._repair_count_mismatch(issue)
-    
-    def _repair_missing_backup(self, issue: Dict, year: int):
-        """누락된 백업 복구"""
-        collector = issue["collector"]
-        self.logger.info(f"  🔧 {collector} 백업 누락 복구 중...")
-        
-        try:
-            src = os.path.join(self.base_dir, "active", self.COLLECTORS[collector]["db_file"])
-            backup_dir = os.path.join(self.backup_dir, str(year))
-            dst = os.path.join(backup_dir, self.COLLECTORS[collector]["backup_file"].format(year=year))
-            
-            vacuum_into(src, dst)
-            self.logger.info(f"  ✅ {collector} 백업 생성 완료")
-            
-        except Exception as e:
-            self.logger.error(f"  ❌ {collector} 백업 실패: {e}")
-    
-    # ========================================================
-    # 4. 복원 및 관리
-    # ========================================================
-    
-    def restore_backup(self, year: int, collectors: List[str] = None) -> bool:
-        """백업 복원"""
-        backup_dir = os.path.join(self.backup_dir, str(year))
-        if not os.path.exists(backup_dir):
-            self.logger.error(f"❌ 백업 없음: {backup_dir}")
-            return False
-        
+
+    def restore_backup(self, year: int,
+                       collectors: Optional[List[str]] = None) -> bool:
         self.logger.info(f"🔄 학년도 {year} 복원 시작")
-        
-        if collectors:
-            target_collectors = collectors
-        else:
-            target_collectors = list(self.COLLECTORS.keys())
-        
-        for name in target_collectors:
-            info = self.COLLECTORS[name]
-            backup_file = os.path.join(backup_dir, info["backup_file"].format(year=year))
-            
-            if os.path.exists(backup_file):
-                dst = os.path.join(self.base_dir, "active", info["db_file"])
-                
-                # 현재 DB 백업 (혹시 모를 복구용)
-                if os.path.exists(dst):
-                    current_backup = dst + ".current"
-                    shutil.copy2(dst, current_backup)
-                
-                shutil.copy2(backup_file, dst)
-                self.logger.info(f"  ✅ {name} 복원: {dst}")
-        
-        self.logger.info(f"✅ 학년도 {year} 복원 완료")
+        if not os.path.exists(self.backup_dir):
+            self.logger.error("❌ 백업 디렉토리 없음")
+            return False
+
+        targets = collectors if collectors else list(DOMAIN_CONFIG.keys())
+        for name in targets:
+            files = glob.glob(os.path.join(self.backup_dir, f"*_{name}.db"))
+            if not files:
+                self.logger.warning(f"  ⚠️ {name} 백업 없음")
+                continue
+            latest = sorted(files, reverse=True)[0]
+            dst    = os.path.join(BASE_DIR, DOMAIN_CONFIG[name]["db_path"])
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            if os.path.exists(dst):
+                shutil.copy2(dst, dst + ".current")
+            shutil.copy2(latest, dst)
+            self.logger.info(f"  ✅ {name} 복원: {latest}")
+
+        for db in GLOBAL_DBS:
+            files = glob.glob(os.path.join(self.backup_dir, f"*_{db['name']}"))
+            if files:
+                latest = sorted(files, reverse=True)[0]
+                dst    = os.path.join(BASE_DIR, db["path"])
+                shutil.copy2(latest, dst)
+                self.logger.info(f"  ✅ {db['name']} 복원")
         return True
-    
+
     def list_backups(self):
-        """백업 목록 조회"""
         if not os.path.exists(self.backup_dir):
             print("📁 백업 디렉토리 없음")
             return
-        
-        print("\n📚 학년도 백업 목록")
-        print("=" * 70)
-        
-        for year_dir in sorted(os.listdir(self.backup_dir)):
-            if not year_dir.isdigit():
-                continue
-            
-            year_path = os.path.join(self.backup_dir, year_dir)
-            if os.path.isdir(year_path):
-                files = os.listdir(year_path)
-                total_size = sum(os.path.getsize(os.path.join(year_path, f)) 
-                               for f in files if os.path.isfile(os.path.join(year_path, f)))
-                
-                print(f"\n📅 {year_dir}학년도")
-                print(f"  📦 파일: {len(files)}개")
-                print(f"  💾 용량: {total_size / 1024 / 1024:.1f} MB")
-                
-                # 최근 검증 로그 확인
-                log_file = os.path.join(year_path, "backup_success.log")
-                if os.path.exists(log_file):
-                    with open(log_file, 'r') as f:
-                        last_success = f.read().strip()
-                    print(f"  ✅ 마지막 성공: {last_success}")
-    
-    def _save_success_log(self, year: int):
-        """성공 로그 저장"""
-        backup_dir = os.path.join(self.backup_dir, str(year))
-        log_file = os.path.join(backup_dir, "backup_success.log")
-        
-        with open(log_file, 'w') as f:
-            f.write(now_kst().isoformat())
-    
-    def cleanup_old_backups(self, keep_years: int = 5):
-        """오래된 백업 정리"""
-        self.logger.info(f"🗑️ {keep_years}년 이상 된 백업 정리 중...")
-        
-        backups = [d for d in os.listdir(self.backup_dir) if d.isdigit()]
-        backups.sort()
-        
-        if len(backups) <= keep_years:
-            self.logger.info("✅ 정리할 백업 없음")
+        files = sorted(
+            [f for f in os.listdir(self.backup_dir) if f.endswith(".db")],
+            reverse=True
+        )
+        by_date: Dict[str, List[str]] = {}
+        for f in files:
+            d = f.split("_")[0]
+            by_date.setdefault(d, []).append(f)
+        for d, fl in sorted(by_date.items(), reverse=True):
+            total = sum(os.path.getsize(os.path.join(self.backup_dir, f)) for f in fl)
+            print(f"\n📅 {d}  ({len(fl)}개, {total/1024/1024:.1f} MB)")
+            for f in sorted(fl):
+                sz = os.path.getsize(os.path.join(self.backup_dir, f)) / 1024
+                print(f"    - {f} ({sz:.1f} KB)")
+
+    def move_old_backups_to_archive(self, cutoff_years: int = 3):
+        self.logger.info(f"📦 {cutoff_years}년 이상 된 백업 → archive 이동")
+        os.makedirs(self.archive_dir, exist_ok=True)
+
+        if not os.path.exists(self.backup_dir):
+            self.logger.warning(f"⚠️ 백업 디렉토리 없음: {self.backup_dir}")
             return
-        
-        to_delete = backups[:-keep_years]
-        for year in to_delete:
-            path = os.path.join(self.backup_dir, year)
-            shutil.rmtree(path)
-            self.logger.info(f"  ✅ {year}학년도 백업 삭제")
+
+        cutoff = now_kst().date() - timedelta(days=365 * cutoff_years)
+        moved  = 0
+
+        for fname in os.listdir(self.backup_dir):
+            if not fname.endswith(".db"):
+                continue
+            try:
+                fdate = datetime.strptime(fname.split("_")[0], "%Y%m%d").date()
+            except (ValueError, IndexError):
+                continue
+            if fdate >= cutoff:
+                continue
+
+            src = os.path.join(self.backup_dir, fname)
+            dst = os.path.join(self.archive_dir, fname)
+            if os.path.exists(dst):
+                base, ext = os.path.splitext(fname)
+                cnt = 1
+                while os.path.exists(os.path.join(self.archive_dir, f"{base}_{cnt}{ext}")):
+                    cnt += 1
+                dst = os.path.join(self.archive_dir, f"{base}_{cnt}{ext}")
+            shutil.move(src, dst)
+            self.logger.info(f"  📦 이동: {fname} → {os.path.basename(dst)}")
+            moved += 1
+
+        self.logger.info(f"✅ {moved}개 파일 이동 완료 (기준일: {cutoff})")
+
+    def cleanup_old_backups(self, keep: int = 5):
+        self.logger.info(f"🗑️ 최근 {keep}개만 남기고 삭제")
+        dated = []
+        for f in os.listdir(self.backup_dir):
+            if not f.endswith(".db"):
+                continue
+            try:
+                d = datetime.strptime(f.split("_")[0], "%Y%m%d").date()
+                dated.append((d, f))
+            except (ValueError, IndexError):
+                continue
+        dated.sort()
+        for _, f in dated[:-keep]:
+            os.remove(os.path.join(self.backup_dir, f))
+            self.logger.info(f"  🗑️ 삭제: {f}")
+
+    # ──────────────────────────────────────────
+    # Internal — metrics
+    # ──────────────────────────────────────────
+
+    def _collect_metrics(self) -> Dict:
+        """백업된 각 DB의 레코드 수와 파일 크기를 수집"""
+        metrics = {}
+        for name, cfg in DOMAIN_CONFIG.items():
+            db_path = os.path.join(BASE_DIR, cfg["db_path"])
+            if not os.path.exists(db_path):
+                continue
+            try:
+                with sqlite3.connect(db_path) as conn:
+                    rows = conn.execute(
+                        f"SELECT COUNT(*) FROM {cfg['table']}"
+                    ).fetchone()[0]
+                metrics[name] = {
+                    "rows":       rows,
+                    "size_bytes": os.path.getsize(db_path),
+                }
+            except Exception as e:
+                self.logger.warning(f"  ⚠️ {name} 메트릭 수집 실패: {e}")
+
+        for db in GLOBAL_DBS:
+            db_path = os.path.join(BASE_DIR, db["path"])
+            if not os.path.exists(db_path):
+                continue
+            try:
+                with sqlite3.connect(db_path) as conn:
+                    rows = conn.execute(
+                        f"SELECT COUNT(*) FROM {db['table']}"
+                    ).fetchone()[0]
+                metrics[db["name"]] = {
+                    "rows":       rows,
+                    "size_bytes": os.path.getsize(db_path),
+                }
+            except Exception as e:
+                self.logger.warning(f"  ⚠️ {db['name']} 메트릭 수집 실패: {e}")
+
+        return metrics
+
+    def _generate_summary(self, metrics: Dict) -> str:
+        """GitHub Step Summary용 마크다운 테이블 생성"""
+        lines = [
+            "### 📊 백업 메트릭 요약",
+            "| 도메인 | 레코드 수 | 파일 크기(MB) |",
+            "| --- | ---: | ---: |",
+        ]
+        for name, data in metrics.items():
+            mb = data["size_bytes"] / (1024 * 1024)
+            lines.append(f"| {name} | {data['rows']:,} | {mb:.2f} |")
+        return "\n".join(lines)
+
+    # ──────────────────────────────────────────
+    # Internal — collect & merge
+    # ──────────────────────────────────────────
+
+    def _run_collectors(self, year: int,
+                        collectors: Optional[List[str]] = None) -> bool:
+        targets = collectors if collectors else [
+            n for n, i in DOMAIN_CONFIG.items() if i["enabled"]
+        ]
+        for name in targets:
+            self.logger.info(f"🚀 {name} 수집 시작")
+            try:
+                cfg       = DOMAIN_CONFIG[name]
+                collector = cfg["class"](shard="none", full=True)
+                for region in ALL_REGIONS:
+                    args = cfg["fetch_args"](region, year)
+                    if isinstance(args, list):
+                        for a in args:
+                            collector.fetch_region(**a)
+                    else:
+                        collector.fetch_region(**args)
+                collector.close()
+                self.logger.info(f"  ✅ {name} 수집 완료")
+            except Exception as e:
+                self.logger.error(f"  ❌ {name} 수집 실패: {e}")
+                return False
+        return True
+
+    def _create_total_dbs(self, year: int):
+        self.logger.info("🔗 통합 DB 생성 중...")
+        for name, cfg in DOMAIN_CONFIG.items():
+            if not cfg["enabled"]:
+                continue
+            try:
+                module   = __import__(
+                    f"scripts.{cfg['merge_script']}",
+                    fromlist=["merge_databases"]
+                )
+                merge_fn = getattr(module, "merge_databases")
+                if name in ("meal", "timetable", "schedule"):
+                    merge_fn(do_consolidate_vocab=True)
+                else:
+                    merge_fn()
+                self.logger.info(f"  ✅ {name} 통합 DB 생성 완료")
+            except Exception as e:
+                self.logger.error(f"  ❌ {name} 통합 DB 생성 실패: {e}")
+                raise
+
+    def _write_backups(self, year: int):
+        backup_date = now_kst().strftime("%Y%m%d")
+        for name, cfg in DOMAIN_CONFIG.items():
+            src = os.path.join(BASE_DIR, cfg["db_path"])
+            if not os.path.exists(src):
+                self.logger.warning(f"  ⚠️ {name} DB 없음: {src}")
+                continue
+            dst  = os.path.join(self.backup_dir, f"{backup_date}_{name}.db")
+            vacuum_into(src, dst)
+            size = os.path.getsize(dst) / 1024 / 1024
+            self.logger.info(f"  ✅ {name} 백업: {os.path.basename(dst)} ({size:.1f} MB)")
+
+        for db in GLOBAL_DBS:
+            src = os.path.join(BASE_DIR, db["path"])
+            if not os.path.exists(src):
+                continue
+            dst  = os.path.join(self.backup_dir, f"{backup_date}_{db['name']}")
+            vacuum_into(src, dst)
+            size = os.path.getsize(dst) / 1024 / 1024
+            self.logger.info(f"  ✅ {db['name']} 백업 ({size:.1f} MB)")
+
+    # ──────────────────────────────────────────
+    # Internal — verify
+    # ──────────────────────────────────────────
+
+    def _verify_integrity(self, db_path: str) -> bool:
+        try:
+            with sqlite3.connect(db_path) as conn:
+                return conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        except Exception:
+            return False
+
+    def _verify_count(self, src: str, dst: str, table: str) -> bool:
+        try:
+            with sqlite3.connect(src) as s:
+                sc = s.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            with sqlite3.connect(dst) as d:
+                dc = d.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            return sc == dc
+        except Exception:
+            return False
+
+    def _verify_samples(self, src: str, dst: str,
+                        table: str, sample_size: int = 10) -> bool:
+        """랜덤 샘플 행을 원본과 백업에서 1:1 비교"""
+        try:
+            with sqlite3.connect(src) as s:
+                cols   = [c[1] for c in s.execute(f"PRAGMA table_info({table})")]
+                id_col = cols[0]
+                samples = s.execute(
+                    f"SELECT * FROM {table} ORDER BY RANDOM() LIMIT {sample_size}"
+                ).fetchall()
+            with sqlite3.connect(dst) as d:
+                for row in samples:
+                    sid  = row[0]
+                    drow = d.execute(
+                        f"SELECT * FROM {table} WHERE {id_col} = ?", (sid,)
+                    ).fetchone()
+                    if drow is None or str(row) != str(drow):
+                        return False
+            return True
+        except Exception:
+            return False
+
+    # ──────────────────────────────────────────
+    # Internal — auto repair
+    # ──────────────────────────────────────────
+
+    def _auto_repair(self, year: int, issues: List[Dict]):
+        self.logger.info("🔧 자동 복구 시작")
+        for issue in issues:
+            t = issue["type"]
+            if t in ("count_mismatch", "sample_mismatch"):
+                self._repair_recollect(issue, year)
+            elif t == "corruption":
+                self._repair_corruption(issue, year)
+            elif t == "missing":
+                self._repair_missing(issue, year)
+            elif t in ("missing_global", "global_count_mismatch"):
+                self.logger.warning(
+                    f"  ⚠️ 글로벌 DB 문제: {issue.get('db')} (수동 확인 필요)"
+                )
+        self.logger.info("✅ 자동 복구 완료")
+
+    def _repair_recollect(self, issue: Dict, year: int):
+        name = issue["collector"]
+        self.logger.info(f"  🔧 {name} 재수집 시작")
+        try:
+            cfg       = DOMAIN_CONFIG[name]
+            collector = cfg["class"](shard="none", full=True)
+            for region in ALL_REGIONS:
+                args = cfg["fetch_args"](region, year)
+                if isinstance(args, list):
+                    for a in args:
+                        collector.fetch_region(**a)
+                else:
+                    collector.fetch_region(**args)
+            collector.close()
+
+            module   = __import__(
+                f"scripts.{cfg['merge_script']}", fromlist=["merge_databases"]
+            )
+            merge_fn = getattr(module, "merge_databases")
+            if name in ("meal", "timetable", "schedule"):
+                merge_fn(do_consolidate_vocab=True)
+            else:
+                merge_fn()
+
+            backup_date = now_kst().strftime("%Y%m%d")
+            src = os.path.join(BASE_DIR, cfg["db_path"])
+            dst = os.path.join(self.backup_dir, f"{backup_date}_{name}.db")
+            vacuum_into(src, dst)
+            self.logger.info(f"  ✅ {name} 복구 완료")
+        except Exception as e:
+            self.logger.error(f"  ❌ {name} 복구 실패: {e}")
+
+    def _repair_corruption(self, issue: Dict, year: int):
+        dst  = issue["dst"]
+        name = issue["collector"]
+        self.logger.info(f"  🔧 손상 파일 복구: {os.path.basename(dst)}")
+        try:
+            corrupt_path = dst + ".corrupt"
+            os.rename(dst, corrupt_path)
+            self.logger.info(f"  📦 손상본 보관: {os.path.basename(corrupt_path)}")
+            src         = os.path.join(BASE_DIR, DOMAIN_CONFIG[name]["db_path"])
+            backup_date = now_kst().strftime("%Y%m%d")
+            new_dst     = os.path.join(self.backup_dir, f"{backup_date}_{name}.db")
+            vacuum_into(src, new_dst)
+            self.logger.info(f"  ✅ {name} 백업 재생성 완료")
+        except Exception as e:
+            self.logger.error(f"  ❌ {name} 손상 복구 실패: {e}")
+
+    def _repair_missing(self, issue: Dict, year: int):
+        name = issue["collector"]
+        self.logger.info(f"  🔧 {name} 백업 누락 복구")
+        try:
+            src = os.path.join(BASE_DIR, DOMAIN_CONFIG[name]["db_path"])
+            if not os.path.exists(src):
+                self.logger.warning(f"  ⚠️ 원본 DB도 없음 → 재수집")
+                self._repair_recollect(issue, year)
+                return
+            backup_date = now_kst().strftime("%Y%m%d")
+            dst         = os.path.join(self.backup_dir, f"{backup_date}_{name}.db")
+            vacuum_into(src, dst)
+            self.logger.info(f"  ✅ {name} 누락 백업 생성 완료")
+        except Exception as e:
+            self.logger.error(f"  ❌ {name} 누락 복구 실패: {e}")
+
+    def _save_success_log(self, year: int):
+        path = os.path.join(self.backup_dir, f"backup_success_{year}.log")
+        with open(path, "w") as f:
+            f.write(now_kst().isoformat())
 
 
-# ========================================================
+# ──────────────────────────────────────────
 # CLI
-# ========================================================
+# ──────────────────────────────────────────
+
 def main():
-    parser = argparse.ArgumentParser(description="학년도 전체 백업 (자동 복구 포함)")
-    
-    # 기본 옵션
-    parser.add_argument("--year", type=int, help="학년도 (예: 2026)")
-    
-    # 실행 모드
-    parser.add_argument("--full", action="store_true", help="전체 백업 수행")
-    parser.add_argument("--verify", action="store_true", help="백업 검증")
-    parser.add_argument("--restore", action="store_true", help="백업 복원")
-    parser.add_argument("--list", action="store_true", help="백업 목록 조회")
-    parser.add_argument("--cleanup", action="store_true", help="오래된 백업 정리")
-    
-    # 옵션
-    parser.add_argument("--collectors", "-c", help="대상 Collector (콤마 구분)")
-    parser.add_argument("--keep", type=int, default=5, help="보관할 학년도 수 (기본: 5)")
-    parser.add_argument("--auto-repair", action="store_true", help="자동 복구 활성화")
-    
+    parser = argparse.ArgumentParser(description="학년도 전체 백업")
+    parser.add_argument("--year",       type=int,            help="학년도 (미지정 시 자동)")
+    parser.add_argument("--full",       action="store_true", help="전체 백업 수행")
+    parser.add_argument("--verify",     action="store_true", help="백업 검증")
+    parser.add_argument("--restore",    action="store_true", help="백업 복원")
+    parser.add_argument("--list",       action="store_true", help="백업 목록 조회")
+    parser.add_argument("--cleanup",    action="store_true", help="오래된 백업 삭제")
+    parser.add_argument("--collectors", "-c",                help="콤마 구분 (예: meal,school)")
+    parser.add_argument("--keep",       type=int, default=5, help="보관 개수 (기본 5)")
     args = parser.parse_args()
-    
+
     backup = YearlyBackup()
-    
+    cols   = args.collectors.split(",") if args.collectors else None
+
     if args.list:
         backup.list_backups()
-        return
-    
-    if args.cleanup:
+    elif args.cleanup:
         backup.cleanup_old_backups(args.keep)
-        return
-    
-    if not args.year:
-        parser.print_help()
-        return
-    
-    collectors = args.collectors.split(",") if args.collectors else None
-    
-    if args.verify:
-        issues = backup.verify_backup(args.year)
+    elif args.verify:
+        if not args.year:
+            print("❌ --year 필요")
+            return
+        issues = backup.verify_backup(args.year, backup.backup_dir)
         if issues:
-            print(f"\n⚠️ {len(issues)}개 문제 발견:")
-            for issue in issues:
-                print(f"  - {issue}")
-        return
-    
-    if args.restore:
-        backup.restore_backup(args.year, collectors)
-        return
-    
-    if args.full:
-        success = backup.run_full_backup(args.year, collectors)
-        if success:
-            print(f"\n✅ 학년도 {args.year} 백업 완료!")
+            print(f"\n⚠️ {len(issues)}개 문제:")
+            for i in issues:
+                print(f"  - {i}")
         else:
-            print(f"\n❌ 학년도 {args.year} 백업 실패 - 로그 확인 필요")
-        return
-    
-    parser.print_help()
+            print("✅ 이상 없음")
+    elif args.restore:
+        if not args.year:
+            print("❌ --year 필요")
+            return
+        backup.restore_backup(args.year, cols)
+    elif args.full:
+        success = backup.run_full_backup(args.year, cols)
+        sys.exit(0 if success else 1)
+    else:
+        parser.print_help()
 
 
 if __name__ == "__main__":

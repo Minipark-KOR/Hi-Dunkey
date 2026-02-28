@@ -1,0 +1,110 @@
+name: Collector Base (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      collector-name:
+        required: true
+        type: string
+      merge-script:
+        required: true
+        type: string
+      consolidate-vocab:
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      NEIS_API_KEY:
+        required: true
+
+jobs:
+  prepare-vocab:
+    runs-on: ubuntu-latest
+    outputs:
+      vocab_exists: ${{ steps.check.outputs.exists }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-prepare-${{ inputs.collector-name }}
+
+      - name: Check vocab from release
+        id: check
+        run: |
+          mkdir -p data/active/
+          if gh release download latest-vocab \
+               --pattern "global_vocab.db" \
+               --dir data/active/ 2>/dev/null; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "✅ Vocab 다운로드 성공"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "⚠️ Vocab 없음. vocab 통합 없이 진행됩니다."
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload vocab for merge
+        uses: actions/upload-artifact@v4
+        with:
+          name: global-vocab-${{ inputs.collector-name }}
+          path: data/active/global_vocab.db
+          if-no-files-found: ignore
+
+  merge:
+    needs: prepare-vocab
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-merge-${{ inputs.collector-name }}
+
+      - name: Download all shard artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Download vocab
+        uses: actions/download-artifact@v4
+        with:
+          name: global-vocab-${{ inputs.collector-name }}
+          path: data/active/
+        continue-on-error: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Merge databases
+        run: |
+          DOMAIN="${{ inputs.collector-name }}"
+          mkdir -p data/active/${DOMAIN}
+
+          find artifacts/${DOMAIN}-shard-* \
+            -name "${DOMAIN}_*.db" \
+            -exec cp {} data/active/${DOMAIN}/ \; 2>/dev/null || true
+
+          VOCAB_FLAG=""
+          if [ "${{ inputs.consolidate-vocab }}" == "true" ]; then
+            VOCAB_FLAG="--consolidate-vocab"
+          fi
+
+          python scripts/${{ inputs.merge-script }} ${VOCAB_FLAG}
+
+      - name: Upload merged DB
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.collector-name }}-total-db
+          path: data/active/${{ inputs.collector-name }}/${{ inputs.collector-name }}.db
+          overwrite: true

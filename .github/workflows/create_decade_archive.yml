@@ -2,7 +2,7 @@ name: Create Decade Archive
 
 on:
   schedule:
-    - cron: "0 13 25 2 *"      # 2월 25일 13:00 UTC = 22:00 KST
+    - cron: "0 13 25 2 *"
   workflow_dispatch:
     inputs:
       start_year:
@@ -19,9 +19,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Install dependencies
         run: pip install -r requirements.txt
 
@@ -29,7 +31,7 @@ jobs:
         run: |
           pip install oci-cli
           mkdir -p ~/.oci
-          echo "${{ secrets.OCI_CONFIG }}" > ~/.oci/config
+          echo "${{ secrets.OCI_CONFIG }}"   > ~/.oci/config
           echo "${{ secrets.OCI_KEY_FILE }}" > ~/.oci/oci_api_key.pem
           chmod 600 ~/.oci/oci_api_key.pem
 
@@ -40,26 +42,19 @@ jobs:
           path: data/archive/
         continue-on-error: true
 
-      - name: Download school master data
-        uses: actions/download-artifact@v4
-        with:
-          name: school-master-data
-          path: data/master/
-        continue-on-error: true
-
       - name: Run merge_decade
         run: |
           python scripts/merge_decade.py \
             --start ${{ github.event.inputs.start_year || '2020' }} \
-            --end ${{ github.event.inputs.end_year || '2029' }}
+            --end   ${{ github.event.inputs.end_year   || '2029' }}
 
-      - name: Upload decade archives to OCI
+      - name: Sync to OCI
         run: |
           for i in {1..3}; do
             oci os object sync \
               --bucket-name ${{ secrets.OCI_ARCHIVE_BUCKET }} \
               --src-dir data/archive/ \
-              --dest-dir archive/ && break || sleep 10
+              --dest-dir archive/ && break || sleep 15
           done
 
       - name: Upload updated archive
@@ -75,4 +70,3 @@ jobs:
         with:
           name: logs-create-decade-${{ github.run_id }}
           path: logs/
-          
