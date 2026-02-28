@@ -1,40 +1,42 @@
 #!/usr/bin/env python3
 """
 급식 HTML 파서 (알레르기 정보 추출, 학년 정보 무시)
+- 메뉴명(menu_name)과 알레르기 정보(allergies)를 반환
 """
 import re
 from typing import Dict, List, Any
 
 from core.filters import TextFilter
-from core.id_generator import IDGenerator
 
 def parse_meal_html(html_menu: str) -> Dict[str, Any]:
     """
     급식 HTML 파싱
     반환:
         {
-            "items": [{"menu_id": int, "allergies": List[int]}, ...],
-            "vocab": {menu_id: menu_name, ...}
+            "items": [
+                {
+                    "menu_name": str,
+                    "allergies": List[int]
+                },
+                ...
+            ]
         }
     """
-    result = {
-        "items": [],
-        "vocab": {}
-    }
+    result = {"items": []}
     if not html_menu:
         return result
-    
+
     # 학년 정보 패턴 제거 (예: (1,2학년) 등)
     cleaned = re.sub(r'\([^)]*?[0-9]+(?:,[0-9]+)*\s*학년?\)', '', html_menu)
-    
+
     # <br/> 태그로 분리
     items = re.split(r'<br\s*/>|<br>', cleaned, flags=re.IGNORECASE)
-    
+
     for item in items:
         clean_item = TextFilter.clean_html(item)
         if not clean_item:
             continue
-        
+
         # 알레르기 정보 추출 (예: (1.5.6))
         allergy_codes = []
         allergy_match = re.search(r'\(([0-9.]+)\)$', clean_item)
@@ -42,20 +44,17 @@ def parse_meal_html(html_menu: str) -> Dict[str, Any]:
             codes = allergy_match.group(1).split('.')
             allergy_codes = [int(c) for c in codes if c.isdigit()]
             clean_item = clean_item[:allergy_match.start()].strip()
-        
+
         # 메뉴명 정제 (괄호 안 내용 제거)
         menu_name = re.sub(r'\([^)]*\)', '', clean_item).strip()
         if not menu_name:
             continue
-        
-        menu_id = IDGenerator.text_to_int(menu_name, namespace="meal")
-        
+
         result["items"].append({
-            "menu_id": menu_id,
+            "menu_name": menu_name,
             "allergies": allergy_codes
         })
-        result["vocab"][menu_id] = menu_name
-    
+
     return result
 
 
