@@ -143,9 +143,9 @@ class AnnualFullMealCollector(BaseCollector):
         with get_db_connection(str(MASTER_DB)) as conn:
             schools = conn.execute(
                 """
-                SELECT sd_schul_code, sc_name
+                SELECT sc_code, sc_name
                 FROM schools
-                WHERE atpt_ofcdc_sc_code = ? AND status = '운영'
+                WHERE atpt_code = ? AND status = '운영'
                 """,
                 (region,)
             ).fetchall()
@@ -422,4 +422,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
