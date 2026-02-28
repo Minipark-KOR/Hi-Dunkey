@@ -2,7 +2,7 @@ name: Yearly Academic Backup
 
 on:
   schedule:
-    - cron: "30 21 21 2 *"   # 2월 21일 21:30 UTC = 2월 22일 06:30 KST
+    - cron: "30 21 21 2 *"
   workflow_dispatch:
     inputs:
       collectors:
@@ -57,6 +57,7 @@ jobs:
           fi
 
       - name: Run backup
+        id: backup
         env:
           NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
         run: |
@@ -66,28 +67,25 @@ jobs:
           fi
           MODE="${{ github.event.inputs.mode }}"
           [ -z "${MODE}" ] && MODE="full"
-          python scripts/yearly_backup.py --${MODE} ${COLLECTORS_ARG}
+          # stdout(마크다운)을 파일로 캡처
+          python scripts/yearly_backup.py --${MODE} ${COLLECTORS_ARG} \
+            | tee data/metrics/step_summary.md
 
       - name: Generate step summary
         run: |
-          SUMMARY_FILE=$(ls data/backup/summary_*.txt 2>/dev/null | sort -r | head -1)
-          if [ -f "$SUMMARY_FILE" ]; then
-            cat "$SUMMARY_FILE" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "⚠️ summary 파일 없음" >> $GITHUB_STEP_SUMMARY
+          if [ -f data/metrics/step_summary.md ]; then
+            cat data/metrics/step_summary.md >> $GITHUB_STEP_SUMMARY
           fi
 
       - name: Upload metrics to OCI
         run: |
-          METRICS_FILE=$(ls data/backup/metrics_*.json 2>/dev/null | sort -r | head -1)
+          METRICS_FILE=$(ls data/metrics/metrics_*.json 2>/dev/null | sort -r | head -1)
           if [ -f "$METRICS_FILE" ]; then
             YEAR=$(date -u +%Y)
             oci os object put \
               --bucket-name ${{ secrets.OCI_METRICS_BUCKET }} \
               --file "$METRICS_FILE" \
               --name "metrics/${YEAR}/$(basename $METRICS_FILE)"
-          else
-            echo "⚠️ metrics 파일 없음 (verify/list 모드이거나 백업 실패)"
           fi
 
       - name: Sync backup to OCI
@@ -113,6 +111,13 @@ jobs:
         with:
           name: backup-data
           path: data/backup/
+          overwrite: true
+
+      - name: Upload metrics artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: metrics-data
+          path: data/metrics/
           overwrite: true
 
       - name: Upload logs

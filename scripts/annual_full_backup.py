@@ -4,7 +4,7 @@
 - 백업 파일명: {yyyymmdd}_{domain}.db
 - 생성날짜 기준 3년 이상 된 파일은 archive로 자동 이동
 - 검증 실패 시 auto repair (최대 3회 재시도)
-- 메트릭(레코드 수, 파일 크기) 수집 및 저장
+- 메트릭은 core/metrics.py 공통 모듈 사용
 """
 import os
 import sys
@@ -34,6 +34,13 @@ except ImportError:
         return dt.year if dt.month >= 3 else dt.year - 1
 
 from core.kst_time import now_kst
+from core.metrics import (
+    build_summary_markdown,
+    save_summary,
+    collect_domain_metrics,
+    cleanup_old_metrics,
+)
+from constants.domains import DOMAIN_CONFIG, GLOBAL_DBS
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -45,53 +52,15 @@ from collectors.timetable_collector import TimetableCollector
 from collectors.schedule_collector import ScheduleCollector
 from constants.codes import ALL_REGIONS
 
-
-DOMAIN_CONFIG = {
-    "school": {
-        "class": SchoolMasterCollector,
-        "description": "학교 기본정보",
-        "db_path": "data/master/school_master.db",
-        "table": "schools",
-        "enabled": True,
-        "merge_script": "merge_school_master_dbs",
-        "fetch_args": lambda region, year: {"region": region},
-    },
-    "meal": {
-        "class": MealCollector,
-        "description": "급식 정보",
-        "db_path": "data/active/meal/meal.db",
-        "table": "meal",
-        "enabled": True,
-        "merge_script": "merge_meal_dbs",
-        "fetch_args": lambda region, year: {"region": region},
-    },
-    "timetable": {
-        "class": TimetableCollector,
-        "description": "시간표 정보",
-        "db_path": "data/active/timetable/timetable.db",
-        "table": "timetable",
-        "enabled": True,
-        "merge_script": "merge_timetable_dbs",
-        "fetch_args": lambda region, year: [
-            {"region": region, "year": year, "semester": 1},
-            {"region": region, "year": year, "semester": 2},
-        ],
-    },
-    "schedule": {
-        "class": ScheduleCollector,
-        "description": "학사일정 정보",
-        "db_path": "data/active/schedule/schedule.db",
-        "table": "schedule",
-        "enabled": True,
-        "merge_script": "merge_schedule_dbs",
-        "fetch_args": lambda region, year: {"region": region, "year": year},
-    },
+# collector class는 yearly_backup.py에서만 주입 (constants/domains.py 의존성 역전 방지)
+COLLECTOR_CLASSES = {
+    "school":    SchoolMasterCollector,
+    "meal":      MealCollector,
+    "timetable": TimetableCollector,
+    "schedule":  ScheduleCollector,
 }
 
-GLOBAL_DBS = [
-    {"name": "global_vocab.db",     "path": "data/active/global_vocab.db",     "table": "meta_vocab"},
-    {"name": "unknown_patterns.db", "path": "data/active/unknown_patterns.db", "table": "unknown_patterns"},
-]
+METRICS_DIR = str(BASE_DIR / "data" / "metrics")
 
 
 class YearlyBackup:
@@ -104,7 +73,7 @@ class YearlyBackup:
         self.log_dir     = log_dir
         self.max_retries = 3
 
-        for d in [base_dir, backup_dir, archive_dir, log_dir]:
+        for d in [base_dir, backup_dir, archive_dir, log_dir, METRICS_DIR]:
             os.makedirs(d, exist_ok=True)
 
         self._setup_logger()
@@ -145,20 +114,9 @@ class YearlyBackup:
                 if not issues:
                     self.logger.info(f"✅ 학년도 {year} 백업 성공")
                     self._save_success_log(year)
-
-                    # 메트릭 수집 및 저장
-                    backup_date  = now_kst().strftime("%Y%m%d")
-                    metrics      = self._collect_metrics()
-                    metrics_path = os.path.join(self.backup_dir, f"metrics_{backup_date}.json")
-                    summary_path = os.path.join(self.backup_dir, f"summary_{backup_date}.txt")
-
-                    with open(metrics_path, "w", encoding="utf-8") as f:
-                        json.dump(metrics, f, indent=2, ensure_ascii=False)
-                    with open(summary_path, "w", encoding="utf-8") as f:
-                        f.write(self._generate_summary(metrics))
-
-                    self.logger.info(f"📊 메트릭 저장: {os.path.basename(metrics_path)}")
+                    self._save_metrics(year)
                     self.move_old_backups_to_archive()
+                    cleanup_old_metrics(METRICS_DIR, keep=12)
                     return True
 
                 self.logger.warning(f"⚠️ {len(issues)}개 문제 발견 → 자동 복구 시작")
@@ -180,20 +138,16 @@ class YearlyBackup:
             return [{"type": "no_backup_dir"}]
 
         issues = []
-
         for name, info in DOMAIN_CONFIG.items():
             src = os.path.join(BASE_DIR, info["db_path"])
             if not os.path.exists(src):
                 continue
-
             files = glob.glob(os.path.join(backup_dir, f"*_{name}.db"))
             if not files:
                 issues.append({"type": "missing", "collector": name})
                 continue
-
             latest = sorted(files, reverse=True)[0]
             table  = info["table"]
-
             if not self._verify_integrity(latest):
                 issues.append({"type": "corruption", "collector": name, "dst": latest})
             elif not self._verify_count(src, latest, table):
@@ -264,7 +218,9 @@ class YearlyBackup:
             d = f.split("_")[0]
             by_date.setdefault(d, []).append(f)
         for d, fl in sorted(by_date.items(), reverse=True):
-            total = sum(os.path.getsize(os.path.join(self.backup_dir, f)) for f in fl)
+            total = sum(
+                os.path.getsize(os.path.join(self.backup_dir, f)) for f in fl
+            )
             print(f"\n📅 {d}  ({len(fl)}개, {total/1024/1024:.1f} MB)")
             for f in sorted(fl):
                 sz = os.path.getsize(os.path.join(self.backup_dir, f)) / 1024
@@ -290,13 +246,14 @@ class YearlyBackup:
                 continue
             if fdate >= cutoff:
                 continue
-
             src = os.path.join(self.backup_dir, fname)
             dst = os.path.join(self.archive_dir, fname)
             if os.path.exists(dst):
                 base, ext = os.path.splitext(fname)
                 cnt = 1
-                while os.path.exists(os.path.join(self.archive_dir, f"{base}_{cnt}{ext}")):
+                while os.path.exists(
+                    os.path.join(self.archive_dir, f"{base}_{cnt}{ext}")
+                ):
                     cnt += 1
                 dst = os.path.join(self.archive_dir, f"{base}_{cnt}{ext}")
             shutil.move(src, dst)
@@ -325,54 +282,36 @@ class YearlyBackup:
     # Internal — metrics
     # ──────────────────────────────────────────
 
-    def _collect_metrics(self) -> Dict:
-        """백업된 각 DB의 레코드 수와 파일 크기를 수집"""
+    def _save_metrics(self, year: int):
+        backup_date = now_kst().strftime("%Y%m%d")
+
+        # 마크다운 생성 (순수 함수)
+        markdown = build_summary_markdown(
+            backup_date=backup_date,
+            base_dir=str(BASE_DIR),
+            domain_config=DOMAIN_CONFIG,
+            global_dbs=GLOBAL_DBS,
+            include_geo=True,
+            include_global_tables=True,
+        )
+
+        # 파일 저장
+        summary_path = save_summary(markdown, METRICS_DIR, backup_date)
+        self.logger.info(f"📄 요약 저장: {summary_path}")
+
+        # JSON 메트릭 저장
         metrics = {}
         for name, cfg in DOMAIN_CONFIG.items():
             db_path = os.path.join(BASE_DIR, cfg["db_path"])
-            if not os.path.exists(db_path):
-                continue
-            try:
-                with sqlite3.connect(db_path) as conn:
-                    rows = conn.execute(
-                        f"SELECT COUNT(*) FROM {cfg['table']}"
-                    ).fetchone()[0]
-                metrics[name] = {
-                    "rows":       rows,
-                    "size_bytes": os.path.getsize(db_path),
-                }
-            except Exception as e:
-                self.logger.warning(f"  ⚠️ {name} 메트릭 수집 실패: {e}")
+            metrics[name] = collect_domain_metrics(db_path, cfg["table"])
 
-        for db in GLOBAL_DBS:
-            db_path = os.path.join(BASE_DIR, db["path"])
-            if not os.path.exists(db_path):
-                continue
-            try:
-                with sqlite3.connect(db_path) as conn:
-                    rows = conn.execute(
-                        f"SELECT COUNT(*) FROM {db['table']}"
-                    ).fetchone()[0]
-                metrics[db["name"]] = {
-                    "rows":       rows,
-                    "size_bytes": os.path.getsize(db_path),
-                }
-            except Exception as e:
-                self.logger.warning(f"  ⚠️ {db['name']} 메트릭 수집 실패: {e}")
+        metrics_path = os.path.join(METRICS_DIR, f"metrics_{backup_date}.json")
+        with open(metrics_path, "w", encoding="utf-8") as f:
+            json.dump(metrics, f, indent=2, ensure_ascii=False)
+        self.logger.info(f"📊 메트릭 저장: {metrics_path}")
 
-        return metrics
-
-    def _generate_summary(self, metrics: Dict) -> str:
-        """GitHub Step Summary용 마크다운 테이블 생성"""
-        lines = [
-            "### 📊 백업 메트릭 요약",
-            "| 도메인 | 레코드 수 | 파일 크기(MB) |",
-            "| --- | ---: | ---: |",
-        ]
-        for name, data in metrics.items():
-            mb = data["size_bytes"] / (1024 * 1024)
-            lines.append(f"| {name} | {data['rows']:,} | {mb:.2f} |")
-        return "\n".join(lines)
+        # Step Summary용 마크다운을 stdout으로도 출력 (워크플로우에서 캡처)
+        print(markdown)
 
     # ──────────────────────────────────────────
     # Internal — collect & merge
@@ -386,10 +325,10 @@ class YearlyBackup:
         for name in targets:
             self.logger.info(f"🚀 {name} 수집 시작")
             try:
-                cfg       = DOMAIN_CONFIG[name]
-                collector = cfg["class"](shard="none", full=True)
+                cls       = COLLECTOR_CLASSES[name]
+                collector = cls(shard="none", full=True)
                 for region in ALL_REGIONS:
-                    args = cfg["fetch_args"](region, year)
+                    args = DOMAIN_CONFIG[name]["fetch_args"](region, year)
                     if isinstance(args, list):
                         for a in args:
                             collector.fetch_region(**a)
@@ -432,8 +371,9 @@ class YearlyBackup:
             dst  = os.path.join(self.backup_dir, f"{backup_date}_{name}.db")
             vacuum_into(src, dst)
             size = os.path.getsize(dst) / 1024 / 1024
-            self.logger.info(f"  ✅ {name} 백업: {os.path.basename(dst)} ({size:.1f} MB)")
-
+            self.logger.info(
+                f"  ✅ {name} 백업: {os.path.basename(dst)} ({size:.1f} MB)"
+            )
         for db in GLOBAL_DBS:
             src = os.path.join(BASE_DIR, db["path"])
             if not os.path.exists(src):
@@ -450,7 +390,9 @@ class YearlyBackup:
     def _verify_integrity(self, db_path: str) -> bool:
         try:
             with sqlite3.connect(db_path) as conn:
-                return conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+                return conn.execute(
+                    "PRAGMA integrity_check"
+                ).fetchone()[0] == "ok"
         except Exception:
             return False
 
@@ -466,19 +408,17 @@ class YearlyBackup:
 
     def _verify_samples(self, src: str, dst: str,
                         table: str, sample_size: int = 10) -> bool:
-        """랜덤 샘플 행을 원본과 백업에서 1:1 비교"""
         try:
             with sqlite3.connect(src) as s:
-                cols   = [c[1] for c in s.execute(f"PRAGMA table_info({table})")]
-                id_col = cols[0]
+                cols    = [c[1] for c in s.execute(f"PRAGMA table_info({table})")]
+                id_col  = cols[0]
                 samples = s.execute(
                     f"SELECT * FROM {table} ORDER BY RANDOM() LIMIT {sample_size}"
                 ).fetchall()
             with sqlite3.connect(dst) as d:
                 for row in samples:
-                    sid  = row[0]
                     drow = d.execute(
-                        f"SELECT * FROM {table} WHERE {id_col} = ?", (sid,)
+                        f"SELECT * FROM {table} WHERE {id_col} = ?", (row[0],)
                     ).fetchone()
                     if drow is None or str(row) != str(drow):
                         return False
@@ -510,10 +450,10 @@ class YearlyBackup:
         name = issue["collector"]
         self.logger.info(f"  🔧 {name} 재수집 시작")
         try:
-            cfg       = DOMAIN_CONFIG[name]
-            collector = cfg["class"](shard="none", full=True)
+            cls       = COLLECTOR_CLASSES[name]
+            collector = cls(shard="none", full=True)
             for region in ALL_REGIONS:
-                args = cfg["fetch_args"](region, year)
+                args = DOMAIN_CONFIG[name]["fetch_args"](region, year)
                 if isinstance(args, list):
                     for a in args:
                         collector.fetch_region(**a)
@@ -522,7 +462,8 @@ class YearlyBackup:
             collector.close()
 
             module   = __import__(
-                f"scripts.{cfg['merge_script']}", fromlist=["merge_databases"]
+                f"scripts.{DOMAIN_CONFIG[name]['merge_script']}",
+                fromlist=["merge_databases"]
             )
             merge_fn = getattr(module, "merge_databases")
             if name in ("meal", "timetable", "schedule"):
@@ -531,7 +472,7 @@ class YearlyBackup:
                 merge_fn()
 
             backup_date = now_kst().strftime("%Y%m%d")
-            src = os.path.join(BASE_DIR, cfg["db_path"])
+            src = os.path.join(BASE_DIR, DOMAIN_CONFIG[name]["db_path"])
             dst = os.path.join(self.backup_dir, f"{backup_date}_{name}.db")
             vacuum_into(src, dst)
             self.logger.info(f"  ✅ {name} 복구 완료")
@@ -545,7 +486,6 @@ class YearlyBackup:
         try:
             corrupt_path = dst + ".corrupt"
             os.rename(dst, corrupt_path)
-            self.logger.info(f"  📦 손상본 보관: {os.path.basename(corrupt_path)}")
             src         = os.path.join(BASE_DIR, DOMAIN_CONFIG[name]["db_path"])
             backup_date = now_kst().strftime("%Y%m%d")
             new_dst     = os.path.join(self.backup_dir, f"{backup_date}_{name}.db")
@@ -624,3 +564,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+ᆫ
