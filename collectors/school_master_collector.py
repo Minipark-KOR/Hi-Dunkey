@@ -49,6 +49,10 @@ class SchoolMasterCollector(BaseCollector):
         # BaseCollector 초기화
         super().__init__("school", BASE_DIR, shard, school_range)
         
+        # ✅ 추가: 경로 강제 고정
+        self.db_path = db_path
+        print(f"DEBUG: 최종 확정 DB 경로 -> {self.db_path}")
+
         self.incremental = incremental
         self.full = full
         self.compare = compare
