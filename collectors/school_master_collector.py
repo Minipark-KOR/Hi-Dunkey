@@ -19,7 +19,7 @@ from core.meta_vocab import MetaVocabManager
 from constants.codes import NEIS_API_KEY, NEIS_ENDPOINTS, ALL_REGIONS
 from core.kst_time import now_kst
 
-BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "../data/master")
+BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data/master")
 os.makedirs(BASE_DIR, exist_ok=True)
 
 # ✅ 수정: 올바른 global_vocab.db 경로
@@ -167,7 +167,7 @@ class SchoolMasterCollector(BaseCollector):
                 "KEY": NEIS_API_KEY,
                 "Type": "json",
                 "pIndex": p_idx,
-                "pSize": 500,
+                "pSize": 1000,
                 "ATPT_OFCDC_SC_CODE": region_code
             }
             retry_count = 0
