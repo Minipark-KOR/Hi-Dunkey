@@ -167,8 +167,8 @@ class AnnualFullMealCollector(BaseCollector):
                 "MLSV_TO_YMD":       date_to,
             }
             if self.debug_mode:
-    self.logger.info(f"DEBUG: KEY={NEIS_API_KEY[:5]}*** REGION={region} RANGE={date_from}-{date_to}")
-    
+                self.logger.info(f"DEBUG: KEY={NEIS_API_KEY[:5]}*** REGION={region} RANGE={date_from}-{date_to}")
+
             try:
                 res = safe_json_request(self.session, NEIS_URL, params, self.logger)
                 if not res or "mealServiceDietInfo" not in res:
