@@ -33,6 +33,10 @@ class SchoolMasterCollector(BaseCollector):
     def __init__(self, shard: str = "none", school_range: Optional[str] = None,
                  incremental: bool = False, full: bool = False, compare: bool = False,
                  debug_mode: bool = False):
+
+        # 🔍 BASE_DIR이 실제로 어디인지 로그를 찍어봅니다.
+        print(f"DEBUG: 현재 BASE_DIR은 {BASE_DIR} 입니다.")
+
         # 샤드 DB 경로
         if shard == "none":
             db_name = "school_master.db"
