@@ -167,7 +167,7 @@ class SchoolMasterCollector(BaseCollector):
                 "KEY": NEIS_API_KEY,
                 "Type": "json",
                 "pIndex": p_idx,
-                "pSize": 1000,
+                "pSize": 500,
                 "ATPT_OFCDC_SC_CODE": region_code
             }
             retry_count = 0
