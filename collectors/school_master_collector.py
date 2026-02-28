@@ -162,29 +162,60 @@ class SchoolMasterCollector(BaseCollector):
     
     def fetch_region(self, region_code: str):
         p_idx = 1
-        consecutive_errors = 0
-        max_page = 50
-        max_retries_per_page = 5  # 페이지당 최대 재시도 횟수
+        max_retries_per_page = 5
 
-        while p_idx <= max_page:
-            params = {
-                "KEY": NEIS_API_KEY,
-                "Type": "json",
-                "pIndex": p_idx,
-                "pSize": 100,
-                "ATPT_OFCDC_SC_CODE": region_code
-            }
+        # 첫 페이지 요청으로 total_count 획득
+        params = {
+            "KEY": NEIS_API_KEY,
+            "Type": "json",
+            "pIndex": p_idx,
+            "pSize": 100,                     # ← 100 고정
+            "ATPT_OFCDC_SC_CODE": region_code
+        }
+
+        res = safe_json_request(self.session, NEIS_URL, params, self.logger)
+        if not res or "schoolInfo" not in res:
+            self.logger.error(f"[{region_code}] 첫 페이지 응답 없음")
+            return
+
+        # total_count 추출
+        try:
+            total_count = res["schoolInfo"][0]["head"][0]["list_total_count"]
+            total_pages = (total_count + 99) // 100   # 올림 계산
+            self.logger.info(f"[{region_code}] 전체 {total_count}개, 총 {total_pages}페이지")
+        except (KeyError, IndexError, TypeError) as e:
+            self.logger.error(f"[{region_code}] total_count 파싱 실패: {e}")
+            return
+
+        # 첫 페이지 처리
+        rows = res["schoolInfo"][1].get("row", [])
+        if rows:
+            batch = []
+            for r in rows:
+                items = self._process_item(r)
+                if items:
+                    batch.extend(items)
+            if batch:
+                self.enqueue(batch)
+            self.logger.info(f"[{region_code}] p=1 → {len(rows)}건")
+
+        # 나머지 페이지 처리
+        for page in range(2, total_pages + 1):
+            params["pIndex"] = page
             retry_count = 0
             success = False
+
             while retry_count < max_retries_per_page and not success:
                 try:
                     res = safe_json_request(self.session, NEIS_URL, params, self.logger)
                     if not res or "schoolInfo" not in res:
                         break
+
                     rows = res["schoolInfo"][1].get("row", [])
                     if not rows:
                         success = True
                         break
+
                     batch = []
                     for r in rows:
                         items = self._process_item(r)
@@ -192,20 +223,20 @@ class SchoolMasterCollector(BaseCollector):
                             batch.extend(items)
                     if batch:
                         self.enqueue(batch)
-                    self.logger.info(f"[{region_code}] p={p_idx} → {len(rows)}건")
+
+                    self.logger.info(f"[{region_code}] p={page} → {len(rows)}건")
                     success = True
-                    consecutive_errors = 0
-                    if len(rows) < 1000:
-                        return  # 정상 종료
-                    p_idx += 1
-                    time.sleep(0.5)
+                    time.sleep(0.1)   # 과도한 요청 방지
+
                 except Exception as e:
                     retry_count += 1
-                    self.logger.error(f"[{region_code}] p={p_idx} 시도 {retry_count} 실패: {e}")
+                    self.logger.error(f"[{region_code}] p={page} 시도 {retry_count} 실패: {e}")
                     if retry_count >= max_retries_per_page:
-                        self.logger.error(f"[{region_code}] p={p_idx} 최종 실패, 다음 지역으로 이동")
-                        return  # 이 지역 포기하고 다음 지역으로
+                        self.logger.error(f"[{region_code}] p={page} 최종 실패, 다음 지역으로 이동")
+                        return   # 현재 지역 포기
                     time.sleep(2 ** retry_count)  # 지수 백오프
+
+        self.logger.info(f"[{region_code}] 수집 완료")
     
     def close(self):
         """종료 처리"""
