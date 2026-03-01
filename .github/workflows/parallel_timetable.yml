@@ -19,30 +19,30 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - region: "J10" shard: "odd" range: "A" name: "Gyeonggi-odd-A"
-          - region: "J10" shard: "odd" range: "B" name: "Gyeonggi-odd-B"
-          - region: "J10" shard: "even" range: "A" name: "Gyeonggi-even-A"
-          - region: "J10" shard: "even" range: "B" name: "Gyeonggi-even-B"
-          - region: "B10" shard: "odd" range: "none" name: "Seoul-odd"
-          - region: "B10" shard: "even" range: "none" name: "Seoul-even"
-          - region: "C10" shard: "odd" range: "none" name: "Busan-odd"
-          - region: "C10" shard: "even" range: "none" name: "Busan-even"
-          - region: "E10" shard: "odd" range: "none" name: "Incheon-odd"
-          - region: "E10" shard: "even" range: "none" name: "Incheon-even"
-          - region: "D10" shard: "odd" range: "none" name: "Daegu-odd"
-          - region: "D10" shard: "even" range: "none" name: "Daegu-even"
-          - region: "F10" shard: "none" range: "none" name: "Gwangju"
-          - region: "G10" shard: "none" range: "none" name: "Daejeon"
-          - region: "H10" shard: "none" range: "none" name: "Ulsan"
-          - region: "I10" shard: "none" range: "none" name: "Sejong"
-          - region: "K10" shard: "none" range: "none" name: "Gangwon"
-          - region: "M10" shard: "none" range: "none" name: "Chungbuk"
-          - region: "N10" shard: "none" range: "none" name: "Chungnam"
-          - region: "P10" shard: "none" range: "none" name: "Jeonbuk"
-          - region: "Q10" shard: "none" range: "none" name: "Jeonnam"
-          - region: "R10" shard: "none" range: "none" name: "Gyeongbuk"
-          - region: "S10" shard: "none" range: "none" name: "Gyeongnam"
-          - region: "T10" shard: "none" range: "none" name: "Jeju"
+          - { name: "Gyeonggi-odd-A",  region: "J10", shard: "odd",  range: "A"    }
+          - { name: "Gyeonggi-odd-B",  region: "J10", shard: "odd",  range: "B"    }
+          - { name: "Gyeonggi-even-A", region: "J10", shard: "even", range: "A"    }
+          - { name: "Gyeonggi-even-B", region: "J10", shard: "even", range: "B"    }
+          - { name: "Seoul-odd",       region: "B10", shard: "odd",  range: "none" }
+          - { name: "Seoul-even",      region: "B10", shard: "even", range: "none" }
+          - { name: "Busan-odd",       region: "C10", shard: "odd",  range: "none" }
+          - { name: "Busan-even",      region: "C10", shard: "even", range: "none" }
+          - { name: "Daegu-odd",       region: "D10", shard: "odd",  range: "none" }
+          - { name: "Daegu-even",      region: "D10", shard: "even", range: "none" }
+          - { name: "Incheon-odd",     region: "E10", shard: "odd",  range: "none" }
+          - { name: "Incheon-even",    region: "E10", shard: "even", range: "none" }
+          - { name: "Gwangju",         region: "F10", shard: "none", range: "none" }
+          - { name: "Daejeon",         region: "G10", shard: "none", range: "none" }
+          - { name: "Ulsan",           region: "H10", shard: "none", range: "none" }
+          - { name: "Sejong",          region: "I10", shard: "none", range: "none" }
+          - { name: "Gangwon",         region: "K10", shard: "none", range: "none" }
+          - { name: "Chungbuk",        region: "M10", shard: "none", range: "none" }
+          - { name: "Chungnam",        region: "N10", shard: "none", range: "none" }
+          - { name: "Jeonbuk",         region: "P10", shard: "none", range: "none" }
+          - { name: "Jeonnam",         region: "Q10", shard: "none", range: "none" }
+          - { name: "Gyeongbuk",       region: "R10", shard: "none", range: "none" }
+          - { name: "Gyeongnam",       region: "S10", shard: "none", range: "none" }
+          - { name: "Jeju",            region: "T10", shard: "none", range: "none" }
 
     steps:
       - uses: actions/checkout@v4

@@ -34,6 +34,12 @@ jobs:
           - { name: "Ulsan",           region: "H10", shard: "none", range: "none" }
           - { name: "Sejong",          region: "I10", shard: "none", range: "none" }
           - { name: "Gangwon",         region: "K10", shard: "none", range: "none" }
+          - { name: "Chungbuk",        region: "M10", shard: "none", range: "none" }
+          - { name: "Chungnam",        region: "N10", shard: "none", range: "none" }
+          - { name: "Jeonbuk",         region: "P10", shard: "none", range: "none" }
+          - { name: "Jeonnam",         region: "Q10", shard: "none", range: "none" }
+          - { name: "Gyeongbuk",       region: "R10", shard: "none", range: "none" }
+          - { name: "Gyeongnam",       region: "S10", shard: "none", range: "none" }
           - { name: "Jeju",            region: "T10", shard: "none", range: "none" }
 
     steps:
