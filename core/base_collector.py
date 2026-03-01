@@ -23,7 +23,8 @@ from .shard import should_include_school
 from .kst_time import now_kst
 from .data_guard import DataGuard, DataDropException
 from .collect_log import CollectLog
-from constants.codes import NEIS_API_KEY, MASTER_DB
+from constants.codes import NEIS_API_KEY
+from constants.paths import MASTER_DB_PATH as MASTER_DB
 
 class BaseCollector(ABC):
     """공통 수집기 베이스 클래스"""
