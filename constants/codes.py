@@ -27,10 +27,17 @@ if NEIS_KEYS_JSON:
         _data = json.loads(NEIS_KEYS_JSON)
         if not isinstance(_data, list):
             raise TypeError(f"NEIS_KEYS_JSON은 리스트여야 합니다. 받은 타입: {type(_data)}")
-        NEIS_KEYS = [item["key"] for item in _data if "key" in item]
-        # rate_limit, daily_limit이 있으면 추출 (없으면 기본값)
-        NEIS_RATE_LIMITS = [item.get("rate_limit", 1000.0) for item in _data]
-        NEIS_DAILY_LIMITS = [item.get("daily_limit") for item in _data]
+        
+        # 문자열 배열인 경우 (예: ["key1", "key2", ...])
+        if all(isinstance(item, str) for item in _data):
+            NEIS_KEYS = _data
+            NEIS_RATE_LIMITS = [1000.0] * len(_data)   # 기본 rate limit
+            NEIS_DAILY_LIMITS = [None] * len(_data)    # 기본 daily limit 없음
+        else:
+            # 객체 배열인 경우 (예: [{"name":"key1","key":"..."}, ...])
+            NEIS_KEYS = [item["key"] for item in _data if "key" in item]
+            NEIS_RATE_LIMITS = [item.get("rate_limit", 1000.0) for item in _data]
+            NEIS_DAILY_LIMITS = [item.get("daily_limit") for item in _data]
     except (json.JSONDecodeError, TypeError, KeyError) as e:
         print(f"⚠️ NEIS_KEYS_JSON 파싱 오류: {e}")
         NEIS_KEYS = []
