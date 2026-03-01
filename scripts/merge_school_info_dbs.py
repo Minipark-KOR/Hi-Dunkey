@@ -53,12 +53,21 @@ def merge_databases():
         print(f"💾 기존 DB 백업: {os.path.basename(backup_path)}")
         os.remove(total_db_path)
 
-    # 첫 번째 유효한 샤드에서 스키마 가져오기
-    with sqlite3.connect(shard_dbs[0]) as src:
-        cur = src.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='schools'"
-        )
-        schema = cur.fetchone()[0]
+    # schools 테이블이 있는 첫 번째 파일에서 스키마 가져오기
+    schema = None
+    for db in shard_dbs:
+        with sqlite3.connect(db) as src:
+            cur = src.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='schools'"
+            )
+            row = cur.fetchone()
+            if row:
+                schema = row[0]
+                print(f"📋 스키마 출처: {os.path.basename(db)}")
+                break
+    if schema is None:
+        print("❌ schools 테이블 스키마를 찾을 수 없습니다.")
+        return
 
     # 통합 DB 생성
     conn = sqlite3.connect(total_db_path)
