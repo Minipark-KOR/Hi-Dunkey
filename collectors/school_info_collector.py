@@ -8,6 +8,7 @@
 import os
 import time
 import random
+import sqlite3  # ✅ 추가
 from pathlib import Path
 from typing import List, Dict, Tuple
 
@@ -173,7 +174,7 @@ class SchoolInfoCollector(BaseCollector):
                 it['latitude'], it['longitude'],
                 it['city_id'], it['district_id'], it['street_id'], it['number_bit']
             )
-            for it in batch
+            for it in batch 
         ]
         conn.executemany("""
             INSERT OR REPLACE INTO schools
