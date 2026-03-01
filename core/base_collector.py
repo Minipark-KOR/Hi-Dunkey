@@ -199,16 +199,18 @@ class BaseCollector(ABC):
                 except queue.Empty:
                     break
 
-            if batch:
-                try:
+            # batch 유무와 관계없이 task_done은 반드시 호출
+            try:
+                if batch:
                     self._save_batch(batch)
-                except DataDropException as e:
-                    self.logger.error(f"🚨 데이터 급감 감지: {e}")
-                except Exception as e:
-                    self.logger.error(f"배치 저장 실패: {e}", exc_info=True)
-                finally:
-                    for _ in range(items_processed):
-                        self.q.task_done()
+            except DataDropException as e:
+                self.logger.error(f"🚨 데이터 급감 감지: {e}")
+            except Exception as e:
+                self.logger.error(f"배치 저장 실패: {e}", exc_info=True)
+            finally:
+                for _ in range(items_processed):
+                    self.q.task_done()
+
 
     def _flatten(self, data) -> List:
         if data is None:
@@ -292,4 +294,3 @@ class BaseCollector(ABC):
         self.writer_thread.join(timeout=timeout)
         if self.writer_thread.is_alive():
             self.logger.warning("⚠️ writer_thread가 정상 종료되지 않았습니다.")
-            
