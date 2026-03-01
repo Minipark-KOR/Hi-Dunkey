@@ -85,13 +85,16 @@ class SchoolInfoCollector(BaseCollector):
         self._update_schools_with_diff(rows, region_code)
 
     def _update_schools_with_diff(self, new_rows: List[dict], region_code: str):
+        # 기존 DB에서 schools 테이블이 있는 경우에만 데이터 로드
         existing = {}
-        if os.path.exists(MASTER_DB):
+        # MASTER_DB 대신 현재 샤드 DB에서 읽기
+        if os.path.exists(self.db_path):
             try:
-                with get_db_connection(MASTER_DB) as conn:
-                    if conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schools'").fetchone():
-                        cur = conn.execute("SELECT sc_code, address_hash, latitude, longitude FROM schools")
-                        existing = {row[0]: {"hash": row[1], "lat": row[2], "lon": row[3]} for row in cur}
+                with get_db_connection(self.db_path) as conn:
+                    cur = conn.execute(
+                        "SELECT sc_code, address_hash, latitude, longitude FROM schools"
+                    )
+                    existing = {row[0]: {"hash": row[1], "lat": row[2], "lon": row[3]} for row in cur}
             except Exception as e:
                 self.logger.error(f"기존 schools 테이블 조회 실패: {e}")
 
