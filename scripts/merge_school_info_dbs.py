@@ -18,16 +18,33 @@ def merge_databases():
     start_time = time.time()
     total_db_path = os.path.join(MASTER_DIR, "school_info.db")
 
-    shard_dbs = [
+    # school_ 로 시작하는 모든 .db 파일 (total 제외)
+    all_shard_dbs = [
         db for db in glob.glob(os.path.join(MASTER_DIR, "school_*.db"))
         if "total" not in db
     ]
-    print(f"🔍 발견된 샤드 DB: {len(shard_dbs)}개")
+
+    # 그 중에서 schools 테이블이 있는 파일만 필터링
+    shard_dbs = []
+    for db in all_shard_dbs:
+        try:
+            with sqlite3.connect(db) as conn:
+                cur = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='schools'"
+                )
+                if cur.fetchone():
+                    shard_dbs.append(db)
+                else:
+                    print(f"⚠️ {os.path.basename(db)}: schools 테이블 없음 → 제외")
+        except Exception as e:
+            print(f"⚠️ {os.path.basename(db)}: 검사 실패 ({e}) → 제외")
+
+    print(f"🔍 유효한 샤드 DB: {len(shard_dbs)}개")
     if not shard_dbs:
-        print("❌ 병합할 샤드 데이터 없음")
+        print("❌ 병합할 유효한 샤드 데이터 없음")
         return
 
-    # 기존 통합 DB가 있으면 백업
+    # 기존 통합 DB 백업
     if os.path.exists(total_db_path):
         backup_path = total_db_path.replace(
             ".db", f"_backup_{time.strftime('%Y%m%d_%H%M%S')}.db"
@@ -36,27 +53,21 @@ def merge_databases():
         print(f"💾 기존 DB 백업: {os.path.basename(backup_path)}")
         os.remove(total_db_path)
 
-    # 첫 번째 샤드에서 schools 테이블 스키마 가져오기
-    first_shard = shard_dbs[0]
-    with sqlite3.connect(first_shard) as src:
+    # 첫 번째 유효한 샤드에서 스키마 가져오기
+    with sqlite3.connect(shard_dbs[0]) as src:
         cur = src.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='schools'"
         )
-        row = cur.fetchone()
-        if row is None:
-            print(f"❌ 샤드 DB '{os.path.basename(first_shard)}'에 schools 테이블이 없습니다.")
-            print("수집이 제대로 완료되었는지 확인하세요.")
-            return
-        schema = row[0]
+        schema = cur.fetchone()[0]
 
-    # 통합 DB 생성 및 스키마 적용
+    # 통합 DB 생성
     conn = sqlite3.connect(total_db_path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute(schema)
     conn.commit()
 
-    # 모든 샤드 데이터 병합
+    # 모든 유효한 샤드 병합
     total_rows = 0
     for shard_db in shard_dbs:
         print(f"📦 병합 중: {os.path.basename(shard_db)}")
@@ -86,3 +97,4 @@ def merge_databases():
 
 if __name__ == "__main__":
     merge_databases()
+    
