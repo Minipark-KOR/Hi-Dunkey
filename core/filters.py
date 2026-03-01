@@ -49,6 +49,20 @@ class TextFilter:
             return ""
         return re.sub(r'<[^>]*>', ' ', text).strip()
 
+class AddressFilter:
+    """주소 필터 및 해시 생성"""
+    
+    @staticmethod
+    def hash(address: str) -> str:
+        """
+        주소 해시 생성 (SHA256)
+        - school_info_collector에서 주소 변경 감지용으로 사용
+        """
+        if not address:
+            return ""
+        import hashlib
+        return hashlib.sha256(address.encode('utf-8')).hexdigest()[:16]
+
 
 class SubjectNameFilter:
     """과목명 특화 필터 (수학I → 수학)"""
