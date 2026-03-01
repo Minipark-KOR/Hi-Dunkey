@@ -38,22 +38,19 @@ def handle_geocode_retry(failure: Dict[str, Any]) -> HandlerResult:
     """
     try:
         from core.geo import VWorldGeocoder
-
         sc_code = failure.get('sc_code', '')
         address = failure.get('address', '')
         shard   = failure.get('shard', '')
 
         if not sc_code or not address or not shard:
-            logger.error(
-                f"지오코딩 재시도: 필수 정보 부족 "
-                f"sc_code={sc_code!r} address={address!r} shard={shard!r} id={failure['id']}"
-            )
-            return (True, True)  # 정보 자체가 없으면 재시도 불가 → orphan
+            logger.error(f"필수 정보 부족: sc_code={sc_code}, address={address}, shard={shard}")
+            return (True, True)
 
         geo = VWorldGeocoder(calls_per_second=3.0)
         coords = geo.geocode(address)
         if not coords:
-            return (False, False)  # API 실패 → 재시도 예약
+            logger.warning(f"geocode 실패 (주소: {address[:50]}...)")
+            return (False, False)
 
         lon, lat = coords
         db_path = f"data/master/school_{shard}.db"
@@ -76,7 +73,7 @@ def handle_geocode_retry(failure: Dict[str, Any]) -> HandlerResult:
         return (True, False)  # 정상 성공
 
     except Exception as e:
-        logger.error(f"지오코딩 재시도 예외: {e}", exc_info=True)
+        logger.error(f"예외 발생: {e}", exc_info=True)
         return (False, False)
 
 
