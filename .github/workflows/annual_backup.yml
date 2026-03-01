@@ -2,7 +2,7 @@ name: Yearly Academic Backup
 
 on:
   schedule:
-    - cron: "30 21 21 2 *"   # 2월 21일 21:30 UTC
+    - cron: "30 21 21 2 *"
   workflow_dispatch:
     inputs:
       collectors:
@@ -22,6 +22,8 @@ on:
 jobs:
   backup:
     runs-on: ubuntu-latest
+    env:                                             # ✅ PYTHONPATH 추가
+      PYTHONPATH: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
 
@@ -50,7 +52,7 @@ jobs:
       - name: Download school master data
         uses: actions/download-artifact@v4
         with:
-          name: school-master-data
+          name: school-info-total-db                    # ✅ 수정: school-info-total-db
           path: data/master/
         continue-on-error: true
 
@@ -58,9 +60,9 @@ jobs:
         env:
           NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
         run: |
-          if [ ! -f data/master/school_master.db ]; then
-            echo "⚠️ school_master.db 없음 → 재수집"
-            python collectors/school_master_collector.py --regions ALL
+          if [ ! -f data/master/school_info.db ]; then   # ✅ 수정: school_info.db
+            echo "⚠️ school_info.db 없음 → 재수집"
+            python collectors/school_info_collector.py --regions ALL   # ✅ 수정: school_info_collector.py
           fi
 
       - name: Run backup

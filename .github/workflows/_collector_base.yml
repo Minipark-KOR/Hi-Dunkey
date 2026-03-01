@@ -55,6 +55,8 @@ jobs:
     needs: prepare-vocab
     runs-on: ubuntu-latest
     if: always()
+    env:                                             # ✅ PYTHONPATH 추가
+      PYTHONPATH: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
       - name: Cache pip

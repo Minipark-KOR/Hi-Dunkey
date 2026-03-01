@@ -9,7 +9,7 @@ import os
 import hashlib
 import time
 import sqlite3
-import requests  # ✅ 상단으로 이동 (PEP8)
+import requests  # ✅ 추가됨
 from typing import Optional, Dict, List, Tuple
 from urllib.parse import quote
 from datetime import datetime

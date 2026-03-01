@@ -2,12 +2,14 @@ name: Retry Failed Regions
 
 on:
   schedule:
-    - cron: "30 1 * * *"        # 매일 10:30 KST (실패 재시도)
+    - cron: "30 1 * * *"
   workflow_dispatch:
 
 jobs:
   retry:
     runs-on: ubuntu-latest
+    env:                                             # ✅ PYTHONPATH 추가
+      PYTHONPATH: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -20,5 +22,5 @@ jobs:
           NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
           NEIS_KEYS_JSON: ${{ secrets.NEIS_KEYS_JSON }}
         run: |
-          python collectors/annual_db_collector.py --retry_failed   # ✅ 변경
+          python collectors/annual_db_collector.py --retry_failed
           

@@ -54,7 +54,7 @@ jobs:
         env:
           NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
         run: |
-          CMD="python collectors/school_master_collector.py \
+          CMD="python collectors/school_info_collector.py \      # ✅ 수정
             --regions ${{ matrix.region }} \
             --shard ${{ matrix.shard }}"
 
@@ -69,7 +69,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: school-shard-${{ matrix.name }}
-          path: data/master/school_master_*.db
+          path: data/master/school_info_*.db                     # ✅ 수정: school_info_*.db
 
       - name: Upload logs on failure
         if: failure()
@@ -81,10 +81,12 @@ jobs:
   finalize:
     needs: collect
     if: always()
-    uses: ./.github/workflows/_collector-base.yml
+    uses: ./.github/workflows/_collector_base.yml                 # ✅ 수정: _collector_base.yml
     with:
       collector-name: "school"
-      merge-script: "merge_school_master_dbs.py"
+      merge-script: "merge_school_info_dbs.py"
       consolidate-vocab: false
     secrets:
       NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
+      NEIS_KEYS_JSON: ${{ secrets.NEIS_KEYS_JSON }}
+      

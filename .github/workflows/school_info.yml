@@ -2,7 +2,7 @@ name: School Info Monthly Update
 
 on:
   schedule:
-    - cron: "0 2 1 * *"          # 매월 1일 02:00 UTC
+    - cron: "0 2 1 * *"
   workflow_dispatch:
 
 env:
@@ -53,8 +53,8 @@ jobs:
         id: cache-master
         uses: actions/cache/restore@v4
         with:
-          path: data/master/school_info.db   # ✅ 변경 (파일명)
-          key: school-info-${{ env.YYYYMM }}  # ✅ 캐시 키 변경 (선택)
+          path: data/master/school_info.db
+          key: school-info-${{ env.YYYYMM }}
           restore-keys: school-info-
       - name: Create directories
         run: mkdir -p data/master data/active
@@ -63,14 +63,14 @@ jobs:
           NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
           NEIS_KEYS_JSON: ${{ secrets.NEIS_KEYS_JSON }}
         run: |
-          CMD="python collectors/school_info_collector.py --regions ${{ matrix.region }} --shard ${{ matrix.shard }}"  # ✅ 변경
+          CMD="python collectors/school_info_collector.py --regions ${{ matrix.region }} --shard ${{ matrix.shard }}"
           [ "${{ matrix.range }}" != "none" ] && CMD="${CMD} --school_range ${{ matrix.range }}"
           eval ${CMD}
       - name: Upload shard DB
         uses: actions/upload-artifact@v4
         with:
           name: school-info-shard-${{ matrix.name }}
-          path: data/master/school_info_*.db   # ✅ 변경
+          path: data/master/school_info_*.db
           retention-days: 7
       - name: Upload logs on failure
         if: failure()
@@ -85,7 +85,7 @@ jobs:
     uses: ./.github/workflows/_collector_base.yml
     with:
       collector-name: "school"
-      merge-script: "merge_school_info_dbs.py"   # ✅ 변경
+      merge-script: "merge_school_info_dbs.py"
       consolidate-vocab: false
     secrets:
       NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
@@ -100,17 +100,17 @@ jobs:
       - name: Download merged DB
         uses: actions/download-artifact@v4
         with:
-          name: school-info-total-db   # ✅ 변경
+          name: school-info-total-db
           path: data/master/
       - name: Save school_info.db to cache
         uses: actions/cache/save@v4
         with:
-          path: data/master/school_info.db   # ✅ 변경
+          path: data/master/school_info.db
           key: school-info-${{ env.YYYYMM }}
       - name: Upload to GitHub Release (fallback)
         run: |
           gh release upload latest-master \
-            data/master/school_info.db --clobber   # ✅ 변경
+            data/master/school_info.db --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           

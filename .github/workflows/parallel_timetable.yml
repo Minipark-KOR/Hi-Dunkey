@@ -60,7 +60,7 @@ jobs:
           if [ "${{ matrix.range }}" != "none" ]; then
             RANGE_ARG="--school_range ${{ matrix.range }}"
           fi
-          python collectors/timetable_collector.py \   # 변경 없음
+          python collectors/timetable_collector.py \
             --regions ${{ matrix.region }} \
             --year ${{ github.event.inputs.year }} \
             --semester ${{ github.event.inputs.semester }} \

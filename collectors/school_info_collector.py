@@ -17,7 +17,8 @@ from core.school_id import create_school_id
 from core.meta_vocab import MetaVocabManager
 from core.filters import AddressFilter
 from core.geo import VWorldGeocoder
-from constants.codes import NEIS_ENDPOINTS, MASTER_DB
+from constants.codes import NEIS_ENDPOINTS
+from constants.paths import MASTER_DB_PATH as MASTER_DB  # ✅ 수정: paths에서 가져옴
 from core.kst_time import now_kst
 from constants.paths import MASTER_DIR
 

@@ -17,6 +17,8 @@ on:
 jobs:
   create:
     runs-on: ubuntu-latest
+    env:                                             # ✅ PYTHONPATH 추가
+      PYTHONPATH: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
 
@@ -70,3 +72,4 @@ jobs:
         with:
           name: logs-create-decade-${{ github.run_id }}
           path: logs/
+          

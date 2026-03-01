@@ -15,6 +15,7 @@
     <meta name="theme-color" content="#4c6ef5">
     
     <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.js"></script>
+
     <style>
         /* ===== 공통 스타일 ===== */
         * {
@@ -576,6 +577,40 @@
         console.log(`현재 모드: ${isLocal ? '로컬 테스트' : 'Vercel 배포'}`);
         console.log(`API 주소: ${API_BASE}`);
 
+        // ===== 개선된 fetchWithRetry (4xx/5xx 분기) =====
+        async function fetchWithRetry(url, retries = MAX_RETRIES) {
+            for (let i = 0; i < retries; i++) {
+                try {
+                    const res = await fetch(url);
+                    
+                    if (res.ok) {
+                        return await res.json();
+                    }
+                    
+                    // 4xx: 클라이언트 오류 → 재시도 없이 즉시 실패
+                    if (res.status >= 400 && res.status < 500) {
+                        throw new Error(`클라이언트 오류 HTTP ${res.status}: ${url}`);
+                    }
+                    
+                    // 5xx: 서버 오류 → 남은 재시도 횟수가 있으면 대기 후 재시도
+                    if (res.status >= 500 && i < retries - 1) {
+                        const delay = 1000 * (i + 1);
+                        console.warn(`서버 오류 ${res.status}, ${delay}ms 후 재시도 (${i+1}/${retries})`);
+                        await new Promise(r => setTimeout(r, delay));
+                        continue;
+                    }
+                    
+                    throw new Error(`HTTP ${res.status}: ${url}`);
+                    
+                } catch (e) {
+                    if (i === retries - 1) throw e;
+                    const delay = 1000 * (i + 1);
+                    console.warn(`요청 실패: ${e.message}, ${delay}ms 후 재시도`);
+                    await new Promise(r => setTimeout(r, delay));
+                }
+            }
+        }
+
         // ===== 전역 변수 =====
         let selectedSchool = null;
         let selectedSchoolName = '';
@@ -609,20 +644,6 @@
 
         function hideLoading() {
             document.getElementById('loading').style.display = 'none';
-        }
-
-        // API 재시도 로직
-        async function fetchWithRetry(url, retries = MAX_RETRIES) {
-            for (let i = 0; i < retries; i++) {
-                try {
-                    const res = await fetch(url);
-                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                    return await res.json();
-                } catch (e) {
-                    if (i === retries - 1) throw e;
-                    await new Promise(r => setTimeout(r, 1000 * (i + 1)));
-                }
-            }
         }
 
         // ===== 화면 크기에 따른 초기 뷰 설정 =====

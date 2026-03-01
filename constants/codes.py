@@ -25,13 +25,21 @@ NEIS_KEYS_JSON = os.environ.get("NEIS_KEYS_JSON")
 if NEIS_KEYS_JSON:
     try:
         _data = json.loads(NEIS_KEYS_JSON)
-        NEIS_KEYS = _data.get("keys", [])
-        NEIS_RATE_LIMITS = _data.get("rate_limits", [])
-        NEIS_DAILY_LIMITS = _data.get("daily_limits", [])
-    except:
+        if not isinstance(_data, list):
+            raise TypeError(f"NEIS_KEYS_JSON은 리스트여야 합니다. 받은 타입: {type(_data)}")
+        NEIS_KEYS = [item["key"] for item in _data if "key" in item]
+        # rate_limit, daily_limit이 있으면 추출 (없으면 기본값)
+        NEIS_RATE_LIMITS = [item.get("rate_limit", 1000.0) for item in _data]
+        NEIS_DAILY_LIMITS = [item.get("daily_limit") for item in _data]
+    except (json.JSONDecodeError, TypeError, KeyError) as e:
+        print(f"⚠️ NEIS_KEYS_JSON 파싱 오류: {e}")
         NEIS_KEYS = []
+        NEIS_RATE_LIMITS = []
+        NEIS_DAILY_LIMITS = []
 else:
     NEIS_KEYS = []
+    NEIS_RATE_LIMITS = []
+    NEIS_DAILY_LIMITS = []
 
 # 키 매니저 인스턴스 생성 (싱글톤)
 from core.api_key_manager import APIKeyManager
@@ -147,7 +155,9 @@ API_CONFIG = {
 }
 
 LIFECYCLE_DATE = "0222"
-MASTER_DB = str(Path(__file__).parent.parent / "data" / "master" / "school_info.db")   # ✅ 변경
+
+# MASTER_DB 경로는 paths.py에서 관리하도록 통일 (여기서는 삭제)
+# from constants.paths import MASTER_DB
 
 def check_api_keys() -> Dict[str, bool]:
     required_keys = {

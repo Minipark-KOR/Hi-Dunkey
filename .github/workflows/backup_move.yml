@@ -2,12 +2,14 @@ name: Move Old Backups to Archive
 
 on:
   schedule:
-    - cron: "0 6 22 2 *"   # 2월 22일 06:00 UTC = 15:00 KST
+    - cron: "0 6 22 2 *"
   workflow_dispatch:
 
 jobs:
   move:
     runs-on: ubuntu-latest
+    env:                                             # ✅ PYTHONPATH 추가
+      PYTHONPATH: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
 
@@ -65,3 +67,4 @@ jobs:
         with:
           name: logs-move-feb22-${{ github.run_id }}
           path: logs/
+          

@@ -56,7 +56,7 @@ jobs:
           if [ "${{ matrix.range }}" != "none" ]; then
             RANGE_ARG="--school_range ${{ matrix.range }}"
           fi
-          python collectors/schedule_collector.py \   # 변경 없음
+          python collectors/schedule_collector.py \
             --regions ${{ matrix.region }} \
             --year ${{ github.event.inputs.year }} \
             --shard ${{ matrix.shard }} \

@@ -29,18 +29,25 @@ def run_collector(script, args, desc):
 
 def run_meal_daily():
     """매일 06:10 KST: Hot50 학교 급식 수집"""
-    logger.info("🍽️ 급식 일일 수집 (Hot50)")
+    hot_schools = get_hot_schools(limit=50)
+    if hot_schools:
+        regions = ",".join(hot_schools)
+        logger.info(f"🍽️ 급식 일일 수집 (Hot50: {len(hot_schools)}개)")
+    else:
+        regions = "ALL"
+        logger.warning("Hot50 목록이 비어 있어 전체 지역 수집으로 fallback")
+    
     run_collector(
         "collectors/meal_collector.py",
-        ["--regions", "ALL", "--date", now_kst().strftime("%Y%m%d"),
+        ["--regions", regions, "--date", now_kst().strftime("%Y%m%d"),
          "--shard", "odd", "--incremental"],
-        "급식 odd (incremental)"
+        f"급식 odd (incremental) - regions: {regions}"
     )
     run_collector(
         "collectors/meal_collector.py",
-        ["--regions", "ALL", "--date", now_kst().strftime("%Y%m%d"),
+        ["--regions", regions, "--date", now_kst().strftime("%Y%m%d"),
          "--shard", "even", "--incremental"],
-        "급식 even (incremental)"
+        f"급식 even (incremental) - regions: {regions}"
     )
 
 def run_meal_monthly(day):
@@ -61,18 +68,25 @@ def run_meal_monthly(day):
 
 def run_schedule_daily():
     """매일 06:30 KST: Hot50 학교 학사일정 수집"""
-    logger.info("📅 학사일정 일일 수집 (Hot50)")
+    hot_schools = get_hot_schools(limit=50)
+    if hot_schools:
+        regions = ",".join(hot_schools)
+        logger.info(f"📅 학사일정 일일 수집 (Hot50: {len(hot_schools)}개)")
+    else:
+        regions = "ALL"
+        logger.warning("Hot50 목록이 비어 있어 전체 지역 수집으로 fallback")
+    
     run_collector(
         "collectors/schedule_collector.py",
-        ["--regions", "ALL", "--date", now_kst().strftime("%Y%m%d"),
+        ["--regions", regions, "--date", now_kst().strftime("%Y%m%d"),
          "--shard", "odd", "--incremental"],
-        "학사일정 odd (incremental)"
+        f"학사일정 odd (incremental) - regions: {regions}"
     )
     run_collector(
         "collectors/schedule_collector.py",
-        ["--regions", "ALL", "--date", now_kst().strftime("%Y%m%d"),
+        ["--regions", regions, "--date", now_kst().strftime("%Y%m%d"),
          "--shard", "even", "--incremental"],
-        "학사일정 even (incremental)"
+        f"학사일정 even (incremental) - regions: {regions}"
     )
 
 def run_schedule_monthly(day):
@@ -115,17 +129,17 @@ def run_master():
     if now_kst().day == 1:
         logger.info("🏫 학교정보 월간 수집")
         run_collector(
-            "collectors/school_info_collector.py",   # ✅ 변경
+            "collectors/school_info_collector.py",
             ["--regions", "ALL", "--shard", "odd", "--incremental", "--compare"],
             "학교정보 odd (incremental+compare)"
         )
         run_collector(
-            "collectors/school_info_collector.py",   # ✅ 변경
+            "collectors/school_info_collector.py",
             ["--regions", "ALL", "--shard", "even", "--incremental", "--compare"],
             "학교정보 even (incremental+compare)"
         )
         run_collector(
-            "scripts/merge_school_info_dbs.py",      # ✅ 변경
+            "scripts/merge_school_info_dbs.py",
             [],
             "학교정보 병합"
         )

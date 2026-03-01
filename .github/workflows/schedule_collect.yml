@@ -92,10 +92,15 @@ jobs:
   finalize:
     needs: collect
     if: always()
-    uses: ./.github/workflows/_collector-base.yml
+    uses: ./.github/workflows/_collector_base.yml          # ✅ 수정: _collector_base.yml
     with:
       collector-name: "schedule"
       merge-script: "merge_schedule_dbs.py"
       consolidate-vocab: true
     secrets:
       NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
+      NEIS_KEYS_JSON: ${{ secrets.NEIS_KEYS_JSON }}      # ✅ 추가
+      # NEIS_KEYS_JSON은 base workflow에서 필요하지만 여기서 전달하지 않음 (주의)
+      # base workflow에서 요구하므로 추가해야 함
+      # 만약 base workflow에서 NEIS_KEYS_JSON을 필수로 요구한다면 아래와 같이 추가
+      # NEIS_KEYS_JSON: ${{ secrets.NEIS_KEYS_JSON }}

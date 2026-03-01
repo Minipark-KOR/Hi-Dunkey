@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 급식 수집기 공통 베이스 (daily / annual 공통 로직)
-- _meta_batch 패턴 사용 (writer 스레드에서 일괄 저장)
+- meta_batch 패턴 사용 (writer 스레드에서 일괄 저장)
 """
 import re
 from typing import List, Optional
@@ -43,6 +43,7 @@ class BaseMealCollector(BaseCollector):
         )
 
     def _init_db(self):
+        """새로운 meal_meta 테이블 구조 (비즈니스 키에 UNIQUE 제약)"""
         with get_db_connection(self.db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS meal (
@@ -65,8 +66,9 @@ class BaseMealCollector(BaseCollector):
                     meal_date INTEGER NOT NULL,
                     meal_type INTEGER NOT NULL,
                     menu_id   INTEGER NOT NULL,
-                    meta_id   INTEGER NOT NULL,
-                    PRIMARY KEY (school_id, meal_date, meal_type, menu_id, meta_id)
+                    meta_id   INTEGER,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (school_id, meal_date, meal_type, menu_id)
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_meal_meta ON meal_meta(meta_id)")
@@ -175,7 +177,10 @@ class BaseMealCollector(BaseCollector):
             "INSERT OR REPLACE INTO meal VALUES (?,?,?,?,?,?,?,?,?)", meal_data
         )
         if all_meta:
+            # UNIQUE(school_id, meal_date, meal_type, menu_id) 제약 조건에 따라
+            # INSERT OR REPLACE로 최신 meta_id로 덮어씀
             conn.executemany(
-                "INSERT OR IGNORE INTO meal_meta VALUES (?,?,?,?,?)", all_meta
+                "INSERT OR REPLACE INTO meal_meta (school_id, meal_date, meal_type, menu_id, meta_id) VALUES (?,?,?,?,?)",
+                all_meta
             )
-            
+                

@@ -8,6 +8,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # Python 스크립트를 직접 실행하지 않으므로 PYTHONPATH 불필요
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -38,13 +39,13 @@ jobs:
             source venv/bin/activate
             pip install -r requirements.txt
 
-            # 환경변수 파일 생성 (확장 가능)
+            # 환경변수 파일 생성
             cat << EOF > .env
             NEIS_API_KEY=${{ secrets.NEIS_API_KEY }}
             KASI_API_KEY=${{ secrets.KASI_API_KEY }}
             SCHOOL_INFO_API_KEY=${{ secrets.SCHOOL_INFO_API_KEY }}
             VWORLD_API_KEY=${{ secrets.VWORLD_API_KEY }}
-            # 향후 추가될 환경변수들
+            NEIS_KEYS_JSON='${{ secrets.NEIS_KEYS_JSON }}'   # ✅ 멀티키 JSON 추가
             EOF
 
             # 서비스 재시작

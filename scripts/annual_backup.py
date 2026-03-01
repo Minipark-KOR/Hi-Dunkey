@@ -40,14 +40,15 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
-from collectors.school_master_collector import SchoolMasterCollector
+# ✅ 수정: SchoolMasterCollector -> SchoolInfoCollector
+from collectors.school_info_collector import SchoolInfoCollector
 from collectors.meal_collector import MealCollector
 from collectors.timetable_collector import TimetableCollector
 from collectors.schedule_collector import ScheduleCollector
 from constants.codes import ALL_REGIONS
 
 COLLECTOR_CLASSES = {
-    "school":    SchoolMasterCollector,
+    "school":    SchoolInfoCollector,      # ✅ 수정
     "meal":      MealCollector,
     "timetable": TimetableCollector,
     "schedule":  ScheduleCollector,
@@ -57,7 +58,7 @@ METRICS_DIR = str(BASE_DIR / "data" / "metrics")
 
 
 class YearlyBackup:
-
+    # ... (클래스 내용은 동일, 변경 없음)
     def __init__(self, base_dir: str = "data", backup_dir: str = "data/backup",
                  archive_dir: str = "data/archive", log_dir: str = "logs"):
         self.base_dir    = base_dir

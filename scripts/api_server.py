@@ -16,6 +16,7 @@ from typing import List, Optional
 import uvicorn
 
 from core.database import get_db_connection
+from constants.paths import MASTER_DB_PATH   # ✅ 수정: paths에서 가져옴
 
 # ✅ 1. FastAPI 앱 생성 (먼저!)
 app = FastAPI(title="NEIS 데이터 API", description="급식, 학사일정, 시간표 API")
@@ -35,7 +36,7 @@ app.add_middleware(
 # ✅ 절대 경로로 변경
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 프로젝트 루트
 DATA_DIR = os.path.join(BASE_DIR, "data", "active")
-MASTER_DB = os.path.join(BASE_DIR, "data", "master", "school_master.db")
+MASTER_DB = MASTER_DB_PATH   # ✅ 수정: 올바른 DB 파일 경로
 
 # =====================[ 유틸리티 함수 ]=====================
 def get_school_id(school_code: str) -> Optional[int]:
@@ -210,3 +211,4 @@ def search_schools(
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
+    
