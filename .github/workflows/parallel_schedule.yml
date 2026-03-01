@@ -1,4 +1,4 @@
-name: Parallel Meal Full Collection
+name: Parallel Schedule Collection
 
 on:
   workflow_dispatch:
@@ -58,9 +58,9 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Create directories
-        run: mkdir -p data/active/meal data/active/backups
+        run: mkdir -p data/active/schedule data/active/backups
 
-      - name: Run Meal Collector
+      - name: Run Schedule Collector
         env:
           NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
         run: |
@@ -68,7 +68,7 @@ jobs:
           if [ "${{ matrix.range }}" != "none" ]; then
             RANGE_ARG="--school_range ${{ matrix.range }}"
           fi
-          python collectors/annual_full_meal_collector.py \
+          python collectors/schedule_collector.py \
             --regions ${{ matrix.region }} \
             --year ${{ github.event.inputs.year }} \
             --shard ${{ matrix.shard }} \
@@ -78,16 +78,16 @@ jobs:
       - name: Upload shard DB
         uses: actions/upload-artifact@v4
         with:
-          name: meal-shard-${{ matrix.name }}
-          path: data/active/meal/meal_*.db
+          name: schedule-shard-${{ matrix.name }}
+          path: data/active/schedule/schedule_*.db
           retention-days: 7
 
   merge:
     needs: collect
     uses: ./.github/workflows/_collector-base.yml
     with:
-      collector-name: "meal"
-      merge-script: "merge_meal_dbs.py"
+      collector-name: "schedule"
+      merge-script: "merge_schedule_dbs.py"
       consolidate-vocab: true
     secrets:
       NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}

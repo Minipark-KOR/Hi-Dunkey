@@ -2,7 +2,7 @@ name: Yearly Academic Backup
 
 on:
   schedule:
-    - cron: "30 21 21 2 *"   # 2월 21일 21:30 UTC = 2월 22일 06:30 KST
+    - cron: "30 21 21 2 *"   # 2월 21일 21:30 UTC
   workflow_dispatch:
     inputs:
       collectors:
@@ -24,6 +24,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
 
       - uses: actions/setup-python@v5
         with:
@@ -66,18 +73,18 @@ jobs:
           fi
           MODE="${{ github.event.inputs.mode }}"
           [ -z "${MODE}" ] && MODE="full"
-          python scripts/yearly_backup.py --${MODE} ${COLLECTORS_ARG} \
-            | tee data/metrics/step_summary.md
+          python scripts/yearly_backup.py --${MODE} ${COLLECTORS_ARG}
 
       - name: Generate step summary
         run: |
-          if [ -f data/metrics/step_summary.md ]; then
-            cat data/metrics/step_summary.md >> $GITHUB_STEP_SUMMARY
+          SUMMARY_FILE=$(ls data/backup/summary_*.txt 2>/dev/null | sort -r | head -1)
+          if [ -f "$SUMMARY_FILE" ]; then
+            cat "$SUMMARY_FILE" >> $GITHUB_STEP_SUMMARY
           fi
 
       - name: Upload metrics to OCI
         run: |
-          METRICS_FILE=$(ls data/metrics/metrics_*.json 2>/dev/null | sort -r | head -1)
+          METRICS_FILE=$(ls data/backup/metrics_*.json 2>/dev/null | sort -r | head -1)
           if [ -f "$METRICS_FILE" ]; then
             YEAR=$(date -u +%Y)
             oci os object put \
@@ -111,16 +118,10 @@ jobs:
           path: data/backup/
           overwrite: true
 
-      - name: Upload metrics artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: metrics-data
-          path: data/metrics/
-          overwrite: true
-
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: logs-yearly-backup-${{ github.run_id }}
           path: logs/
+          

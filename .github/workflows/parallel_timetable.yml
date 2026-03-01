@@ -1,4 +1,4 @@
-name: Parallel Meal Full Collection
+name: Parallel Timetable Collection
 
 on:
   workflow_dispatch:
@@ -7,6 +7,10 @@ on:
         description: '수집할 학년도 (예: 2025)'
         required: true
         default: '2025'
+      semester:
+        description: '학기 (1 또는 2)'
+        required: true
+        default: '1'
 
 jobs:
   collect:
@@ -58,9 +62,9 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Create directories
-        run: mkdir -p data/active/meal data/active/backups
+        run: mkdir -p data/active/timetable data/active/backups
 
-      - name: Run Meal Collector
+      - name: Run Timetable Collector
         env:
           NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
         run: |
@@ -68,9 +72,10 @@ jobs:
           if [ "${{ matrix.range }}" != "none" ]; then
             RANGE_ARG="--school_range ${{ matrix.range }}"
           fi
-          python collectors/annual_full_meal_collector.py \
+          python collectors/timetable_collector.py \
             --regions ${{ matrix.region }} \
-            --year ${{ github.event.inputs.year }} \
+            --ay ${{ github.event.inputs.year }} \
+            --semester ${{ github.event.inputs.semester }} \
             --shard ${{ matrix.shard }} \
             ${RANGE_ARG} \
             --debug
@@ -78,16 +83,16 @@ jobs:
       - name: Upload shard DB
         uses: actions/upload-artifact@v4
         with:
-          name: meal-shard-${{ matrix.name }}
-          path: data/active/meal/meal_*.db
+          name: timetable-shard-${{ matrix.name }}
+          path: data/active/timetable/timetable_*.db
           retention-days: 7
 
   merge:
     needs: collect
     uses: ./.github/workflows/_collector-base.yml
     with:
-      collector-name: "meal"
-      merge-script: "merge_meal_dbs.py"
+      collector-name: "timetable"
+      merge-script: "merge_timetable_dbs.py"
       consolidate-vocab: true
     secrets:
       NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}

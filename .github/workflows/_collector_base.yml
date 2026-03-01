@@ -21,38 +21,36 @@ jobs:
   prepare-vocab:
     runs-on: ubuntu-latest
     outputs:
-      vocab_exists: ${{ steps.check.outputs.exists }}
+      cache-hit: ${{ steps.cache-vocab.outputs.cache-hit }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache pip
+      - name: Set current year-month
+        run: echo "YYYYMM=$(date +%Y%m)" >> $GITHUB_ENV
+
+      - name: Cache global_vocab
+        id: cache-vocab
         uses: actions/cache@v4
         with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-prepare-${{ inputs.collector-name }}
+          path: data/active/global_vocab.db
+          key: global-vocab-${{ inputs.collector-name }}-${{ env.YYYYMM }}
+          restore-keys: |
+            global-vocab-${{ inputs.collector-name }}-
+            global-vocab-
 
-      - name: Check vocab from release
-        id: check
+      - name: Download global_vocab from Release (fallback)
+        if: steps.cache-vocab.outputs.cache-hit != 'true'
         run: |
-          mkdir -p data/active/
+          mkdir -p data/active
           if gh release download latest-vocab \
                --pattern "global_vocab.db" \
                --dir data/active/ 2>/dev/null; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-            echo "✅ Vocab 다운로드 성공"
+            echo "✅ global_vocab downloaded from Release"
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
-            echo "⚠️ Vocab 없음. vocab 통합 없이 진행됩니다."
+            echo "⚠️ No global_vocab in Release; will be created fresh."
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload vocab for merge
-        uses: actions/upload-artifact@v4
-        with:
-          name: global-vocab-${{ inputs.collector-name }}
-          path: data/active/global_vocab.db
-          if-no-files-found: ignore
 
   merge:
     needs: prepare-vocab
@@ -65,19 +63,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-merge-${{ inputs.collector-name }}
-
-      - name: Download all shard artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Download vocab
-        uses: actions/download-artifact@v4
-        with:
-          name: global-vocab-${{ inputs.collector-name }}
-          path: data/active/
-        continue-on-error: true
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
 
       - uses: actions/setup-python@v5
         with:
@@ -86,14 +73,26 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Set current year-month
+        run: echo "YYYYMM=$(date +%Y%m)" >> $GITHUB_ENV
+
+      - name: Restore global_vocab from cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data/active/global_vocab.db
+          key: global-vocab-${{ inputs.collector-name }}-${{ env.YYYYMM }}
+          fail-on-cache-miss: false
+
+      - name: Download all shard artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
       - name: Merge databases
         run: |
           DOMAIN="${{ inputs.collector-name }}"
           mkdir -p data/active/${DOMAIN}
-
-          find artifacts/${DOMAIN}-shard-* \
-            -name "${DOMAIN}_*.db" \
-            -exec cp {} data/active/${DOMAIN}/ \; 2>/dev/null || true
+          find artifacts -name "${DOMAIN}_*.db" -exec cp {} data/active/${DOMAIN}/ \; 2>/dev/null || true
 
           VOCAB_FLAG=""
           if [ "${{ inputs.consolidate-vocab }}" == "true" ]; then
@@ -102,9 +101,16 @@ jobs:
 
           python scripts/${{ inputs.merge-script }} ${VOCAB_FLAG}
 
+      - name: Save updated global_vocab to cache
+        uses: actions/cache/save@v4
+        with:
+          path: data/active/global_vocab.db
+          key: global-vocab-${{ inputs.collector-name }}-${{ env.YYYYMM }}
+
       - name: Upload merged DB
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.collector-name }}-total-db
           path: data/active/${{ inputs.collector-name }}/${{ inputs.collector-name }}.db
-          overwrite: true
+          retention-days: 30
+          
