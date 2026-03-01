@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
-학교 기본정보 샤드 DB 병합 (school_info_collector용)
+학교 기본정보 샤드 DB 병합 (ATTACH 미사용, 직접 INSERT)
 """
 import os
 import sys
 import sqlite3
-import glob
 import time
 import shutil
 
@@ -18,30 +17,20 @@ def merge_databases():
     start_time = time.time()
     total_db_path = os.path.join(MASTER_DIR, "school_info.db")
 
-    # 병합 대상: school_odd.db와 school_even.db만 명시적으로 지정
-    target_files = ["school_odd.db", "school_even.db"]
+    # 샤드 파일 목록 (school_odd.db, school_even.db)
+    shard_files = ["school_odd.db", "school_even.db"]
     shard_dbs = []
-    for fname in target_files:
+    for fname in shard_files:
         full_path = os.path.join(MASTER_DIR, fname)
         if os.path.exists(full_path):
-            # schools 테이블이 있는지 확인
-            try:
-                with sqlite3.connect(full_path) as conn:
-                    cur = conn.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table' AND name='schools'"
-                    )
-                    if cur.fetchone():
-                        shard_dbs.append(full_path)
-                    else:
-                        print(f"⚠️ {fname}: schools 테이블 없음 → 제외")
-            except Exception as e:
-                print(f"⚠️ {fname}: 검사 실패 ({e}) → 제외")
+            shard_dbs.append(full_path)
+            print(f"✅ {fname} 발견")
         else:
-            print(f"⚠️ {fname}: 파일 없음 → 제외")
+            print(f"❌ {fname} 없음")
+            return
 
-    print(f"🔍 병합할 샤드 DB: {len(shard_dbs)}개")
-    if not shard_dbs:
-        print("❌ 병합할 유효한 샤드 데이터 없음")
+    if len(shard_dbs) != 2:
+        print("❌ 샤드 DB가 2개 필요합니다.")
         return
 
     # 기존 통합 DB 백업
@@ -59,35 +48,46 @@ def merge_databases():
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='schools'"
         )
         schema = cur.fetchone()[0]
-        print(f"📋 스키마 출처: {os.path.basename(shard_dbs[0])}")
 
     # 통합 DB 생성
     conn = sqlite3.connect(total_db_path)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute(schema)
     conn.commit()
 
-    # 모든 샤드 병합
     total_rows = 0
     for shard_db in shard_dbs:
         print(f"📦 병합 중: {os.path.basename(shard_db)}")
-        conn.execute(f"ATTACH DATABASE '{shard_db}' AS shard")
-        c = conn.execute(
-            "INSERT OR REPLACE INTO main.schools SELECT * FROM shard.schools"
-        )
-        total_rows += c.rowcount
-        conn.execute("DETACH DATABASE shard")
-        print(f"  ✅ {c.rowcount}건")
+        # 각 샤드 읽기 전용 연결
+        shard_conn = sqlite3.connect(f"file:{shard_db}?mode=ro", uri=True)
+        shard_conn.row_factory = sqlite3.Row
+        # 데이터 읽기
+        cur = shard_conn.execute("SELECT * FROM schools")
+        rows = cur.fetchall()
+        # INSERT 수행
+        insert_data = []
+        for row in rows:
+            insert_data.append((
+                row['sc_code'], row['school_id'], row['sc_name'], row['eng_name'],
+                row['sc_kind'], row['atpt_code'], row['address'], row['address_hash'],
+                row['tel'], row['homepage'], row['status'], row['last_seen'], row['load_dt'],
+                row['latitude'], row['longitude'], row['city_id'], row['district_id'],
+                row['street_id'], row['number_bit']
+            ))
+        conn.executemany("""
+            INSERT OR REPLACE INTO schools VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, insert_data)
+        conn.commit()
+        total_rows += len(insert_data)
+        shard_conn.close()
+        print(f"  ✅ {len(insert_data)}건")
 
     # 인덱스 생성
     print("🔨 인덱스 생성 중...")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_school_region ON schools(atpt_code)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_school_status ON schools(status)")
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_school_geo ON schools(latitude, longitude) "
-        "WHERE latitude IS NOT NULL"
-    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_school_geo ON schools(latitude, longitude) WHERE latitude IS NOT NULL")
     conn.commit()
     conn.execute("PRAGMA optimize")
     conn.close()
@@ -98,5 +98,4 @@ def merge_databases():
 
 if __name__ == "__main__":
     merge_databases()
-
     
