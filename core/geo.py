@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-VWorld Geocoder - 주소를 좌표로 변환
+VWorld Geocoder - 주소를 좌표로 변환 (개선 버전)
+- 타임아웃 30초, 최대 3회 재시도, 지수 백오프
+- rate limit: 호출 직전 시간 기록 (API 서버 TPS 기준)
 """
 import time
 import requests
@@ -9,31 +11,25 @@ from constants.codes import VWORLD_API_KEY
 
 
 class VWorldGeocoder:
-    """
-    VWorld API를 사용한 지오코딩 (주소 → 좌표)
-    - rate limit 준수 (초당 호출 수 제한)
-    """
-    
     def __init__(self, calls_per_second: float = 3.0):
         self.calls_per_second = calls_per_second
-        self.last_call_time = 0
+        self.last_call_time = 0.0
         self.api_key = VWORLD_API_KEY
 
+    def _wait_rate_limit(self):
+        """API 호출 직전 rate limit 대기"""
+        elapsed = time.time() - self.last_call_time
+        wait = 1.0 / self.calls_per_second - elapsed
+        if wait > 0:
+            time.sleep(wait)
+        self.last_call_time = time.time()
+
     def geocode(self, address: str) -> Optional[Tuple[float, float]]:
-        """
-        주소를 위도, 경도로 변환 (longitude, latitude 순서)
-        """
         if not address or not self.api_key:
             return None
 
-        # rate limit
-        now = time.time()
-        elapsed = now - self.last_call_time
-        if elapsed < 1.0 / self.calls_per_second:
-            time.sleep(1.0 / self.calls_per_second - elapsed)
-        
         url = "https://api.vworld.kr/req/address"
-        params = {
+        params_base = {
             "service": "address",
             "request": "getcoord",
             "version": "2.0",
@@ -42,37 +38,38 @@ class VWorldGeocoder:
             "refine": "true",
             "simple": "false",
             "format": "json",
-            "type": "road",  # 도로명 주소 우선
             "key": self.api_key,
         }
-        
-        try:
-            response = requests.get(url, params=params, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('response', {}).get('status') == 'OK':
-                    point = data['response']['result']['point']
-                    lon = float(point['x'])
-                    lat = float(point['y'])
-                    self.last_call_time = time.time()
-                    return (lon, lat)
-                elif data.get('response', {}).get('status') == 'NOT_FOUND':
-                    # 도로명 주소 실패 시 지번 주소로 재시도
-                    params['type'] = 'jibun'
-                    response = requests.get(url, params=params, timeout=10)
+
+        for addr_type in ['road', 'jibun']:
+            for attempt in range(3):
+                self._wait_rate_limit()
+                try:
+                    response = requests.get(
+                        url,
+                        params={**params_base, "type": addr_type},
+                        timeout=30
+                    )
+                    if response.status_code == 429:
+                        time.sleep(5 * (attempt + 1))
+                        continue
+
                     if response.status_code == 200:
                         data = response.json()
-                        if data.get('response', {}).get('status') == 'OK':
+                        status = data.get('response', {}).get('status')
+                        if status == 'OK':
                             point = data['response']['result']['point']
-                            lon = float(point['x'])
-                            lat = float(point['y'])
-                            self.last_call_time = time.time()
-                            return (lon, lat)
-            # rate limit 초과 시
-            if response.status_code == 429:
-                time.sleep(5)
-        except Exception as e:
-            print(f"⚠️ Geocoding error: {e}")
-        
+                            return (float(point['x']), float(point['y']))
+                        elif status == 'NOT_FOUND':
+                            break  # 다음 addr_type 시도
+                except requests.exceptions.Timeout:
+                    print(f"⏰ 타임아웃 (addr_type={addr_type}, 재시도 {attempt+1}/3)")
+                    time.sleep(2 ** attempt)
+                except requests.exceptions.RequestException as e:
+                    print(f"⚠️ 요청 오류: {e}")
+                    break
+                except Exception as e:
+                    print(f"⚠️ Geocoding 예외: {e}")
+                    break
         return None
         

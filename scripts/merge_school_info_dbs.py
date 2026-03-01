@@ -19,7 +19,7 @@ def merge_databases():
     total_db_path = os.path.join(MASTER_DIR, "school_info.db")   # ✅ 변경
 
     shard_dbs = [
-        db for db in glob.glob(os.path.join(MASTER_DIR, "school_info_*.db"))
+        db for db in glob.glob(os.path.join(MASTER_DIR, "school_*.db"))
         if "total" not in db
     ]
     print(f"🔍 발견된 샤드 DB: {len(shard_dbs)}개")

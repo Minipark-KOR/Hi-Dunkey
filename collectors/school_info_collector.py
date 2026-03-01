@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
 """
 학교 기본정보 수집기 (Diff 기반 좌표 갱신)
-- geocoding을 루프 밖에서 일괄 처리하여 throttling 문제 해결
-- hash 계산 1회로 최적화
-- atpt_code None 방어 추가
 """
 import os
 import time
 import random
-import sqlite3  # ✅ 추가
+import sqlite3
 from pathlib import Path
 from typing import List, Dict, Tuple
 
@@ -19,9 +16,8 @@ from core.meta_vocab import MetaVocabManager
 from core.filters import AddressFilter
 from core.geo import VWorldGeocoder
 from constants.codes import NEIS_ENDPOINTS
-from constants.paths import MASTER_DB_PATH as MASTER_DB  # ✅ 수정: paths에서 가져옴
+from constants.paths import MASTER_DB_PATH as MASTER_DB, MASTER_DIR
 from core.kst_time import now_kst
-from constants.paths import MASTER_DIR
 
 BASE_DIR = str(MASTER_DIR)
 GLOBAL_VOCAB_PATH = str(MASTER_DIR.parent / "active" / "global_vocab.db")
@@ -41,6 +37,7 @@ class SchoolInfoCollector(BaseCollector):
             MetaVocabManager(GLOBAL_VOCAB_PATH, debug_mode)
         )
         self.geocoder = VWorldGeocoder(calls_per_second=3.0)
+        # self.retry_mgr 는 BaseCollector에서 제공됨
         self.logger.info(f"🏫 SchoolInfoCollector 초기화 완료")
 
     def _init_db(self):
@@ -88,23 +85,16 @@ class SchoolInfoCollector(BaseCollector):
         self._update_schools_with_diff(rows, region_code)
 
     def _update_schools_with_diff(self, new_rows: List[dict], region_code: str):
-        # 기존 DB에서 schools 테이블이 있는 경우에만 데이터 로드
         existing = {}
         if os.path.exists(MASTER_DB):
             try:
                 with get_db_connection(MASTER_DB) as conn:
-                    # schools 테이블 존재 여부 확인
-                    cur = conn.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table' AND name='schools'"
-                    )
-                    if cur.fetchone():
-                        cur = conn.execute(
-                            "SELECT sc_code, address_hash, latitude, longitude FROM schools"
-                        )
+                    if conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schools'").fetchone():
+                        cur = conn.execute("SELECT sc_code, address_hash, latitude, longitude FROM schools")
                         existing = {row[0]: {"hash": row[1], "lat": row[2], "lon": row[3]} for row in cur}
             except Exception as e:
                 self.logger.error(f"기존 schools 테이블 조회 실패: {e}")
-        # 1단계: 모든 row에 대해 hash를 미리 계산하여 저장
+
         row_meta = {}
         for row in new_rows:
             sc_code = row.get("SD_SCHUL_CODE")
@@ -119,21 +109,32 @@ class SchoolInfoCollector(BaseCollector):
                 "old": existing.get(sc_code, {}),
             }
 
-        # 2단계: 주소 변경된 학교 좌표 일괄 수집
         new_coords: Dict[str, Tuple[float, float]] = {}
         for sc_code, meta in row_meta.items():
             if meta["old"].get("hash") != meta["new_hash"] and meta["full_address"]:
                 coords = self.geocoder.geocode(meta["full_address"])
                 if coords:
                     new_coords[sc_code] = coords
+                else:
+                    # shard가 "none"이 아닐 때만 실패 기록 (샤딩하는 도메인)
+                    if self.shard != "none":
+                        self.retry_mgr.record_failure(
+                            domain='geo',
+                            task_type='geocode',
+                            shard=self.shard,
+                            sc_code=sc_code,
+                            region=region_code,
+                            address=meta["full_address"],
+                            error="Geocoding failed"
+                        )
+                    else:
+                        self.logger.warning(f"샤드 없음 → 지오코딩 실패 기록 생략: {sc_code}")
                 time.sleep(random.uniform(0.2, 0.5))
 
-        # 3단계: 모든 row enqueue (hash 재계산 없음)
         for sc_code, meta in row_meta.items():
             row = meta["row"]
-            atpt_code = row.get("ATPT_OFCDC_SC_CODE") or ""  # ✅ None 방어
+            atpt_code = row.get("ATPT_OFCDC_SC_CODE") or ""
             old = meta["old"]
-
             if sc_code in new_coords:
                 lon, lat = new_coords[sc_code]
             else:
@@ -176,34 +177,25 @@ class SchoolInfoCollector(BaseCollector):
 
     def _do_save_batch(self, conn: sqlite3.Connection, batch: List[dict]):
         school_data = [
-            (
-                it['sc_code'], it['school_id'], it['sc_name'],
-                it['eng_name'], it['sc_kind'], it['atpt_code'],
-                it['address'], it['address_hash'], it['tel'], it['homepage'],
-                it['status'], it['last_seen'], it['load_dt'],
-                it['latitude'], it['longitude'],
-                it['city_id'], it['district_id'], it['street_id'], it['number_bit']
-            )
-            for it in batch 
+            (it['sc_code'], it['school_id'], it['sc_name'], it['eng_name'],
+             it['sc_kind'], it['atpt_code'], it['address'], it['address_hash'],
+             it['tel'], it['homepage'], it['status'], it['last_seen'], it['load_dt'],
+             it['latitude'], it['longitude'], it['city_id'], it['district_id'],
+             it['street_id'], it['number_bit'])
+            for it in batch
         ]
         conn.executemany("""
             INSERT OR REPLACE INTO schools
             (sc_code, school_id, sc_name, eng_name, sc_kind, atpt_code,
-            address, address_hash, tel, homepage, status, last_seen, load_dt,
-            latitude, longitude, city_id, district_id, street_id, number_bit)
+             address, address_hash, tel, homepage, status, last_seen, load_dt,
+             latitude, longitude, city_id, district_id, street_id, number_bit)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, school_data)
 
 
 if __name__ == "__main__":
     from core.collector_cli import run_collector
-
     def _fetch(collector, region, **kwargs):
         collector.fetch_region(region)
-
-    run_collector(
-        SchoolInfoCollector,
-        _fetch,
-        "학교 기본정보 수집기",
-    )
+    run_collector(SchoolInfoCollector, _fetch, "학교 기본정보 수집기")
     

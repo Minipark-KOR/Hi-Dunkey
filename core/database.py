@@ -4,22 +4,27 @@
 """
 import sqlite3
 from contextlib import contextmanager
-from typing import Generator
+from typing import Optional, Generator
 
 @contextmanager
-def get_db_connection(db_path: str, timeout: float = 30.0) -> Generator[sqlite3.Connection, None, None]:
+def get_db_connection(
+    db_path: str,
+    timeout: float = 30.0,
+    row_factory: Optional[type] = None
+) -> Generator[sqlite3.Connection, None, None]:
     """
     SQLite 연결 컨텍스트 매니저
     - WAL 모드, 외래키 ON, 동기화 NORMAL, 캐시 설정 적용
+    - row_factory: sqlite3.Row 등 전달 시 반영됨
     """
     conn = sqlite3.connect(db_path, timeout=timeout)
-    conn.row_factory = sqlite3.Row
     try:
-        # 연결마다 반드시 설정 (SQLite 기본값 OFF)
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA synchronous = NORMAL")
         conn.execute("PRAGMA cache_size = -64000")   # 64MB 캐시
+        if row_factory is not None:
+            conn.row_factory = row_factory
         yield conn
         conn.commit()
     except Exception:
