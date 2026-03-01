@@ -77,7 +77,13 @@ class SchoolInfoCollector(BaseCollector):
 
     def fetch_region(self, region_code: str):
         base_params = {"ATPT_OFCDC_SC_CODE": region_code}
-        rows = self._fetch_paginated(NEIS_URL, base_params, 'schoolInfo', page_size=100)
+        # region과 year 전달 추가
+        rows = self._fetch_paginated(
+            NEIS_URL, base_params, 'schoolInfo', 
+            page_size=100, 
+            region=region_code,          # 추가
+            year=self.run_date[:4]       # 추가 (년도)
+        )
         if not rows:
             self.logger.error(f"[{region_code}] 수집된 데이터 없음")
             return

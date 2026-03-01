@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """
 수집기 베이스 클래스 - 공통 기능 통합
-- DataGuard(데이터 급감 감지), CollectLog(실행 로그) 연동
-- _save_batch에서 데이터 무결성 검사 후 하위 클래스의 _do_save_batch 호출
 """
 import os
 import sqlite3
@@ -33,7 +31,6 @@ class BaseCollector(ABC):
     """공통 수집기 베이스 클래스"""
 
     def __init__(self, name: str, base_dir: str, shard: str = "none", school_range: Optional[str] = None):
-        # shard 검증 (none 허용, but geo 실패 시 저장하지 않도록 주의)
         VALID_SHARDS = {"odd", "even", "none"}
         if shard not in VALID_SHARDS:
             print(f"❌ 잘못된 shard 값: {shard} (collector: {name})", file=sys.stderr)
@@ -43,9 +40,8 @@ class BaseCollector(ABC):
         self.base_dir = Path(base_dir)
         self.shard = shard
         self.school_range = school_range
-        self.api_context = 'common'  # 하위 클래스에서 재정의
+        self.api_context = 'common'
 
-        # DB 경로 설정
         if shard == "none":
             self.db_path = str(self.base_dir / f"{name}.db")
         else:
@@ -53,41 +49,39 @@ class BaseCollector(ABC):
             self.db_path = str(self.base_dir / f"{name}_{shard}{range_suffix}.db")
 
         self.total_db_path = str(self.base_dir / f"{name}_total.db")
-
-        # 로거
         self.logger = build_logger(name, str(self.base_dir / f"{name}.log"))
-
-        # 네트워크 세션
         self.session = build_session()
 
-        # 큐 및 쓰기 스레드
         self.q = queue.Queue()
         self.writer_thread = threading.Thread(target=self._writer_loop, daemon=True)
         self.writer_thread.start()
 
-        # 학교 캐시
         self.school_cache = {}
         self.school_by_id = {}
         self._load_school_cache()
 
-        # 리소스 관리 (자동 close)
         self._closeable_resources = []
-
-        # 데이터 보호 및 로깅
         self.data_guard = DataGuard()
         self.collect_log = CollectLog()
-
-        # RetryManager 인스턴스 생성 (통합 실패 관리)
         self.retry_mgr = RetryManager()
 
-        # DB 초기화
         self._init_db()
-
-        # 체크포인트
         self.completed_items = set()
         self._load_checkpoints()
 
         self.logger.info(f"🔥 {name} 초기화 완료 (샤드: {shard}, 범위: {school_range}, 캐시: {len(self.school_cache)}개)")
+
+    # ===== 수집 실패 기록 메서드 =====
+    def record_collect_failure(self, region: str, year: Optional[int] = None, error: str = ""):
+        """NEIS API 수집 실패 기록"""
+        self.retry_mgr.record_failure(
+            domain='collect',
+            task_type='fetch_region',
+            region=region,
+            year=year or now_kst().year,
+            error=error
+        )
+        self.logger.warning(f"수집 실패 기록: region={region}, year={year}")
 
     def register_resource(self, resource):
         self._closeable_resources.append(resource)
@@ -135,7 +129,9 @@ class BaseCollector(ABC):
         return should_include_school(self.shard, self.school_range, school_code)
 
     def _fetch_paginated(self, url: str, base_params: dict, response_key: str,
-                         page_size: int = 100, max_page: int = 500) -> List[dict]:
+                         page_size: int = 100, max_page: int = 500,
+                         region: Optional[str] = None, year: Optional[int] = None) -> List[dict]:
+        """페이지네이션 + 실패 시 RetryManager 기록"""
         all_items = []
         page = 1
         retry_count = 0
@@ -164,6 +160,8 @@ class BaseCollector(ABC):
                 retry_count += 1
                 self.logger.error(f"페이지 {page} 에러 ({retry_count}/{max_retries}): {e}")
                 if retry_count >= max_retries:
+                    if region:
+                        self.record_collect_failure(region, year, str(e))
                     break
                 time.sleep(2 ** retry_count)
 
@@ -199,7 +197,6 @@ class BaseCollector(ABC):
                 except queue.Empty:
                     break
 
-            # batch 유무와 관계없이 task_done은 반드시 호출
             try:
                 if batch:
                     self._save_batch(batch)
@@ -210,7 +207,6 @@ class BaseCollector(ABC):
             finally:
                 for _ in range(items_processed):
                     self.q.task_done()
-
 
     def _flatten(self, data) -> List:
         if data is None:
@@ -294,3 +290,4 @@ class BaseCollector(ABC):
         self.writer_thread.join(timeout=timeout)
         if self.writer_thread.is_alive():
             self.logger.warning("⚠️ writer_thread가 정상 종료되지 않았습니다.")
+            

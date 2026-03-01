@@ -12,14 +12,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.retry import RetryManager
 from core.logger import build_logger
+from collectors.school_info_collector import SchoolInfoCollector
 
 logger = build_logger("retry_worker", "logs/retry_worker.log")
 rm = RetryManager()
 
-# 핸들러 반환값: (success, is_permanent_fail)
-# - (True, False)  → 성공, mark_resolved('SUCCESS')
-# - (True, True)   → 영구 실패(orphan 등), mark_orphan
-# - (False, False) → 일시 실패, 재시도 예약
 HandlerResult = Tuple[bool, bool]
 TASK_HANDLERS: Dict[tuple, Callable[[Dict[str, Any]], HandlerResult]] = {}
 
@@ -28,28 +25,22 @@ def register_handler(domain: str, task_type: str, handler: Callable):
     TASK_HANDLERS[(domain, task_type)] = handler
 
 
+# ===== 지오코딩 재시도 핸들러 =====
 def handle_geocode_retry(failure: Dict[str, Any]) -> HandlerResult:
-    """
-    지오코딩 재시도.
-    반환: (success, is_permanent)
-    - 성공           → (True, False)
-    - 영구 실패(orphan) → (True, True)   ← main()이 mark_orphan 호출
-    - 일시 실패       → (False, False)  ← main()이 record_failure 재호출
-    """
     try:
         from core.geo import VWorldGeocoder
+
         sc_code = failure.get('sc_code', '')
         address = failure.get('address', '')
         shard   = failure.get('shard', '')
 
         if not sc_code or not address or not shard:
-            logger.error(f"필수 정보 부족: sc_code={sc_code}, address={address}, shard={shard}")
+            logger.error(f"지오코딩 재시도: 필수 정보 부족 id={failure['id']}")
             return (True, True)
 
         geo = VWorldGeocoder(calls_per_second=3.0)
         coords = geo.geocode(address)
         if not coords:
-            logger.warning(f"geocode 실패 (주소: {address[:50]}...)")
             return (False, False)
 
         lon, lat = coords
@@ -64,20 +55,46 @@ def handle_geocode_retry(failure: Dict[str, Any]) -> HandlerResult:
             conn.commit()
 
         if updated == 0:
-            # DB에 해당 학교 없음 = 데이터 정합성 오류, 재시도해도 무의미
-            logger.error(
-                f"데이터 정합성 오류: sc_code={sc_code}가 {db_path}에 없음"
-            )
-            return (True, True)  # orphan 처리
+            logger.error(f"데이터 정합성 오류: sc_code={sc_code}가 {db_path}에 없음")
+            return (True, True)
 
-        return (True, False)  # 정상 성공
+        return (True, False)
 
     except Exception as e:
-        logger.error(f"예외 발생: {e}", exc_info=True)
+        logger.error(f"지오코딩 재시도 예외: {e}", exc_info=True)
         return (False, False)
 
 
+# ===== 수집 재시도 핸들러 (신규) =====
+def handle_collect_retry(failure: Dict[str, Any]) -> HandlerResult:
+    """
+    NEIS API 수집 실패 재시도
+    - region(교육청 코드) 단위로 재수집
+    """
+    region = failure.get('region', '')
+    year = failure.get('year', 2025)
+
+    if not region:
+        logger.error(f"수집 재시도: region 정보 없음 id={failure['id']}")
+        return (True, True)
+
+    logger.info(f"🔄 수집 재시도: region={region}, year={year}")
+
+    try:
+        # odd/even 샤드 모두 수집
+        for shard in ['odd', 'even']:
+            collector = SchoolInfoCollector(shard=shard)
+            collector.fetch_region(region)
+            collector.close()
+        return (True, False)
+    except Exception as e:
+        logger.error(f"수집 재시도 실패: {e}", exc_info=True)
+        return (False, False)
+
+
+# 핸들러 등록
 register_handler('geo', 'geocode', handle_geocode_retry)
+register_handler('collect', 'fetch_region', handle_collect_retry)
 
 
 def main():
@@ -104,17 +121,14 @@ def main():
         success, is_permanent = handler(f)
 
         if success and is_permanent:
-            # 영구 실패 (데이터 정합성 오류, 필수 정보 부족 등)
             rm.mark_orphan(failure_id, error=f"permanent fail: {domain}/{task_type}")
             logger.warning(f"🚫 영구 실패(orphan) id={failure_id}")
 
         elif success:
-            # 정상 성공
             rm.mark_resolved(failure_id, status='SUCCESS')
             logger.info(f"✅ 성공 id={failure_id}")
 
         else:
-            # 일시 실패 → 재시도 예약
             still_alive = rm.record_failure(
                 domain=domain,
                 task_type=task_type,
