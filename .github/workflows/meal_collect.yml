@@ -1,0 +1,29 @@
+name: Annual Meal Collection
+
+on:
+  schedule:
+    - cron: '0 2 1 3 *'   # 매년 3월 1일 (학년도 시작)
+  workflow_dispatch:
+    inputs:
+      year:
+        description: '학년도'
+        required: true
+        default: '2025'
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run annual meal collector
+        env:
+          NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
+          NEIS_KEYS_JSON: ${{ secrets.NEIS_KEYS_JSON }}
+        run: |
+          python collectors/annual_meal_collector.py --regions ALL --year ${{ github.event.inputs.year }}  # ✅ 변경
+          

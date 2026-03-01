@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       year:
-        description: '수집할 학년도 (예: 2025)'
+        description: '수집할 학년도'
         required: true
         default: '2025'
       semester:
@@ -46,40 +46,27 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: ${{ runner.os }}-pip-
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install dependencies
         run: pip install -r requirements.txt
-
-      - name: Create directories
-        run: mkdir -p data/active/timetable data/active/backups
-
       - name: Run Timetable Collector
         env:
           NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
+          NEIS_KEYS_JSON: ${{ secrets.NEIS_KEYS_JSON }}
         run: |
           RANGE_ARG=""
           if [ "${{ matrix.range }}" != "none" ]; then
             RANGE_ARG="--school_range ${{ matrix.range }}"
           fi
-          python collectors/timetable_collector.py \
+          python collectors/timetable_collector.py \   # 변경 없음
             --regions ${{ matrix.region }} \
-            --ay ${{ github.event.inputs.year }} \
+            --year ${{ github.event.inputs.year }} \
             --semester ${{ github.event.inputs.semester }} \
             --shard ${{ matrix.shard }} \
             ${RANGE_ARG} \
             --debug
-
       - name: Upload shard DB
         uses: actions/upload-artifact@v4
         with:
@@ -89,11 +76,12 @@ jobs:
 
   merge:
     needs: collect
-    uses: ./.github/workflows/_collector-base.yml
+    uses: ./.github/workflows/_collector_base.yml
     with:
       collector-name: "timetable"
       merge-script: "merge_timetable_dbs.py"
       consolidate-vocab: true
     secrets:
       NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
+      NEIS_KEYS_JSON: ${{ secrets.NEIS_KEYS_JSON }}
       

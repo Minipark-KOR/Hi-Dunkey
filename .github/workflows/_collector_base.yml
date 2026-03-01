@@ -16,6 +16,8 @@ on:
     secrets:
       NEIS_API_KEY:
         required: true
+      NEIS_KEYS_JSON:
+        required: true
 
 jobs:
   prepare-vocab:
@@ -24,10 +26,8 @@ jobs:
       cache-hit: ${{ steps.cache-vocab.outputs.cache-hit }}
     steps:
       - uses: actions/checkout@v4
-
       - name: Set current year-month
         run: echo "YYYYMM=$(date +%Y%m)" >> $GITHUB_ENV
-
       - name: Cache global_vocab
         id: cache-vocab
         uses: actions/cache@v4
@@ -37,7 +37,6 @@ jobs:
           restore-keys: |
             global-vocab-${{ inputs.collector-name }}-
             global-vocab-
-
       - name: Download global_vocab from Release (fallback)
         if: steps.cache-vocab.outputs.cache-hit != 'true'
         run: |
@@ -58,55 +57,44 @@ jobs:
     if: always()
     steps:
       - uses: actions/checkout@v4
-
       - name: Cache pip
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
           restore-keys: ${{ runner.os }}-pip-
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install dependencies
         run: pip install -r requirements.txt
-
       - name: Set current year-month
         run: echo "YYYYMM=$(date +%Y%m)" >> $GITHUB_ENV
-
       - name: Restore global_vocab from cache
         uses: actions/cache/restore@v4
         with:
           path: data/active/global_vocab.db
           key: global-vocab-${{ inputs.collector-name }}-${{ env.YYYYMM }}
           fail-on-cache-miss: false
-
       - name: Download all shard artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-
       - name: Merge databases
         run: |
           DOMAIN="${{ inputs.collector-name }}"
           mkdir -p data/active/${DOMAIN}
           find artifacts -name "${DOMAIN}_*.db" -exec cp {} data/active/${DOMAIN}/ \; 2>/dev/null || true
-
           VOCAB_FLAG=""
           if [ "${{ inputs.consolidate-vocab }}" == "true" ]; then
             VOCAB_FLAG="--consolidate-vocab"
           fi
-
           python scripts/${{ inputs.merge-script }} ${VOCAB_FLAG}
-
       - name: Save updated global_vocab to cache
         uses: actions/cache/save@v4
         with:
           path: data/active/global_vocab.db
           key: global-vocab-${{ inputs.collector-name }}-${{ env.YYYYMM }}
-
       - name: Upload merged DB
         uses: actions/upload-artifact@v4
         with:

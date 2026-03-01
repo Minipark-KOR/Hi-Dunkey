@@ -1,6 +1,6 @@
 # OS 생성 파일
 .DS_Store
-**/ .DS_Store
+**/.DS_Store
 Thumbs.db
 ehthumbs.db
 
@@ -32,6 +32,7 @@ ENV/
 *.tmp
 *.temp
 
-# 오라클 보안키 파일(로컬작업시 사용)
-echo "ssh-oracle.key" >> .gitignore
-echo "ssh-oracle.key.pub" >> .gitignore
+# 보안 키 파일 (로컬 작업용)
+ssh-oracle.key
+ssh-oracle.key.pub
+NEIS_KEYS_JSON.json

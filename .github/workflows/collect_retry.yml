@@ -1,0 +1,24 @@
+name: Retry Failed Regions
+
+on:
+  schedule:
+    - cron: "30 1 * * *"        # 매일 10:30 KST (실패 재시도)
+  workflow_dispatch:
+
+jobs:
+  retry:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Retry failed collections
+        env:
+          NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
+          NEIS_KEYS_JSON: ${{ secrets.NEIS_KEYS_JSON }}
+        run: |
+          python collectors/annual_db_collector.py --retry_failed   # ✅ 변경
+          

@@ -1,17 +1,14 @@
 """
-도메인 설정 상수
-- DOMAIN_CONFIG: 각 도메인의 DB 경로, 테이블, 병합 스크립트 등
-- GLOBAL_DBS: 전역 공유 DB 목록 (vocab, unknown_patterns)
-- collector class는 yearly_backup.py에서만 주입 (의존성 역전 방지)
+도메인 설정 상수 (백업/병합용)
 """
 
 DOMAIN_CONFIG = {
     "school": {
         "description":  "학교 기본정보",
-        "db_path":      "data/master/school_master.db",
+        "db_path":      "data/master/school_info.db",          # ✅ 변경
         "table":        "schools",
         "enabled":      True,
-        "merge_script": "merge_school_master_dbs",
+        "merge_script": "merge_school_info_dbs.py",            # ✅ 변경
         "fetch_args":   lambda region, year: {"region": region},
     },
     "meal": {
@@ -44,14 +41,6 @@ DOMAIN_CONFIG = {
 }
 
 GLOBAL_DBS = [
-    {
-        "name":  "global_vocab.db",
-        "path":  "data/active/global_vocab.db",
-        "table": "meta_vocab",
-    },
-    {
-        "name":  "unknown_patterns.db",
-        "path":  "data/active/unknown_patterns.db",
-        "table": "unknown_patterns",
-    },
+    {"name":  "global_vocab.db", "path": "data/active/global_vocab.db", "table": "meta_vocab"},
+    {"name":  "unknown_patterns.db", "path": "data/active/unknown_patterns.db", "table": "unknown_patterns"},
 ]

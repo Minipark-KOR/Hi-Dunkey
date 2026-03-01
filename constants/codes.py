@@ -3,6 +3,7 @@
 공통 상수 (API 키, 엔드포인트, 지역 코드, 배치 설정 등)
 """
 import os
+import json
 from pathlib import Path
 from typing import Dict, List
 from dotenv import load_dotenv
@@ -18,6 +19,26 @@ NEIS_API_KEY = os.environ.get("NEIS_API_KEY", "")
 SCHOOL_INFO_API_KEY = os.environ.get("SCHOOL_INFO_API_KEY", "")
 KASI_API_KEY = os.environ.get("KASI_API_KEY", "")
 VWORLD_API_KEY = os.environ.get("VWORLD_API_KEY", "")
+
+# NEIS 멀티키 JSON 파싱
+NEIS_KEYS_JSON = os.environ.get("NEIS_KEYS_JSON")
+if NEIS_KEYS_JSON:
+    try:
+        _data = json.loads(NEIS_KEYS_JSON)
+        NEIS_KEYS = _data.get("keys", [])
+        NEIS_RATE_LIMITS = _data.get("rate_limits", [])
+        NEIS_DAILY_LIMITS = _data.get("daily_limits", [])
+    except:
+        NEIS_KEYS = []
+else:
+    NEIS_KEYS = []
+
+# 키 매니저 인스턴스 생성 (싱글톤)
+from core.api_key_manager import APIKeyManager
+if NEIS_KEYS:
+    neis_key_manager = APIKeyManager(NEIS_KEYS, NEIS_RATE_LIMITS, NEIS_DAILY_LIMITS)
+else:
+    neis_key_manager = APIKeyManager([NEIS_API_KEY])
 
 # =====================[ NEIS API Endpoints ]=====================
 NEIS_ENDPOINTS = {
@@ -38,8 +59,6 @@ TIMETABLE_ENDPOINTS = {
     '특': 'https://open.neis.go.kr/hub/spsTimetable',
 }
 
-# 응답 키는 엔드포인트명과 동일하므로 별도 매핑 불필요 (url.split('/')[-1]로 처리)
-
 GRADE_RANGES = {
     '초등학교': range(1, 7),
     '중학교': range(1, 4),
@@ -59,7 +78,6 @@ SPECIAL_GRADE_DESC = {
     13: "전공과 1년차", 14: "전공과 2년차", 15: "전공과 3년차"
 }
 
-# =====================[ 지역 코드 ]=====================
 ALL_REGIONS = [
     "B10","C10","D10","E10","F10","G10","H10","I10",
     "J10","K10","M10","N10","P10","Q10","R10","S10","T10"
@@ -76,7 +94,6 @@ REGION_NAMES = {
     "A00": "교육부"
 }
 
-# =====================[ 학교 코드 범위 ]=====================
 SCHOOL_RANGES = {
     'A': (1, 4),
     'B': (5, 9),
@@ -95,7 +112,6 @@ RANGE_NAMES = {
     'Z': '0번대',
 }
 
-# =====================[ 학년 코드 ]=====================
 GRADE_CODES = {
     'ONE': 11, 'TWO': 12, 'THREE': 13, 'FOUR': 14, 'FIVE': 15, 'SIX': 16,
     'MWO': 21, 'MWT': 22, 'MWR': 23,
@@ -131,9 +147,7 @@ API_CONFIG = {
 }
 
 LIFECYCLE_DATE = "0222"
-
-# 학교 마스터 DB 경로
-MASTER_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "master", "school_master.db")
+MASTER_DB = str(Path(__file__).parent.parent / "data" / "master" / "school_info.db")   # ✅ 변경
 
 def check_api_keys() -> Dict[str, bool]:
     required_keys = {

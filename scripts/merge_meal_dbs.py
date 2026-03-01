@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 """
-최적화된 급식 DB 병합 스크립트
-- ATTACH DATABASE를 이용한 고속 병합
-- WITHOUT ROWID 및 명시적 인덱스로 조회 성능 최적화
-- 전역 Vocab DB 통합 기능 포함
-- 출력: data/active/meal/meal.db
+급식 DB 병합 스크립트
 """
 import os
 import sys
@@ -16,16 +12,13 @@ from typing import List
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-BASE_DIR          = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MEAL_DIR          = os.path.join(BASE_DIR, "data", "active", "meal")
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MEAL_DIR = os.path.join(BASE_DIR, "data", "active", "meal")
 GLOBAL_VOCAB_PATH = os.path.join(BASE_DIR, "data", "active", "global_vocab.db")
 
-
 def consolidate_vocab(shard_dbs: List[str]):
-    """샤드 DB들의 어휘 정보를 전역 Vocab DB로 병합"""
     conn_global = sqlite3.connect(GLOBAL_VOCAB_PATH)
     conn_global.execute("PRAGMA journal_mode=WAL")
-
     conn_global.execute("""
         CREATE TABLE IF NOT EXISTS vocab_meal (
             meal_id      INTEGER PRIMARY KEY,
@@ -45,10 +38,7 @@ def consolidate_vocab(shard_dbs: List[str]):
             UNIQUE(domain, meta_type, meta_key)
         )
     """)
-
-    total_menus = 0
-    total_meta  = 0
-
+    total_menus = total_meta = 0
     for shard_db in shard_dbs:
         conn_shard = sqlite3.connect(shard_db)
         try:
@@ -57,63 +47,44 @@ def consolidate_vocab(shard_dbs: List[str]):
             ).fetchall()
             for row in menus:
                 conn_global.execute(
-                    "INSERT OR IGNORE INTO vocab_meal "
-                    "(meal_id, name_key, name, display_name) VALUES (?,?,?,?)",
-                    row
+                    "INSERT OR IGNORE INTO vocab_meal VALUES (?,?,?,?)", row
                 )
             total_menus += len(menus)
-
             metas = conn_shard.execute(
-                "SELECT meta_id, domain, meta_type, meta_key, meta_value, display_value "
-                "FROM meta_vocab"
+                "SELECT meta_id, domain, meta_type, meta_key, meta_value, display_value FROM meta_vocab"
             ).fetchall()
             for row in metas:
                 conn_global.execute(
-                    "INSERT OR IGNORE INTO meta_vocab "
-                    "(meta_id, domain, meta_type, meta_key, meta_value, display_value) "
-                    "VALUES (?,?,?,?,?,?)",
-                    row
+                    "INSERT OR IGNORE INTO meta_vocab VALUES (?,?,?,?,?,?)", row
                 )
             total_meta += len(metas)
         except sqlite3.OperationalError:
             pass
         finally:
             conn_shard.close()
-
     conn_global.commit()
     conn_global.close()
     print(f"✅ Vocab 통합 완료: meal {total_menus}건, meta {total_meta}건")
 
-
 def merge_databases(do_consolidate_vocab: bool = False):
-    start_time    = time.time()
+    start_time = time.time()
     total_db_path = os.path.join(MEAL_DIR, "meal.db")
-
-    shard_dbs = [
-        db for db in glob.glob(os.path.join(MEAL_DIR, "meal_*.db"))
-        if "total" not in db
-    ]
+    shard_dbs = [db for db in glob.glob(os.path.join(MEAL_DIR, "meal_*.db")) if "total" not in db]
     print(f"🔍 발견된 샤드 DB: {len(shard_dbs)}개")
     if not shard_dbs:
         print("❌ 병합할 샤드 데이터 없음")
         return
-
     if do_consolidate_vocab:
         print("\n📚 Vocab 통합 중...")
         consolidate_vocab(shard_dbs)
-
     if os.path.exists(total_db_path):
-        backup_path = total_db_path.replace(
-            ".db", f"_backup_{time.strftime('%Y%m%d_%H%M%S')}.db"
-        )
+        backup_path = total_db_path.replace(".db", f"_backup_{time.strftime('%Y%m%d_%H%M%S')}.db")
         shutil.copy2(total_db_path, backup_path)
         print(f"💾 기존 DB 백업: {os.path.basename(backup_path)}")
         os.remove(total_db_path)
-
     conn = sqlite3.connect(total_db_path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
-
     conn.execute("""
         CREATE TABLE meal (
             school_id     INTEGER NOT NULL,
@@ -139,45 +110,30 @@ def merge_databases(do_consolidate_vocab: bool = False):
         )
     """)
     conn.commit()
-
-    total_rows = 0
-    total_meta = 0
-
+    total_rows = total_meta = 0
     for shard_db in shard_dbs:
         print(f"📦 병합 중: {os.path.basename(shard_db)}")
         conn.execute(f"ATTACH DATABASE '{shard_db}' AS shard")
-
-        # ⚠️ 스키마 변경 시 명시적 컬럼 목록으로 교체 필요
-        c1 = conn.execute(
-            "INSERT OR REPLACE INTO meal SELECT * FROM shard.meal"
-        )
+        c1 = conn.execute("INSERT OR REPLACE INTO meal SELECT * FROM shard.meal")
         total_rows += c1.rowcount
-
-        c2 = conn.execute(
-            "INSERT OR REPLACE INTO meal_meta SELECT * FROM shard.meal_meta"
-        )
+        c2 = conn.execute("INSERT OR REPLACE INTO meal_meta SELECT * FROM shard.meal_meta")
         total_meta += c2.rowcount
-
         conn.execute("DETACH DATABASE shard")
         print(f"  ✅ meal: {c1.rowcount}건, meal_meta: {c2.rowcount}건")
-
-    print("🔨 인덱스 생성 중...")
-    conn.execute("CREATE INDEX idx_meal_date  ON meal(meal_date)")
-    conn.execute("CREATE INDEX idx_meal_school ON meal(school_id)")
-    conn.execute("CREATE INDEX idx_meal_meta  ON meal_meta(meta_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_meal_date ON meal(meal_date)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_meal_school ON meal(school_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_meal_meta ON meal_meta(meta_id)")
     conn.commit()
-
     conn.execute("PRAGMA optimize")
     conn.close()
-
     elapsed = time.time() - start_time
-    size    = os.path.getsize(total_db_path) / 1024 / 1024
+    size = os.path.getsize(total_db_path) / 1024 / 1024
     print(f"\n✅ 병합 완료: meal {total_rows:,}건 | {size:.1f} MB | {elapsed:.1f}초")
-
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--vocab", action="store_true", help="Vocab DB 통합 수행")
+    parser.add_argument("--consolidate-vocab", action="store_true")
     args = parser.parse_args()
-    merge_databases(do_consolidate_vocab=args.vocab)
+    merge_databases(do_consolidate_vocab=args.consolidate_vocab)
+    

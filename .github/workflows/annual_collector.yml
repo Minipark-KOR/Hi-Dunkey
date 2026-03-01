@@ -1,0 +1,29 @@
+name: Annual Full Collection
+
+on:
+  schedule:
+    - cron: '0 2 1 3 *'   # 매년 3월 1일 11:00 KST
+  workflow_dispatch:
+    inputs:
+      year:
+        description: '학년도'
+        required: true
+        default: '2025'
+
+jobs:
+  full-collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run full collector
+        env:
+          NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
+          NEIS_KEYS_JSON: ${{ secrets.NEIS_KEYS_JSON }}
+        run: |
+          python collectors/annual_db_collector.py --year ${{ github.event.inputs.year }}  # ✅ 변경
+          

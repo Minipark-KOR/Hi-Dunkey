@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
 수집기 베이스 클래스 - 공통 기능 통합
+- DataGuard(데이터 급감 감지), CollectLog(실행 로그) 연동
+- _save_batch에서 데이터 무결성 검사 후 하위 클래스의 _do_save_batch 호출
 """
 import os
 import sqlite3
@@ -19,6 +21,8 @@ from .logger import build_logger
 from .network import build_session, safe_json_request
 from .shard import should_include_school
 from .kst_time import now_kst
+from .data_guard import DataGuard, DataDropException
+from .collect_log import CollectLog
 from constants.codes import NEIS_API_KEY, MASTER_DB
 
 class BaseCollector(ABC):
@@ -56,6 +60,13 @@ class BaseCollector(ABC):
         self.school_by_id = {}
         self._load_school_cache()
         
+        # 리소스 관리 (자동 close)
+        self._closeable_resources = []
+        
+        # 데이터 보호 및 로깅
+        self.data_guard = DataGuard()
+        self.collect_log = CollectLog()
+        
         # DB 초기화
         self._init_db()
         
@@ -64,6 +75,11 @@ class BaseCollector(ABC):
         self._load_checkpoints()
         
         self.logger.info(f"🔥 {name} 초기화 완료 (샤드: {shard}, 범위: {school_range}, 캐시: {len(self.school_cache)}개)")
+    
+    def register_resource(self, resource):
+        """close() 시 자동으로 닫힐 리소스 등록"""
+        self._closeable_resources.append(resource)
+        return resource
     
     # --------------------------------------------------------
     # 공통 헬퍼
@@ -79,16 +95,12 @@ class BaseCollector(ABC):
         return should_include_school(self.shard, self.school_range, school_code)
     
     # --------------------------------------------------------
-    # 공통 페이지네이션 (지수 백오프 재시도)
+    # 공통 페이지네이션 (지수 백오프 재시도 + 지터)
     # --------------------------------------------------------
     def _fetch_paginated(self, url: str, base_params: dict, response_key: str,
                          page_size: int = 100, max_page: int = 500) -> List[dict]:
         """
-        공통 페이지네이션 처리 (재시도 포함)
-        - url: API 엔드포인트
-        - base_params: API 공통 파라미터 (KEY, Type 등은 자동 추가)
-        - response_key: 응답 JSON에서 데이터 배열이 있는 키
-        - 반환: 모든 페이지의 raw item 리스트
+        공통 페이지네이션 처리 (재시도 포함, 지터 적용)
         """
         all_items = []
         p_idx = 1
@@ -107,23 +119,19 @@ class BaseCollector(ABC):
                 res = safe_json_request(self.session, url, params, self.logger)
                 if not res or response_key not in res:
                     break
-                
-                # NEIS API 구조: [0] head, [1] row
                 rows = res[response_key][1].get("row", [])
                 if not rows:
                     break
-                
                 all_items.extend(rows)
-                
-                # 전체 개수 체크 (head에 total_count 있음)
                 head = res[response_key][0].get("head", [{}])
                 total_count = int(head[0].get("list_total_count", 0))
                 if len(all_items) >= total_count:
                     break
-                
                 p_idx += 1
-                retry_count = 0  # 성공 시 리셋
-                time.sleep(0.05)
+                retry_count = 0
+                # 정상 페이지 간 약간의 지터
+                import random
+                time.sleep(random.uniform(0.05, 0.3))
                 
             except Exception as e:
                 retry_count += 1
@@ -131,8 +139,11 @@ class BaseCollector(ABC):
                 if retry_count >= max_retries:
                     self.logger.error(f"페이지 {p_idx} {max_retries}회 실패, 중단")
                     break
-                time.sleep(2 ** retry_count)  # 지수 백오프
-                # p_idx 증가 없이 재시도
+                # Full Jitter
+                import random
+                base_delay = min(30, 0.5 * (2 ** retry_count))
+                sleep_time = random.uniform(0, base_delay)
+                time.sleep(sleep_time)
         
         return all_items
     
@@ -140,7 +151,6 @@ class BaseCollector(ABC):
     # 학교 목록 조회 (캐시 활용)
     # --------------------------------------------------------
     def _get_school_list(self, region: str) -> List[tuple]:
-        """지역 내 학교 목록 반환 (코드, 이름) - 캐시 활용"""
         return [
             (code, info['name'])
             for code, info in self.school_cache.items()
@@ -153,11 +163,6 @@ class BaseCollector(ABC):
     def iterate_schools_by_month(self, region: str, year: int,
                                   month_range: List[tuple],
                                   per_school_month_func: Callable[[str, int, int], None]):
-        """
-        학교별 월간 순회
-        - month_range: [(y,m)] 형태의 월 리스트
-        - per_school_month_func: (school_code, y, m)을 받는 함수
-        """
         schools = self._get_school_list(region)
         if not schools:
             self.logger.warning(f"⚠️ [{region}] 수집 대상 학교 없음")
@@ -170,14 +175,13 @@ class BaseCollector(ABC):
                     per_school_month_func(sch_code, y, m)
                 except Exception as e:
                     self.logger.error(f"    ❌ {y}년 {m}월 실패: {e}")
-                time.sleep(0.05)
-            time.sleep(0.1)
+                time.sleep(random.uniform(0.05, 0.2))
+            time.sleep(random.uniform(0.1, 0.5))
     
     # --------------------------------------------------------
     # 학교별 단순 순회 (진행 로그 포함, 학사일정 등에 사용)
     # --------------------------------------------------------
     def iterate_schools(self, region: str, per_school_func: Callable[[str, str], None]):
-        """학교 목록을 순회하며 per_school_func 실행 (진행 로그 포함)"""
         schools = self._get_school_list(region)
         if not schools:
             self.logger.warning(f"⚠️ [{region}] 수집 대상 학교 없음")
@@ -189,17 +193,15 @@ class BaseCollector(ABC):
                 per_school_func(sch_code, sch_name)
             except Exception as e:
                 self.logger.error(f"    ❌ {sch_code} 처리 실패: {e}")
-            time.sleep(0.05)
+            time.sleep(random.uniform(0.05, 0.3))
     
     # --------------------------------------------------------
     # 학교정보 캐시 (MASTER_DB 상수 사용)
     # --------------------------------------------------------
     def _load_school_cache(self):
-        """school_master.db 에서 운영중인 학교 정보 로드 (school_id 생성)"""
         if not os.path.exists(MASTER_DB):
             self.logger.warning("school_master.db 없음. 캐시 없이 동작")
             return
-        
         try:
             with sqlite3.connect(MASTER_DB) as conn:
                 cur = conn.execute("""
@@ -211,7 +213,6 @@ class BaseCollector(ABC):
                             WHEN 'E10' THEN 4 WHEN 'F10' THEN 5 WHEN 'G10' THEN 6
                             WHEN 'H10' THEN 7 WHEN 'I10' THEN 8 WHEN 'J10' THEN 9
                             WHEN 'K10' THEN 10 
-                            -- 11번: L10 미사용
                             WHEN 'M10' THEN 12 WHEN 'N10' THEN 13 WHEN 'P10' THEN 14
                             WHEN 'Q10' THEN 15 WHEN 'R10' THEN 16 WHEN 'S10' THEN 17
                             WHEN 'T10' THEN 18
@@ -234,7 +235,8 @@ class BaseCollector(ABC):
                     FROM schools
                     WHERE status = '운영'
                 """)
-                for sc_code, atpt_code, school_id, sc_name, sc_kind, level, is_special, status in cur:
+                for row in cur:
+                    sc_code, atpt_code, school_id, sc_name, sc_kind, level, is_special, status = row
                     info = {
                         'atpt_code': atpt_code,
                         'school_id': school_id,
@@ -274,8 +276,62 @@ class BaseCollector(ABC):
         pass
     
     @abstractmethod
-    def _save_batch(self, batch: List[dict]):
+    def _do_save_batch(self, conn: sqlite3.Connection, batch: List[dict]) -> None:
+        """
+        실제 데이터 저장 로직 (하위 클래스에서 구현)
+        - _save_batch에서 데이터 무결성 검사 후 호출됨
+        - conn은 이미 열린 연결, commit은 _save_batch에서 처리
+        """
         pass
+    
+    # --------------------------------------------------------
+    # 배치 저장 (데이터 무결성 검사 포함)
+    # --------------------------------------------------------
+    def _save_batch(self, batch: List[dict]):
+        """
+        배치 저장 + 데이터 급감 감지
+        - _do_save_batch를 호출하여 실제 저장 수행
+        - 저장 전후의 레코드 수를 비교하여 급감 시 롤백
+        """
+        if not batch:
+            return
+
+        # school_id 추출 (모든 아이템이 같은 school_id라고 가정)
+        # 만약 batch에 여러 school_id가 섞여 있다면, 여기서는 첫 번째 것을 사용하거나
+        # 각 school_id별로 그룹핑하여 처리해야 함. 하지만 현재 구조상 batch는 동일 school_id만 포함.
+        school_id = batch[0].get('school_id')
+        old_count = None
+        if school_id:
+            with get_db_connection(self.db_path) as conn:
+                old_count = conn.execute(
+                    f"SELECT COUNT(*) FROM {self.name} WHERE school_id = ?",
+                    (school_id,)
+                ).fetchone()[0]
+
+        # 실제 저장 (트랜잭션 내에서 수행)
+        with get_db_connection(self.db_path) as conn:
+            try:
+                self._do_save_batch(conn, batch)
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                raise
+
+        # 저장 후 레코드 수 확인 및 데이터 급감 검사
+        if school_id and old_count is not None:
+            with get_db_connection(self.db_path) as conn:
+                new_count = conn.execute(
+                    f"SELECT COUNT(*) FROM {self.name} WHERE school_id = ?",
+                    (school_id,)
+                ).fetchone()[0]
+
+            if not self.data_guard.check_data_drop(
+                table=self.name,
+                school_id=school_id,
+                new_count=new_count,
+                old_count=old_count
+            ):
+                raise DataDropException(f"school_id={school_id} 데이터 급감")
     
     # --------------------------------------------------------
     # 체크포인트
@@ -359,12 +415,10 @@ class BaseCollector(ABC):
             return
         today = now_kst().strftime("%Y%m%d")
         backup_path = self.db_path.replace('.db', f'_{today}.db')
-
         if not os.path.exists(backup_path):
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute(f"VACUUM INTO '{backup_path}'")
             self.logger.info(f"📅 날짜 백업 생성: {backup_path}")
-
         base = self.db_path.replace('.db', '')
         date_pattern = re.compile(rf"^{re.escape(base)}_(\d{{8}})\.db$")
         from .kst_time import KST
@@ -382,7 +436,15 @@ class BaseCollector(ABC):
             except ValueError:
                 continue
     
+    # --------------------------------------------------------
+    # 종료 처리
+    # --------------------------------------------------------
     def close(self, timeout: float = 30.0):
+        for res in self._closeable_resources:
+            try:
+                res.close()
+            except Exception as e:
+                self.logger.warning(f"리소스 close 실패: {e}")
         self.q.put(None)
         self.writer_thread.join(timeout=timeout)
         if self.writer_thread.is_alive():

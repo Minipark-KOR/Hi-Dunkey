@@ -1,4 +1,4 @@
-name: School Master Monthly Update
+name: School Info Monthly Update
 
 on:
   schedule:
@@ -15,10 +15,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: "Gyeonggi-odd-A",  region: "J10", shard: "odd",  range: "A"    }
-          - { name: "Gyeonggi-odd-B",  region: "J10", shard: "odd",  range: "B"    }
-          - { name: "Gyeonggi-even-A", region: "J10", shard: "even", range: "A"    }
-          - { name: "Gyeonggi-even-B", region: "J10", shard: "even", range: "B"    }
+          - { name: "Gyeonggi-odd-A",  region: "J10", shard: "odd",  range: "A" }
+          - { name: "Gyeonggi-odd-B",  region: "J10", shard: "odd",  range: "B" }
+          - { name: "Gyeonggi-even-A", region: "J10", shard: "even", range: "A" }
+          - { name: "Gyeonggi-even-B", region: "J10", shard: "even", range: "B" }
           - { name: "Seoul-odd",       region: "B10", shard: "odd",  range: "none" }
           - { name: "Seoul-even",      region: "B10", shard: "even", range: "none" }
           - { name: "Busan-odd",       region: "C10", shard: "odd",  range: "none" }
@@ -36,71 +36,60 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
       - name: Cache pip
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
           restore-keys: ${{ runner.os }}-pip-
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install dependencies
         run: pip install -r requirements.txt
-
       - name: Set current year-month
         run: echo "YYYYMM=$(date +%Y%m)" >> $GITHUB_ENV
-
-      - name: Restore school_master.db from cache
+      - name: Restore school_info.db from cache
         id: cache-master
         uses: actions/cache/restore@v4
         with:
-          path: data/master/school_master.db
-          key: school-master-${{ env.YYYYMM }}
-          restore-keys: school-master-
-
+          path: data/master/school_info.db   # ✅ 변경 (파일명)
+          key: school-info-${{ env.YYYYMM }}  # ✅ 캐시 키 변경 (선택)
+          restore-keys: school-info-
       - name: Create directories
         run: mkdir -p data/master data/active
-
-      - name: Run School Master Collector (${{ matrix.name }})
+      - name: Run School Info Collector
         env:
           NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
+          NEIS_KEYS_JSON: ${{ secrets.NEIS_KEYS_JSON }}
         run: |
-          CMD="python collectors/school_master_collector.py \
-            --regions ${{ matrix.region }} \
-            --shard ${{ matrix.shard }}"
-          if [ "${{ matrix.range }}" != "none" ]; then
-            CMD="${CMD} --school_range ${{ matrix.range }}"
-          fi
+          CMD="python collectors/school_info_collector.py --regions ${{ matrix.region }} --shard ${{ matrix.shard }}"  # ✅ 변경
+          [ "${{ matrix.range }}" != "none" ] && CMD="${CMD} --school_range ${{ matrix.range }}"
           eval ${CMD}
-
       - name: Upload shard DB
         uses: actions/upload-artifact@v4
         with:
-          name: school-shard-${{ matrix.name }}
-          path: data/master/school_master_*.db
+          name: school-info-shard-${{ matrix.name }}
+          path: data/master/school_info_*.db   # ✅ 변경
           retention-days: 7
-
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: school-${{ matrix.name }}-logs
+          name: school-info-${{ matrix.name }}-logs
           path: data/master/*.log
 
   finalize:
     needs: collect
     if: always()
-    uses: ./.github/workflows/_collector-base.yml
+    uses: ./.github/workflows/_collector_base.yml
     with:
       collector-name: "school"
-      merge-script: "merge_school_master_dbs.py"
+      merge-script: "merge_school_info_dbs.py"   # ✅ 변경
       consolidate-vocab: false
     secrets:
       NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
+      NEIS_KEYS_JSON: ${{ secrets.NEIS_KEYS_JSON }}
 
   cache-result:
     needs: finalize
@@ -108,23 +97,20 @@ jobs:
     steps:
       - name: Set current year-month
         run: echo "YYYYMM=$(date +%Y%m)" >> $GITHUB_ENV
-
       - name: Download merged DB
         uses: actions/download-artifact@v4
         with:
-          name: school-total-db
+          name: school-info-total-db   # ✅ 변경
           path: data/master/
-
-      - name: Save school_master.db to cache
+      - name: Save school_info.db to cache
         uses: actions/cache/save@v4
         with:
-          path: data/master/school_master.db
-          key: school-master-${{ env.YYYYMM }}
-
+          path: data/master/school_info.db   # ✅ 변경
+          key: school-info-${{ env.YYYYMM }}
       - name: Upload to GitHub Release (fallback)
         run: |
           gh release upload latest-master \
-            data/master/school_master.db --clobber
+            data/master/school_info.db --clobber   # ✅ 변경
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
