@@ -163,26 +163,25 @@ class SchoolInfoCollector(BaseCollector):
     def _process_item(self, raw_item: dict) -> List[dict]:
         return []
 
-    def _save_batch(self, batch: List[dict]):
-        with get_db_connection(self.db_path) as conn:
-            school_data = [
-                (
-                    it['sc_code'], it['school_id'], it['sc_name'],
-                    it['eng_name'], it['sc_kind'], it['atpt_code'],
-                    it['address'], it['address_hash'], it['tel'], it['homepage'],
-                    it['status'], it['last_seen'], it['load_dt'],
-                    it['latitude'], it['longitude'],
-                    it['city_id'], it['district_id'], it['street_id'], it['number_bit']
-                )
-                for it in batch
-            ]
-            conn.executemany("""
-                INSERT OR REPLACE INTO schools
-                (sc_code, school_id, sc_name, eng_name, sc_kind, atpt_code,
-                 address, address_hash, tel, homepage, status, last_seen, load_dt,
-                 latitude, longitude, city_id, district_id, street_id, number_bit)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """, school_data)
+    def _do_save_batch(self, conn: sqlite3.Connection, batch: List[dict]):
+        school_data = [
+            (
+                it['sc_code'], it['school_id'], it['sc_name'],
+                it['eng_name'], it['sc_kind'], it['atpt_code'],
+                it['address'], it['address_hash'], it['tel'], it['homepage'],
+                it['status'], it['last_seen'], it['load_dt'],
+                it['latitude'], it['longitude'],
+                it['city_id'], it['district_id'], it['street_id'], it['number_bit']
+            )
+            for it in batch
+        ]
+        conn.executemany("""
+            INSERT OR REPLACE INTO schools
+            (sc_code, school_id, sc_name, eng_name, sc_kind, atpt_code,
+            address, address_hash, tel, homepage, status, last_seen, load_dt,
+            latitude, longitude, city_id, district_id, street_id, number_bit)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, school_data)
 
 
 if __name__ == "__main__":
