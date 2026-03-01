@@ -88,12 +88,22 @@ class SchoolInfoCollector(BaseCollector):
         self._update_schools_with_diff(rows, region_code)
 
     def _update_schools_with_diff(self, new_rows: List[dict], region_code: str):
-        with get_db_connection(MASTER_DB) as conn:
-            cur = conn.execute(
-                "SELECT sc_code, address_hash, latitude, longitude FROM schools"
-            )
-            existing = {row[0]: {"hash": row[1], "lat": row[2], "lon": row[3]} for row in cur}
-
+        # 기존 DB에서 schools 테이블이 있는 경우에만 데이터 로드
+        existing = {}
+        if os.path.exists(MASTER_DB):
+            try:
+                with get_db_connection(MASTER_DB) as conn:
+                    # schools 테이블 존재 여부 확인
+                    cur = conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name='schools'"
+                    )
+                    if cur.fetchone():
+                        cur = conn.execute(
+                            "SELECT sc_code, address_hash, latitude, longitude FROM schools"
+                        )
+                        existing = {row[0]: {"hash": row[1], "lat": row[2], "lon": row[3]} for row in cur}
+            except Exception as e:
+                self.logger.error(f"기존 schools 테이블 조회 실패: {e}")
         # 1단계: 모든 row에 대해 hash를 미리 계산하여 저장
         row_meta = {}
         for row in new_rows:
