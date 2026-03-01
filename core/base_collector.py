@@ -11,6 +11,7 @@ import threading
 import time
 import glob
 import re
+import random  # ✅ _fetch_paginated에서 사용
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -97,7 +98,8 @@ class BaseCollector(ABC):
                     resolved INTEGER DEFAULT 0
                 )
             """)
-            conn.execute("CREATE INDEX idx_failures_unresolved ON failures(resolved)")
+            # ✅ IF NOT EXISTS 추가
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_failures_unresolved ON failures(resolved)")
 
     def _record_failure(self, school_id=None, region=None, year=None, sub_key=None):
         """실패 내역 기록 (원자적 저장)"""
@@ -114,7 +116,7 @@ class BaseCollector(ABC):
         return resource
 
     # --------------------------------------------------------
-    # 학교 캐시 로드 (추가된 부분)
+    # 학교 캐시 로드
     # --------------------------------------------------------
     def _load_school_cache(self):
         """학교 정보 캐시 로드 (MASTER_DB에서)"""
@@ -171,28 +173,66 @@ class BaseCollector(ABC):
         return should_include_school(self.shard, self.school_range, school_code)
 
     # --------------------------------------------------------
-    # 공통 페이지네이션 (구현 필요)
+    # 공통 페이지네이션 (실제 구현)
     # --------------------------------------------------------
     def _fetch_paginated(self, url: str, base_params: dict, response_key: str,
                          page_size: int = 100, max_page: int = 500) -> List[dict]:
-        """페이지네이션 처리 (재시도 포함) - 하위 클래스에서 필요시 오버라이드"""
-        # 여기에 실제 구현이 들어가야 하지만, 현재는 pass 처리되어 있음
-        # 실제 구현은 각 collector에서 상속받아 사용하거나 여기에 공통 구현을 넣어야 함
-        # 임시로 빈 리스트 반환 (실제로는 구현 필요)
-        return []
+        """
+        페이지네이션 처리 (재시도 포함)
+        - safe_json_request를 사용하여 API 호출
+        """
+        all_items = []
+        page = 1
+        retry_count = 0
+        max_retries = 3
+
+        while page <= max_page:
+            params = {
+                "pIndex": page,
+                "pSize": page_size,
+                **base_params
+            }
+            try:
+                res = safe_json_request(self.session, url, params, self.logger)
+                if not res or response_key not in res:
+                    break
+                # 응답 구조: [ { "head": [...] }, { "row": [...] } ]
+                rows = res[response_key][1].get("row", [])
+                if not rows:
+                    break
+                all_items.extend(rows)
+
+                # 전체 개수 확인 (선택)
+                head = res[response_key][0].get("head", [{}])
+                total_count = int(head[0].get("list_total_count", 0))
+                if len(all_items) >= total_count:
+                    break
+
+                page += 1
+                retry_count = 0
+                time.sleep(random.uniform(0.1, 0.3))  # 약간의 지연
+
+            except Exception as e:
+                retry_count += 1
+                self.logger.error(f"페이지 {page} 에러 ({retry_count}/{max_retries}): {e}")
+                if retry_count >= max_retries:
+                    break
+                time.sleep(2 ** retry_count)  # 지수 백오프
+
+        return all_items
 
     # --------------------------------------------------------
-    # 학교별 순회 (기존 코드와 동일, 필요시 추가)
+    # 학교별 순회 (필요시 하위 클래스에서 구현)
     # --------------------------------------------------------
     def iterate_schools_by_month(self, region: str, year: int,
                                   month_range: List[tuple],
                                   per_school_month_func: Callable[[str, int, int], None]):
-        """학교별 월간 순회 (구현 필요)"""
-        pass
+        """학교별 월간 순회 - 하위 클래스에서 구현 필요"""
+        raise NotImplementedError
 
     def iterate_schools(self, region: str, per_school_func: Callable[[str, str], None]):
-        """학교별 단순 순회 (구현 필요)"""
-        pass
+        """학교별 단순 순회 - 하위 클래스에서 구현 필요"""
+        raise NotImplementedError
 
     # --------------------------------------------------------
     # 쓰기 스레드
@@ -303,13 +343,20 @@ class BaseCollector(ABC):
         pass
 
     def _save_batch(self, batch: List[dict]):
-        """배치 저장 + 데이터 급감 감지 (공통 로직)"""
-        # 여기에 실제 저장 전후 처리 구현
-        # 하위 클래스에서 _do_save_batch를 호출하도록 함
-        pass
+        """
+        배치 저장 + 데이터 급감 감지 (공통 로직)
+        하위 클래스에서 _do_save_batch를 호출하도록 구현
+        """
+        # 여기서는 간단히 _do_save_batch 호출 (실제로는 트랜잭션과 데이터 보호 로직이 필요)
+        # BaseCollector의 _save_batch는 하위 클래스에서 오버라이드하거나,
+        # 여기서 _do_save_batch를 호출하는 방식으로 구현해야 함.
+        # 현재는 하위 클래스에서 _do_save_batch를 구현했으므로, 여기서 conn을 열어 전달.
+        with get_db_connection(self.db_path) as conn:
+            self._do_save_batch(conn, batch)
+            conn.commit()
 
     # --------------------------------------------------------
-    # 체크포인트
+    # 체크포인트 (필요시 구현)
     # --------------------------------------------------------
     def _load_checkpoints(self):
         """체크포인트 로드 (구현 필요)"""
