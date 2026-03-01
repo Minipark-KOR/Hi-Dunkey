@@ -59,6 +59,7 @@ class VWorldGeocoder:
                     if response.status_code == 200:
                         data = response.json()
                         status = data.get('response', {}).get('status')
+                        msg = data.get('response', {}).get('msg', '')
                         if status == 'OK':
                             point = data['response']['result']['point']
                             return (float(point['x']), float(point['y']))
@@ -66,7 +67,8 @@ class VWorldGeocoder:
                             logger.debug(f"주소를 찾을 수 없음 (addr_type={addr_type}): {address[:50]}...")
                             break  # 다음 addr_type 시도
                         else:
-                            logger.warning(f"API 응답 상태: {status}")
+                            logger.error(f"VWorld API 오류 (status={status}, msg={msg}): {address[:50]}...")
+                            break  # 해당 타입 실패, 다음 타입으로
                     else:
                         logger.warning(f"HTTP 오류: {response.status_code}")
 
