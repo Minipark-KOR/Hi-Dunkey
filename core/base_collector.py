@@ -79,7 +79,7 @@ class BaseCollector(ABC):
         self._load_checkpoints()
         
         self.logger.info(f"🔥 {name} 초기화 완료 (샤드: {shard}, 범위: {school_range}, 캐시: {len(self.school_cache)}개)")
-    
+
     def _init_failure_db(self):
         """실패한 수집 내역을 저장할 DB 생성"""
         self.fail_db_path = self.base_dir / f"{self.name}_failures.db"
@@ -98,7 +98,7 @@ class BaseCollector(ABC):
                 )
             """)
             conn.execute("CREATE INDEX idx_failures_unresolved ON failures(resolved)")
-    
+
     def _record_failure(self, school_id=None, region=None, year=None, sub_key=None):
         """실패 내역 기록 (원자적 저장)"""
         with get_db_connection(self.fail_db_path) as conn:
@@ -107,38 +107,95 @@ class BaseCollector(ABC):
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (self.name, school_id, region, year, sub_key, now_kst().isoformat()))
             self.logger.warning(f"실패 기록: {school_id} ({region}/{year})")
-    
+
     def register_resource(self, resource):
         """close() 시 자동으로 닫힐 리소스 등록"""
         self._closeable_resources.append(resource)
         return resource
-    
+
     # --------------------------------------------------------
-    # 공통 헬퍼 (이하 동일)
+    # 학교 캐시 로드 (추가된 부분)
+    # --------------------------------------------------------
+    def _load_school_cache(self):
+        """학교 정보 캐시 로드 (MASTER_DB에서)"""
+        if not os.path.exists(MASTER_DB):
+            self.logger.warning("school_info.db 없음. 캐시 없이 동작")
+            return
+        try:
+            with sqlite3.connect(MASTER_DB) as conn:
+                cur = conn.execute("""
+                    SELECT 
+                        sc_code,
+                        atpt_code,
+                        school_id,
+                        sc_name,
+                        sc_kind,
+                        CASE 
+                            WHEN sc_kind LIKE '%초등%' THEN '초'
+                            WHEN sc_kind LIKE '%중%' THEN '중'
+                            WHEN sc_kind LIKE '%고%' THEN '고'
+                            WHEN sc_kind LIKE '%특수%' THEN '특'
+                            ELSE '기타'
+                        END as school_level,
+                        CASE WHEN sc_kind LIKE '%특수%' THEN 1 ELSE 0 END as is_special,
+                        status
+                    FROM schools
+                    WHERE status = '운영'
+                """)
+                for row in cur:
+                    sc_code, atpt_code, school_id, sc_name, sc_kind, level, is_special, status = row
+                    info = {
+                        'atpt_code': atpt_code,
+                        'school_id': school_id,
+                        'name': sc_name,
+                        'kind': sc_kind,
+                        'level': level,
+                        'is_special': is_special,
+                        'status': status,
+                    }
+                    self.school_cache[sc_code] = info
+                    self.school_by_id[school_id] = info
+        except Exception as e:
+            self.logger.error(f"학교 캐시 로드 실패: {e}")
+
+    # --------------------------------------------------------
+    # 공통 헬퍼
     # --------------------------------------------------------
     def _get_field(self, raw_item: dict, field: str, default=None):
         from constants.api_mappings import get_api_field
         return get_api_field(raw_item, field, context=self.api_context, default=default)
-    
+
     def _include_school(self, school_code: str) -> bool:
         if not school_code:
             return False
         return should_include_school(self.shard, self.school_range, school_code)
-    
+
     # --------------------------------------------------------
-    # 공통 페이지네이션 (이하 동일)
+    # 공통 페이지네이션 (구현 필요)
     # --------------------------------------------------------
     def _fetch_paginated(self, url: str, base_params: dict, response_key: str,
                          page_size: int = 100, max_page: int = 500) -> List[dict]:
-        # ... (기존 코드와 동일)
+        """페이지네이션 처리 (재시도 포함) - 하위 클래스에서 필요시 오버라이드"""
+        # 여기에 실제 구현이 들어가야 하지만, 현재는 pass 처리되어 있음
+        # 실제 구현은 각 collector에서 상속받아 사용하거나 여기에 공통 구현을 넣어야 함
+        # 임시로 빈 리스트 반환 (실제로는 구현 필요)
+        return []
+
+    # --------------------------------------------------------
+    # 학교별 순회 (기존 코드와 동일, 필요시 추가)
+    # --------------------------------------------------------
+    def iterate_schools_by_month(self, region: str, year: int,
+                                  month_range: List[tuple],
+                                  per_school_month_func: Callable[[str, int, int], None]):
+        """학교별 월간 순회 (구현 필요)"""
         pass
-    
+
+    def iterate_schools(self, region: str, per_school_func: Callable[[str, str], None]):
+        """학교별 단순 순회 (구현 필요)"""
+        pass
+
     # --------------------------------------------------------
-    # 학교 목록 조회, iterate_schools_by_month 등 (기존과 동일)
-    # --------------------------------------------------------
-    
-    # --------------------------------------------------------
-    # 쓰기 스레드 (DataDropException 처리 강화)
+    # 쓰기 스레드
     # --------------------------------------------------------
     def _writer_loop(self):
         while True:
@@ -174,7 +231,7 @@ class BaseCollector(ABC):
                 finally:
                     for _ in range(items_processed):
                         self.q.task_done()
-    
+
     def _flatten(self, data) -> List:
         if data is None:
             return []
@@ -187,10 +244,10 @@ class BaseCollector(ABC):
                     result.append(item)
             return result
         return [data]
-    
+
     def enqueue(self, data: Union[dict, List[dict]]):
         self.q.put(data)
-    
+
     # --------------------------------------------------------
     # 백업
     # --------------------------------------------------------
@@ -219,7 +276,49 @@ class BaseCollector(ABC):
                     self.logger.info(f"🗑️ 오래된 백업 삭제: {f}")
             except ValueError:
                 continue
-    
+
+    # --------------------------------------------------------
+    # 저장 관련 (하위 클래스에서 구현)
+    # --------------------------------------------------------
+    @abstractmethod
+    def _init_db(self):
+        """DB 초기화 (하위 클래스에서 구현)"""
+        pass
+
+    def _init_db_common(self, conn):
+        """공통 테이블 초기화"""
+        init_checkpoint_table(conn)
+
+    @abstractmethod
+    def _get_target_key(self) -> str:
+        pass
+
+    @abstractmethod
+    def _process_item(self, raw_item: dict) -> Union[dict, List[dict]]:
+        pass
+
+    @abstractmethod
+    def _do_save_batch(self, conn: sqlite3.Connection, batch: List[dict]) -> None:
+        """실제 데이터 저장 (하위 클래스에서 구현)"""
+        pass
+
+    def _save_batch(self, batch: List[dict]):
+        """배치 저장 + 데이터 급감 감지 (공통 로직)"""
+        # 여기에 실제 저장 전후 처리 구현
+        # 하위 클래스에서 _do_save_batch를 호출하도록 함
+        pass
+
+    # --------------------------------------------------------
+    # 체크포인트
+    # --------------------------------------------------------
+    def _load_checkpoints(self):
+        """체크포인트 로드 (구현 필요)"""
+        pass
+
+    def save_checkpoint(self, region: str, school: str, sub_key: str, page: int, total: int):
+        """체크포인트 저장 (구현 필요)"""
+        pass
+
     # --------------------------------------------------------
     # 종료 처리
     # --------------------------------------------------------
