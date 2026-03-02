@@ -135,7 +135,9 @@ class AnnualFullTimetableCollector(BaseCollector):
                 try:
                     rows = self._fetch_paginated(
                         info['url'], params, endpoint_name,
-                        page_size=100, max_page=1  # 시간표는 반당 최대 35건
+                        page_size=100, max_page=1,  # 시간표는 반당 최대 35건
+                        region=school_info['atpt_code'],   # ✅ 추가
+                        year=ay                            # ✅ 추가
                     )
                     if not rows:
                         consecutive_empty += 1

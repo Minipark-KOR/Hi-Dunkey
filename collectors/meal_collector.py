@@ -35,7 +35,9 @@ class MealCollector(BaseMealCollector):
             "MLSV_TO_YMD": date_to,
         }
         rows = self._fetch_paginated(
-            NEIS_URL, params, 'mealServiceDietInfo', page_size=1000
+            NEIS_URL, params, 'mealServiceDietInfo', page_size=1000,
+            region=region,               # ✅ 추가
+            year=int(date_from[:4])      # ✅ 추가
         )
         if not rows:
             self.logger.warning(f"[{region}] {date_from} 수집 결과 없음")

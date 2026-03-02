@@ -33,7 +33,11 @@ class AnnualMealCollector(BaseMealCollector):
             "MLSV_FROM_YMD": date_from,
             "MLSV_TO_YMD": date_to,
         }
-        rows = self._fetch_paginated(NEIS_URL, base_params, 'mealServiceDietInfo', page_size=100)
+        rows = self._fetch_paginated(
+            NEIS_URL, base_params, 'mealServiceDietInfo', page_size=100,
+            region=region,   # ✅ 이렇게 함수 인자로 포함
+            year=y           # ✅
+        )
         for r in rows:
             items = self._process_item(r)
             if items:

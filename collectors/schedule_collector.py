@@ -106,11 +106,16 @@ class AnnualFullScheduleCollector(BaseCollector):
             "AA_YMD_FROM": date_from,
             "AA_YMD_TO": date_to,
         }
-        rows = self._fetch_paginated(NEIS_URL, base_params, 'schoolSchedule', page_size=100)
+        rows = self._fetch_paginated(
+            NEIS_URL, base_params, 'schoolSchedule', page_size=100,
+            region=region,               # ✅ 추가
+            year=int(date_from[:4])      # ✅ 추가
+        )
         for r in rows:
             items = self._process_item(r)
             if items:
                 self.enqueue(items)
+
 
     def _process_item(self, raw_item: dict) -> List[dict]:
         sc_code = self._get_field(raw_item, 'school_code')

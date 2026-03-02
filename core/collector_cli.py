@@ -82,4 +82,5 @@ def run_collector(
         sys.exit(1)
 
     print("✅ 수집 완료")
+    print("👉 엔터를 눌러주세요.")  # 추가
     sys.exit(0)
