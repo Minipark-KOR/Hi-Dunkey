@@ -252,7 +252,7 @@ class BaseCollector(ABC):
             return result
         return [data]
 
-    def enqueue(self,  Union[dict, List[dict]]):
+    def enqueue(self, data: Union[dict, List[dict]]):
         self.q.put(data)
 
     def create_dated_backup(self):
