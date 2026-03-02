@@ -2,21 +2,25 @@
 # scripts/retry_worker.py
 import os
 import sys
-import sqlite3
 import argparse
-from datetime import datetime, time
-from typing import Dict, Any, Callable, Tuple
+import sqlite3
+from datetime import datetime
+from typing import Dict, Any, Callable, Tuple, Optional
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.retry import RetryManager
 from core.logger import build_logger
 from core.kst_time import now_kst
+from core.filters import AddressFilter
+from collectors.geo_collector import GeoCollector
 
 logger = build_logger("retry_worker", "logs/retry_worker.log")
 
-HandlerResult = Tuple[bool, bool]  # (success: bool, is_permanent_failure: bool)
+HandlerResult = Tuple[bool, bool]  # (success, is_permanent_failure)
 TASK_HANDLERS: Dict[tuple, Callable[[Dict[str, Any]], HandlerResult]] = {}
+
+_GEO_COLLECTOR: Optional[GeoCollector] = None
 
 
 def kst_naive(dt: datetime) -> datetime:
@@ -25,56 +29,116 @@ def kst_naive(dt: datetime) -> datetime:
     return dt
 
 
-def get_today_3pm_kst_naive(now: datetime) -> datetime:
-    n = kst_naive(now)
-    return datetime.combine(n.date(), time(15, 0))
-
-
 def register_handler(domain: str, task_type: str, handler: Callable[[Dict[str, Any]], HandlerResult]):
     TASK_HANDLERS[(domain, task_type)] = handler
 
 
-def count_due_before_deadline(rm: RetryManager, deadline: datetime) -> int:
-    # RetryManager에 public method가 없으므로(현재 구조 기준) 연결을 직접 사용합니다.
-    with rm._get_connection() as conn:  # noqa: SLF001 (internal 사용)
-        cur = conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM failures
-            WHERE status = 'FAILED'
-              AND resolved_at IS NULL
-              AND next_attempt IS NOT NULL
-              AND next_attempt <= ?
-            """,
-            (deadline,),
+def get_geo_collector() -> GeoCollector:
+    global _GEO_COLLECTOR
+    if _GEO_COLLECTOR is None:
+        _GEO_COLLECTOR = GeoCollector(
+            global_db_path="data/global_vocab.db",
+            school_db_path="data/master/school_info.db",
+            debug_mode=False,
         )
-        return int(cur.fetchone()[0] or 0)
+    return _GEO_COLLECTOR
+
+
+def update_school_coords(
+    school_db_path: str,
+    sc_code: str,
+    lon: float,
+    lat: float,
+    cleaned: str,
+    addr_components: Dict[str, Any],
+):
+    with sqlite3.connect(school_db_path, timeout=30) as conn:
+        try:
+            conn.execute(
+                """
+                UPDATE schools
+                SET longitude = ?, latitude = ?,
+                    cleaned_address = ?,
+                    geocode_attempts = 0,
+                    last_error = NULL,
+                    city_id = ?, district_id = ?, street_id = ?,
+                    number_type = ?, number_value = ?, number_start = ?, number_end = ?, number_bit = ?
+                WHERE sc_code = ?
+                """,
+                (
+                    lon, lat, cleaned,
+                    addr_components.get("city_id", 0),
+                    addr_components.get("district_id", 0),
+                    addr_components.get("street_id", 0),
+                    addr_components.get("number_type"),
+                    addr_components.get("number"),
+                    addr_components.get("number_start"),
+                    addr_components.get("number_end"),
+                    addr_components.get("number_bit"),
+                    sc_code,
+                ),
+            )
+        except sqlite3.OperationalError:
+            conn.execute(
+                """
+                UPDATE schools
+                SET longitude = ?, latitude = ?, cleaned_address = ?
+                WHERE sc_code = ?
+                """,
+                (lon, lat, cleaned, sc_code),
+            )
+
+
+def handle_school_geocode(failure: dict) -> HandlerResult:
+    sc_code = failure.get("sc_code")
+    address = failure.get("address")
+    retries = failure.get("retries") or 0
+
+    if not sc_code or not address:
+        return (False, True)
+
+    level = min(max(int(retries), 1), 3)
+    cleaned = AddressFilter.clean(address, level=level)
+
+    gc = get_geo_collector()
+    try:
+        coords = gc._geocode(cleaned)
+    except Exception as e:
+        logger.error(f"geocode error: {e}", exc_info=True)
+        return (False, False)
+
+    if not coords:
+        return (False, False)
+
+    lon, lat = coords
+    try:
+        addr_components = gc.meta_vocab.save_address(cleaned)
+        update_school_coords(
+            school_db_path="data/master/school_info.db",
+            sc_code=sc_code,
+            lon=lon,
+            lat=lat,
+            cleaned=cleaned,
+            addr_components=addr_components,
+        )
+        return (True, False)
+    except Exception as e:
+        logger.error(f"update error: {e}", exc_info=True)
+        return (False, True)
+
+
+register_handler("school", "geocode", handle_school_geocode)
 
 
 def main():
     parser = argparse.ArgumentParser(description="retry worker")
-    parser.add_argument("--ignore-deadline", action="store_true", help="데드라인 무시하고 재시도 실행")
+    parser.add_argument("--limit", type=int, default=50, help="한 번에 처리할 작업 수")
     args = parser.parse_args()
 
-    now = kst_naive(now_kst())
-    deadline = get_today_3pm_kst_naive(now)
-
     rm = RetryManager(max_retries=None, base_delay=60, backoff_factor=2, deadline_buffer_seconds=70)
-    logger.info(f"retry_worker 시작. now(KST)={now}, deadline(KST)={deadline}, ignore_deadline={args.ignore_deadline}")
+    logger.info(f"retry_worker start. now(KST)={kst_naive(now_kst())}")
 
-    # ✅ 정책: 15시 이후에는 자동 재시도(핸들러 실행) 금지
-    if (now >= deadline) and (not args.ignore_deadline):
-        due = count_due_before_deadline(rm, deadline)
-        logger.warning(
-            f"데드라인 이후이므로 자동 재시도를 수행하지 않습니다. "
-            f"(deadline={deadline}, 남아있는 대상(<=deadline)={due}건) "
-            f"알림/만료 처리는 deadline_notifier가 담당합니다."
-        )
-        return
-
-    # 15시 전에는 데드라인 이내 작업만(정책 안전장치)
-    failures = rm.get_pending_retries(limit=50, deadline=None if args.ignore_deadline else deadline)
-
+    failures = rm.get_pending_retries(limit=args.limit, deadline=None)  # 모든 pending 작업
     if not failures:
         logger.info("재시도할 작업 없음")
         return
@@ -93,10 +157,12 @@ def main():
             rm.mark_orphan(failure_id, error=msg)
             continue
 
+        handler_exc = None
         try:
             success, is_permanent = handler(f)
         except Exception as e:
-            logger.error(f"핸들러 예외: {e}", exc_info=True)
+            handler_exc = str(e)[:200]
+            logger.error(f"handler exception: {e}", exc_info=True)
             success, is_permanent = False, False
 
         if (not success) and is_permanent:
@@ -109,19 +175,19 @@ def main():
             logger.info(f"성공 id={failure_id}")
             continue
 
-        # 일시 실패: 데드라인 기준으로 스케줄/만료 결정
         still_alive = rm.schedule_retry_by_id(
             failure_id=failure_id,
-            error="재시도 실패",
-            deadline=None if args.ignore_deadline else deadline,
+            error=handler_exc or "재시도 실패",
+            deadline=None,  # 데드라인 제한 없음
         )
         if still_alive:
             logger.info(f"실패, 다음 재시도 예약됨 id={failure_id}")
         else:
-            logger.warning(f"데드라인 도달 또는 최대 재시도 초과로 포기/만료 id={failure_id}")
+            logger.warning(f"최대 재시도 초과로 포기/만료 id={failure_id}")
 
     logger.info("재시도 워커 종료")
 
 
 if __name__ == "__main__":
     main()
+    

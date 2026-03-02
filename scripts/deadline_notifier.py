@@ -16,7 +16,7 @@ logger = build_logger("deadline_notifier", "logs/deadline_notifier.log")
 rm = RetryManager()
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-GITHUB_REPO = os.getenv("GITHUB_REPO")  # 예: "username/repo"
+GITHUB_REPO = os.getenv("GITHUB_REPO")
 
 
 def send_github_issue(failures):
@@ -63,6 +63,7 @@ def main():
         logger.info("15:00 이전이므로 실행하지 않습니다.")
         return
 
+    # ✅ next_attempt 조건 제거: 모든 미해결 FAILED 작업을 EXPIRED 처리
     with rm._get_connection() as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
@@ -70,10 +71,7 @@ def main():
             SELECT * FROM failures
             WHERE status = 'FAILED'
               AND resolved_at IS NULL
-              AND next_attempt IS NOT NULL
-              AND next_attempt <= ?
-            """,
-            (today_3pm,),
+            """
         ).fetchall()
         failures = [dict(row) for row in rows]
 
@@ -84,9 +82,9 @@ def main():
     try:
         send_github_issue(failures)
     except Exception as e:
-        logger.error(f"GitHub 이슈 생성 실패: {e}")
+        logger.error(f"GitHub 이슈 생성 실패: {e}", exc_info=True)
 
-    resolved_at = now  # KST naive
+    resolved_at = now
 
     with rm._get_connection() as conn:
         ids = [(resolved_at, f["id"]) for f in failures]
