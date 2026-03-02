@@ -244,7 +244,7 @@ class BaseCollector(ABC):
             return []
         if isinstance(data, list):
             result = []
-            for item in 
+            for item in data:                # ← data 추가
                 if isinstance(item, list):
                     result.extend(item)
                 else:
