@@ -27,10 +27,16 @@ from constants.codes import NEIS_API_KEY
 from constants.paths import MASTER_DB_PATH as MASTER_DB
 from core.retry import RetryManager
 
-class BaseCollector(ABC):
-    """공통 수집기 베이스 클래스"""
 
-    def __init__(self, name: str, base_dir: str, shard: str = "none", school_range: Optional[str] = None):
+class BaseCollector(ABC):
+
+    def __init__(
+        self,
+        name: str,
+        base_dir: str,
+        shard: str = "none",
+        school_range: Optional[str] = None
+    ):
         VALID_SHARDS = {"odd", "even", "none"}
         if shard not in VALID_SHARDS:
             print(f"❌ 잘못된 shard 값: {shard} (collector: {name})", file=sys.stderr)
@@ -53,7 +59,10 @@ class BaseCollector(ABC):
         self.session = build_session()
 
         self.q = queue.Queue()
-        self.writer_thread = threading.Thread(target=self._writer_loop, daemon=True)
+        self._writer_running = True
+        self.writer_thread = threading.Thread(
+            target=self._writer_loop, daemon=True, name=f"{name}_writer"
+        )
         self.writer_thread.start()
 
         self.school_cache = {}
@@ -69,11 +78,14 @@ class BaseCollector(ABC):
         self.completed_items = set()
         self._load_checkpoints()
 
-        self.logger.info(f"🔥 {name} 초기화 완료 (샤드: {shard}, 범위: {school_range}, 캐시: {len(self.school_cache)}개)")
+        self.logger.info(
+            f"🔥 {name} 초기화 완료 (샤드: {shard}, 범위: {school_range}, "
+            f"캐시: {len(self.school_cache)}개)"
+        )
 
-    # ===== 수집 실패 기록 메서드 =====
-    def record_collect_failure(self, region: str, year: Optional[int] = None, error: str = ""):
-        """NEIS API 수집 실패 기록"""
+    def record_collect_failure(
+        self, region: str, year: Optional[int] = None, error: str = ""
+    ):
         self.retry_mgr.record_failure(
             domain='collect',
             task_type='fetch_region',
@@ -128,10 +140,16 @@ class BaseCollector(ABC):
             return False
         return should_include_school(self.shard, self.school_range, school_code)
 
-    def _fetch_paginated(self, url: str, base_params: dict, response_key: str,
-                         page_size: int = 100, max_page: int = 500,
-                         region: Optional[str] = None, year: Optional[int] = None) -> List[dict]:
-        """페이지네이션 + 실패 시 RetryManager 기록"""
+    def _fetch_paginated(
+        self,
+        url: str,
+        base_params: dict,
+        response_key: str,
+        page_size: int = 100,
+        max_page: int = 500,
+        region: Optional[str] = None,
+        year: Optional[int] = None
+    ) -> List[dict]:
         all_items = []
         page = 1
         retry_count = 0
@@ -156,6 +174,7 @@ class BaseCollector(ABC):
                 page += 1
                 retry_count = 0
                 time.sleep(random.uniform(0.1, 0.3))
+
             except Exception as e:
                 retry_count += 1
                 self.logger.error(f"페이지 {page} 에러 ({retry_count}/{max_retries}): {e}")
@@ -167,9 +186,13 @@ class BaseCollector(ABC):
 
         return all_items
 
-    def iterate_schools_by_month(self, region: str, year: int,
-                                  month_range: List[tuple],
-                                  per_school_month_func: Callable[[str, int, int], None]):
+    def iterate_schools_by_month(
+        self,
+        region: str,
+        year: int,
+        month_range: List[tuple],
+        per_school_month_func: Callable[[str, int, int], None]
+    ):
         raise NotImplementedError
 
     def iterate_schools(self, region: str, per_school_func: Callable[[str, str], None]):
@@ -189,6 +212,7 @@ class BaseCollector(ABC):
                 try:
                     nxt = self.q.get_nowait()
                     if nxt is None:
+                        # 종료 신호를 다시 넣고 현재 배치만 처리 후 다음 루프에서 종료
                         self.q.task_done()
                         self.q.put(None)
                         break
@@ -213,7 +237,7 @@ class BaseCollector(ABC):
             return []
         if isinstance(data, list):
             result = []
-            for item in data:
+            for item in 
                 if isinstance(item, list):
                     result.extend(item)
                 else:
@@ -221,7 +245,7 @@ class BaseCollector(ABC):
             return result
         return [data]
 
-    def enqueue(self, data: Union[dict, List[dict]]):
+    def enqueue(self,  Union[dict, List[dict]]):
         self.q.put(data)
 
     def create_dated_backup(self):
@@ -233,6 +257,7 @@ class BaseCollector(ABC):
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute(f"VACUUM INTO '{backup_path}'")
             self.logger.info(f"📅 날짜 백업 생성: {backup_path}")
+
         base = self.db_path.replace('.db', '')
         date_pattern = re.compile(rf"^{re.escape(base)}_(\d{{8}})\.db$")
         from .kst_time import KST
@@ -240,9 +265,8 @@ class BaseCollector(ABC):
             match = date_pattern.match(f)
             if not match:
                 continue
-            fdate_str = match.group(1)
             try:
-                fdate = datetime.strptime(fdate_str, '%Y%m%d')
+                fdate = datetime.strptime(match.group(1), '%Y%m%d')
                 fdate = KST.localize(fdate)
                 if (now_kst() - fdate) > timedelta(days=30):
                     os.remove(f)
@@ -270,24 +294,44 @@ class BaseCollector(ABC):
         pass
 
     def _save_batch(self, batch: List[dict]):
+        # get_db_connection이 commit()을 담당하므로 여기서 중복 호출 없음
         with get_db_connection(self.db_path) as conn:
             self._do_save_batch(conn, batch)
-            conn.commit()
 
     def _load_checkpoints(self):
         pass
 
-    def save_checkpoint(self, region: str, school: str, sub_key: str, page: int, total: int):
+    def save_checkpoint(
+        self, region: str, school: str, sub_key: str, page: int, total: int
+    ):
         pass
 
-    def close(self, timeout: float = 30.0):
+    def close(self, timeout: float = 60.0):
+        """
+        안전한 종료 순서:
+        1. 큐가 완전히 비워질 때까지 대기 (enqueue된 모든 항목 처리 보장)
+        2. writer 스레드에 종료 신호 전송
+        3. writer 스레드 종료 대기
+        4. 등록된 리소스 정리 (MetaVocabManager 등)
+        """
+        self.logger.info(f"🔒 {self.name} 종료 시작...")
+
+        # 1. 남은 큐 아이템 모두 처리 대기
+        self.q.join()
+
+        # 2. writer 스레드 종료 신호
+        self.q.put(None)
+
+        # 3. writer 스레드 종료 대기
+        self.writer_thread.join(timeout=timeout)
+        if self.writer_thread.is_alive():
+            self.logger.warning("⚠️ writer_thread가 정상 종료되지 않았습니다.")
+
+        # 4. writer 스레드 완전 종료 후 리소스 정리
         for res in self._closeable_resources:
             try:
                 res.close()
             except Exception as e:
                 self.logger.warning(f"리소스 close 실패: {e}")
-        self.q.put(None)
-        self.writer_thread.join(timeout=timeout)
-        if self.writer_thread.is_alive():
-            self.logger.warning("⚠️ writer_thread가 정상 종료되지 않았습니다.")
-            
+
+        self.logger.info(f"✅ {self.name} 종료 완료")

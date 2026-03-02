@@ -6,11 +6,10 @@ import os
 import time
 import random
 import sqlite3
-from pathlib import Path
 from typing import List, Dict, Tuple
 
 from core.base_collector import BaseCollector
-from core.database import get_db_connection
+from core.database import get_db_connection, get_db_reader
 from core.school_id import create_school_id
 from core.meta_vocab import MetaVocabManager
 from core.filters import AddressFilter
@@ -25,7 +24,16 @@ NEIS_URL = NEIS_ENDPOINTS['school']
 
 
 class SchoolInfoCollector(BaseCollector):
-    def __init__(self, shard="none", school_range=None, incremental=False, full=False, compare=False, debug_mode=False):
+
+    def __init__(
+        self,
+        shard: str = "none",
+        school_range=None,
+        incremental: bool = False,
+        full: bool = False,
+        compare: bool = False,
+        debug_mode: bool = False
+    ):
         super().__init__("school", BASE_DIR, shard, school_range)
         self.api_context = 'school'
         self.incremental = incremental
@@ -37,52 +45,50 @@ class SchoolInfoCollector(BaseCollector):
             MetaVocabManager(GLOBAL_VOCAB_PATH, debug_mode)
         )
         self.geocoder = VWorldGeocoder(calls_per_second=3.0)
-        # self.retry_mgr 는 BaseCollector에서 제공됨
-        self.logger.info(f"🏫 SchoolInfoCollector 초기화 완료")
+        self.logger.info("🏫 SchoolInfoCollector 초기화 완료")
 
     def _init_db(self):
         with get_db_connection(self.db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS schools (
-                    sc_code TEXT PRIMARY KEY,
-                    school_id INTEGER,
-                    sc_name TEXT,
-                    eng_name TEXT,
-                    sc_kind TEXT,
-                    atpt_code TEXT,
-                    address TEXT,
+                    sc_code      TEXT PRIMARY KEY,
+                    school_id    INTEGER,
+                    sc_name      TEXT,
+                    eng_name     TEXT,
+                    sc_kind      TEXT,
+                    atpt_code    TEXT,
+                    address      TEXT,
                     address_hash TEXT,
-                    tel TEXT,
-                    homepage TEXT,
-                    status TEXT DEFAULT '운영',
-                    last_seen INTEGER,
-                    load_dt TEXT,
-                    latitude REAL,
-                    longitude REAL,
-                    city_id INTEGER,
-                    district_id INTEGER,
-                    street_id INTEGER,
-                    number_bit INTEGER
+                    tel          TEXT,
+                    homepage     TEXT,
+                    status       TEXT DEFAULT '운영',
+                    last_seen    INTEGER,
+                    load_dt      TEXT,
+                    latitude     REAL,
+                    longitude    REAL,
+                    city_id      INTEGER,
+                    district_id  INTEGER,
+                    street_id    INTEGER,
+                    number_bit   INTEGER
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_address_hash ON schools(address_hash)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON schools(status)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_city ON schools(city_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_district ON schools(district_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_street ON schools(street_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_status      ON schools(status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_city        ON schools(city_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_district    ON schools(district_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_street      ON schools(street_id)")
             self._init_db_common(conn)
 
     def _get_target_key(self) -> str:
         return self.run_date
 
-    def fetch_region(self, region_code: str):
+    def fetch_region(self, region_code: str, **kwargs):
         base_params = {"ATPT_OFCDC_SC_CODE": region_code}
-        # region과 year 전달 추가
         rows = self._fetch_paginated(
-            NEIS_URL, base_params, 'schoolInfo', 
-            page_size=100, 
-            region=region_code,          # 추가
-            year=self.run_date[:4]       # 추가 (년도)
+            NEIS_URL, base_params, 'schoolInfo',
+            page_size=100,
+            region=region_code,
+            year=int(self.run_date[:4])  # str → int 명시 변환
         )
         if not rows:
             self.logger.error(f"[{region_code}] 수집된 데이터 없음")
@@ -91,16 +97,18 @@ class SchoolInfoCollector(BaseCollector):
         self._update_schools_with_diff(rows, region_code)
 
     def _update_schools_with_diff(self, new_rows: List[dict], region_code: str):
-        # 기존 DB에서 schools 테이블이 있는 경우에만 데이터 로드
+        # 읽기 전용 연결 사용 → write lock 없음
         existing = {}
-        # MASTER_DB 대신 현재 샤드 DB에서 읽기
         if os.path.exists(self.db_path):
             try:
-                with get_db_connection(self.db_path) as conn:
+                with get_db_reader(self.db_path) as conn:
                     cur = conn.execute(
                         "SELECT sc_code, address_hash, latitude, longitude FROM schools"
                     )
-                    existing = {row[0]: {"hash": row[1], "lat": row[2], "lon": row[3]} for row in cur}
+                    existing = {
+                        row[0]: {"hash": row[1], "lat": row[2], "lon": row[3]}
+                        for row in cur
+                    }
             except Exception as e:
                 self.logger.error(f"기존 schools 테이블 조회 실패: {e}")
 
@@ -125,7 +133,6 @@ class SchoolInfoCollector(BaseCollector):
                 if coords:
                     new_coords[sc_code] = coords
                 else:
-                    # shard가 "none"이 아닐 때만 실패 기록 (샤딩하는 도메인)
                     if self.shard != "none":
                         self.retry_mgr.record_failure(
                             domain='geo',
@@ -144,10 +151,12 @@ class SchoolInfoCollector(BaseCollector):
             row = meta["row"]
             atpt_code = row.get("ATPT_OFCDC_SC_CODE") or ""
             old = meta["old"]
+
             if sc_code in new_coords:
                 lon, lat = new_coords[sc_code]
             else:
-                lat, lon = old.get("lat"), old.get("lon")
+                lat = old.get("lat")
+                lon = old.get("lon")
 
             addr_ids = {}
             if meta["full_address"]:
@@ -156,28 +165,27 @@ class SchoolInfoCollector(BaseCollector):
                 except Exception as e:
                     self.logger.error(f"주소 변환 실패 {sc_code}: {e}")
 
-            school_item = {
-                "sc_code": sc_code,
-                "school_id": create_school_id(atpt_code, sc_code),
-                "sc_name": row.get("SCHUL_NM", ""),
-                "eng_name": row.get("ENG_SCHUL_NM", ""),
-                "sc_kind": row.get("SCHUL_KND_SC_NM", ""),
-                "atpt_code": atpt_code,
-                "address": meta["full_address"],
+            self.enqueue([{
+                "sc_code":      sc_code,
+                "school_id":    create_school_id(atpt_code, sc_code),
+                "sc_name":      row.get("SCHUL_NM", ""),
+                "eng_name":     row.get("ENG_SCHUL_NM", ""),
+                "sc_kind":      row.get("SCHUL_KND_SC_NM", ""),
+                "atpt_code":    atpt_code,
+                "address":      meta["full_address"],
                 "address_hash": meta["new_hash"],
-                "tel": row.get("ORG_TELNO", ""),
-                "homepage": row.get("HMPG_ADRES", ""),
-                "status": "운영",
-                "last_seen": int(self.run_date),
-                "load_dt": now_kst().isoformat(),
-                "city_id": addr_ids.get("city_id", 0),
-                "district_id": addr_ids.get("district_id", 0),
-                "street_id": addr_ids.get("street_id", 0),
-                "number_bit": addr_ids.get("number_bit", 0),
-                "latitude": lat,
-                "longitude": lon,
-            }
-            self.enqueue([school_item])
+                "tel":          row.get("ORG_TELNO", ""),
+                "homepage":     row.get("HMPG_ADRES", ""),
+                "status":       "운영",
+                "last_seen":    int(self.run_date),
+                "load_dt":      now_kst().isoformat(),
+                "city_id":      addr_ids.get("city_id", 0),
+                "district_id":  addr_ids.get("district_id", 0),
+                "street_id":    addr_ids.get("street_id", 0),
+                "number_bit":   addr_ids.get("number_bit", 0),
+                "latitude":     lat,
+                "longitude":    lon,
+            }])
 
         self.logger.info(f"[{region_code}] 좌표 갱신: {len(new_coords)}개 / 완료")
 
@@ -185,26 +193,26 @@ class SchoolInfoCollector(BaseCollector):
         return []
 
     def _do_save_batch(self, conn: sqlite3.Connection, batch: List[dict]):
-        school_data = [
-            (it['sc_code'], it['school_id'], it['sc_name'], it['eng_name'],
-             it['sc_kind'], it['atpt_code'], it['address'], it['address_hash'],
-             it['tel'], it['homepage'], it['status'], it['last_seen'], it['load_dt'],
-             it['latitude'], it['longitude'], it['city_id'], it['district_id'],
-             it['street_id'], it['number_bit'])
-            for it in batch
-        ]
         conn.executemany("""
             INSERT OR REPLACE INTO schools
             (sc_code, school_id, sc_name, eng_name, sc_kind, atpt_code,
              address, address_hash, tel, homepage, status, last_seen, load_dt,
              latitude, longitude, city_id, district_id, street_id, number_bit)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, school_data)
+        """, [
+            (it['sc_code'], it['school_id'], it['sc_name'], it['eng_name'],
+             it['sc_kind'], it['atpt_code'], it['address'], it['address_hash'],
+             it['tel'], it['homepage'], it['status'], it['last_seen'], it['load_dt'],
+             it['latitude'], it['longitude'], it['city_id'], it['district_id'],
+             it['street_id'], it['number_bit'])
+            for it in batch
+        ])
 
 
 if __name__ == "__main__":
     from core.collector_cli import run_collector
+
     def _fetch(collector, region, **kwargs):
-        collector.fetch_region(region)
+        collector.fetch_region(region, **kwargs)
+
     run_collector(SchoolInfoCollector, _fetch, "학교 기본정보 수집기")
-    

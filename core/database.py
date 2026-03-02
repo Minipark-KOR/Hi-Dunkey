@@ -6,6 +6,7 @@ import sqlite3
 from contextlib import contextmanager
 from typing import Optional, Generator
 
+
 @contextmanager
 def get_db_connection(
     db_path: str,
@@ -13,7 +14,7 @@ def get_db_connection(
     row_factory: Optional[type] = None
 ) -> Generator[sqlite3.Connection, None, None]:
     """
-    SQLite 연결 컨텍스트 매니저
+    SQLite 연결 컨텍스트 매니저 (읽기/쓰기 겸용)
     - WAL 모드, 외래키 ON, 동기화 NORMAL, 캐시 설정 적용
     - row_factory: sqlite3.Row 등 전달 시 반영됨
     """
@@ -22,7 +23,8 @@ def get_db_connection(
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA synchronous = NORMAL")
-        conn.execute("PRAGMA cache_size = -64000")   # 64MB 캐시
+        conn.execute("PRAGMA cache_size = -64000")
+        conn.execute("PRAGMA busy_timeout = 5000")
         if row_factory is not None:
             conn.row_factory = row_factory
         yield conn
@@ -33,12 +35,36 @@ def get_db_connection(
     finally:
         conn.close()
 
-def attach_master_db(conn: sqlite3.Connection, master_path: str = "../data/master/school_master.db") -> None:
-    """학교 마스터 DB 연결"""
+
+@contextmanager
+def get_db_reader(
+    db_path: str,
+    timeout: float = 10.0,
+    row_factory: Optional[type] = None
+) -> Generator[sqlite3.Connection, None, None]:
+    """
+    읽기 전용 SQLite 연결.
+    commit/rollback 없음 → write lock 유발하지 않음.
+    """
+    conn = sqlite3.connect(db_path, timeout=timeout)
+    try:
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA query_only = ON")
+        if row_factory is not None:
+            conn.row_factory = row_factory
+        yield conn
+    finally:
+        conn.close()
+
+
+def attach_master_db(
+    conn: sqlite3.Connection,
+    master_path: str = "../data/master/school_master.db"
+) -> None:
     conn.execute(f"ATTACH DATABASE '{master_path}' AS master_db")
 
+
 def init_checkpoint_table(conn: sqlite3.Connection) -> None:
-    """체크포인트 테이블 생성 (공통)"""
     conn.execute("""
         CREATE TABLE IF NOT EXISTS collection_checkpoint (
             collector_type TEXT,
@@ -52,4 +78,3 @@ def init_checkpoint_table(conn: sqlite3.Connection) -> None:
             PRIMARY KEY (collector_type, target_key, region_code, school_code, sub_key)
         )
     """)
-    
