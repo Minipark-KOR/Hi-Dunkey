@@ -22,9 +22,13 @@ from typing import Optional
 # 도메인별 병합 스크립트 매핑
 MERGE_SCRIPT_MAP = {
     "school_info": "merge_school_info_dbs.py",
+    "school_info_collector": "merge_school_info_dbs.py",   # ✅ 추가
     "meal": "merge_meal_dbs.py",
+    "meal_collector": "merge_meal_dbs.py",                 # 필요시 추가
     "schedule": "merge_schedule_dbs.py",
+    "schedule_collector": "merge_schedule_dbs.py",
     "timetable": "merge_timetable_dbs.py",
+    "timetable_collector": "merge_timetable_dbs.py",
 }
 
 def get_merge_script(collector: str) -> str:
@@ -268,4 +272,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
