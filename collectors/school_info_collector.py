@@ -35,16 +35,17 @@ class SchoolInfoCollector(BaseCollector):
         debug_mode: bool = False
     ):
         super().__init__("school", BASE_DIR, shard, school_range)
-        self.api_context = 'school'
-        self.incremental = incremental
-        self.full = full
-        self.compare = compare
-        self.debug_mode = debug_mode
-        self.run_date = now_kst().strftime("%Y%m%d")
-        self.meta_vocab = self.register_resource(
+        self.api_context  = 'school'
+        self.incremental  = incremental
+        self.full         = full
+        self.compare      = compare
+        self.debug_mode   = debug_mode
+        self.run_date     = now_kst().strftime("%Y%m%d")
+        self.meta_vocab   = self.register_resource(
             MetaVocabManager(GLOBAL_VOCAB_PATH, debug_mode)
         )
         self.geocoder = VWorldGeocoder(calls_per_second=3.0)
+        # retry_mgr는 BaseCollector에서 제공
         self.logger.info("🏫 SchoolInfoCollector 초기화 완료")
 
     def _init_db(self):
@@ -72,11 +73,21 @@ class SchoolInfoCollector(BaseCollector):
                     number_bit   INTEGER
                 )
             """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_address_hash ON schools(address_hash)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_status      ON schools(status)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_city        ON schools(city_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_district    ON schools(district_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_street      ON schools(street_id)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_address_hash ON schools(address_hash)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_status ON schools(status)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_city ON schools(city_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_district ON schools(district_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_street ON schools(street_id)"
+            )
             self._init_db_common(conn)
 
     def _get_target_key(self) -> str:
@@ -120,10 +131,10 @@ class SchoolInfoCollector(BaseCollector):
             full_address = row.get("ORG_RDNMA", "")
             new_hash = AddressFilter.hash(full_address) if full_address else ""
             row_meta[sc_code] = {
-                "row": row,
+                "row":          row,
                 "full_address": full_address,
-                "new_hash": new_hash,
-                "old": existing.get(sc_code, {}),
+                "new_hash":     new_hash,
+                "old":          existing.get(sc_code, {}),
             }
 
         new_coords: Dict[str, Tuple[float, float]] = {}
@@ -144,13 +155,15 @@ class SchoolInfoCollector(BaseCollector):
                             error="Geocoding failed"
                         )
                     else:
-                        self.logger.warning(f"샤드 없음 → 지오코딩 실패 기록 생략: {sc_code}")
+                        self.logger.warning(
+                            f"샤드 없음 → 지오코딩 실패 기록 생략: {sc_code}"
+                        )
                 time.sleep(random.uniform(0.2, 0.5))
 
         for sc_code, meta in row_meta.items():
-            row = meta["row"]
+            row      = meta["row"]
             atpt_code = row.get("ATPT_OFCDC_SC_CODE") or ""
-            old = meta["old"]
+            old      = meta["old"]
 
             if sc_code in new_coords:
                 lon, lat = new_coords[sc_code]
@@ -200,11 +213,11 @@ class SchoolInfoCollector(BaseCollector):
              latitude, longitude, city_id, district_id, street_id, number_bit)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, [
-            (it['sc_code'], it['school_id'], it['sc_name'], it['eng_name'],
-             it['sc_kind'], it['atpt_code'], it['address'], it['address_hash'],
-             it['tel'], it['homepage'], it['status'], it['last_seen'], it['load_dt'],
-             it['latitude'], it['longitude'], it['city_id'], it['district_id'],
-             it['street_id'], it['number_bit'])
+            (it['sc_code'],     it['school_id'],   it['sc_name'],    it['eng_name'],
+             it['sc_kind'],     it['atpt_code'],   it['address'],    it['address_hash'],
+             it['tel'],         it['homepage'],    it['status'],     it['last_seen'],
+             it['load_dt'],     it['latitude'],    it['longitude'],  it['city_id'],
+             it['district_id'], it['street_id'],   it['number_bit'])
             for it in batch
         ])
 

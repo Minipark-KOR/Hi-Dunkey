@@ -12,11 +12,21 @@ from core.school_year import get_current_school_year
 
 def build_common_parser(description: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=description)
-    parser.add_argument("--regions", default="ALL", help="교육청 코드 (쉼표 구분, 기본: ALL)")
-    parser.add_argument("--shard", choices=["odd", "even", "none"], default="none")
-    parser.add_argument("--school_range", choices=["A", "B", "none"], default="none")
-    parser.add_argument("--year", type=int, default=None, help="학년도 (기본: 현재)")
-    parser.add_argument("--date", default=None, help="수집일 YYYYMMDD")
+    parser.add_argument(
+        "--regions", default="ALL", help="교육청 코드 (쉼표 구분, 기본: ALL)"
+    )
+    parser.add_argument(
+        "--shard", choices=["odd", "even", "none"], default="none"
+    )
+    parser.add_argument(
+        "--school_range", choices=["A", "B", "none"], default="none"
+    )
+    parser.add_argument(
+        "--year", type=int, default=None, help="학년도 (기본: 현재)"
+    )
+    parser.add_argument(
+        "--date", default=None, help="수집일 YYYYMMDD"
+    )
     parser.add_argument("--debug", action="store_true")
     return parser
 
@@ -64,7 +74,7 @@ def run_collector(
     except KeyboardInterrupt:
         collector.logger.warning("⚠️ 수집 중단 (KeyboardInterrupt)")
     finally:
-        # close()가 내부적으로 q.join() 후 writer 종료까지 보장
+        # close()가 내부적으로 q.join() → writer 종료 → 리소스 정리 순서 보장
         collector.close()
 
     if failed:

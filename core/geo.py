@@ -1,32 +1,36 @@
 #!/usr/bin/env python3
 """
-VWorld Geocoder - 주소를 좌표로 변환 (개선 버전)
+VWorld Geocoder - 주소를 좌표로 변환
+- 타임아웃 30초, 최대 3회 재시도, 지수 백오프
+- rate limit: 호출 직전 시간 기록 (API 서버 TPS 기준)
 """
 import time
 import requests
-import logging
 from typing import Optional, Tuple
 from constants.codes import VWORLD_API_KEY
 
-# 모듈 레벨 로거 생성
-logger = logging.getLogger(__name__)
 
 class VWorldGeocoder:
+
     def __init__(self, calls_per_second: float = 3.0):
         self.calls_per_second = calls_per_second
         self.last_call_time = 0.0
         self.api_key = VWORLD_API_KEY
 
     def _wait_rate_limit(self):
+        """
+        API 호출 직전 rate limit 대기.
+        last_call_time은 대기 완료 후 즉시 기록 → 실제 전송 시점 기준으로 TPS 계산.
+        타임아웃 등 예외 발생 시에도 last_call_time이 기록되어 rate limit이 유지됨.
+        """
         elapsed = time.time() - self.last_call_time
         wait = 1.0 / self.calls_per_second - elapsed
         if wait > 0:
             time.sleep(wait)
-        self.last_call_time = time.time()
+        self.last_call_time = time.time()  # 요청 전송 직전 기록
 
     def geocode(self, address: str) -> Optional[Tuple[float, float]]:
         if not address or not self.api_key:
-            logger.warning("주소 또는 API 키 없음")
             return None
 
         url = "https://api.vworld.kr/req/address"
@@ -52,36 +56,26 @@ class VWorldGeocoder:
                         timeout=30
                     )
                     if response.status_code == 429:
-                        logger.warning("API 요청 제한 초과 (429), 재시도 대기")
                         time.sleep(5 * (attempt + 1))
                         continue
 
                     if response.status_code == 200:
                         data = response.json()
                         status = data.get('response', {}).get('status')
-                        msg = data.get('response', {}).get('msg', '')
                         if status == 'OK':
                             point = data['response']['result']['point']
                             return (float(point['x']), float(point['y']))
                         elif status == 'NOT_FOUND':
-                            logger.debug(f"주소를 찾을 수 없음 (addr_type={addr_type}): {address[:50]}...")
                             break  # 다음 addr_type 시도
-                        else:
-                            logger.error(f"VWorld API 오류 (status={status}, msg={msg}): {address[:50]}...")
-                            break  # 해당 타입 실패, 다음 타입으로
-                    else:
-                        logger.warning(f"HTTP 오류: {response.status_code}")
 
                 except requests.exceptions.Timeout:
-                    logger.warning(f"타임아웃 (addr_type={addr_type}, 재시도 {attempt+1}/3)")
+                    print(f"⏰ 타임아웃 (addr_type={addr_type}, 재시도 {attempt+1}/3)")
                     time.sleep(2 ** attempt)
                 except requests.exceptions.RequestException as e:
-                    logger.error(f"요청 오류: {e}")
+                    print(f"⚠️ 요청 오류: {e}")
                     break
                 except Exception as e:
-                    logger.error(f"Geocoding 예외: {e}", exc_info=True)
+                    print(f"⚠️ Geocoding 예외: {e}")
                     break
 
-        logger.warning(f"모든 시도 실패: {address[:50]}...")
         return None
-        

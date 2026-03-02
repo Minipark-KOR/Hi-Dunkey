@@ -14,9 +14,9 @@ def get_db_connection(
     row_factory: Optional[type] = None
 ) -> Generator[sqlite3.Connection, None, None]:
     """
-    SQLite 연결 컨텍스트 매니저 (읽기/쓰기 겸용)
-    - WAL 모드, 외래키 ON, 동기화 NORMAL, 캐시 설정 적용
-    - row_factory: sqlite3.Row 등 전달 시 반영됨
+    SQLite 읽기/쓰기 연결 컨텍스트 매니저.
+    WAL 모드, 외래키 ON, 동기화 NORMAL, 캐시 64MB 적용.
+    row_factory 전달 시 반영됨.
     """
     conn = sqlite3.connect(db_path, timeout=timeout)
     try:
@@ -45,6 +45,7 @@ def get_db_reader(
     """
     읽기 전용 SQLite 연결.
     commit/rollback 없음 → write lock 유발하지 않음.
+    SELECT 전용으로 사용.
     """
     conn = sqlite3.connect(db_path, timeout=timeout)
     try:
@@ -61,10 +62,12 @@ def attach_master_db(
     conn: sqlite3.Connection,
     master_path: str = "../data/master/school_master.db"
 ) -> None:
+    """학교 마스터 DB 연결"""
     conn.execute(f"ATTACH DATABASE '{master_path}' AS master_db")
 
 
 def init_checkpoint_table(conn: sqlite3.Connection) -> None:
+    """체크포인트 테이블 생성 (공통)"""
     conn.execute("""
         CREATE TABLE IF NOT EXISTS collection_checkpoint (
             collector_type TEXT,

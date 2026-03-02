@@ -59,14 +59,13 @@ class BaseCollector(ABC):
         self.session = build_session()
 
         self.q = queue.Queue()
-        self._writer_running = True
         self.writer_thread = threading.Thread(
             target=self._writer_loop, daemon=True, name=f"{name}_writer"
         )
         self.writer_thread.start()
 
-        self.school_cache = {}
-        self.school_by_id = {}
+        self.school_cache: Dict[str, Any] = {}
+        self.school_by_id: Dict[str, Any] = {}
         self._load_school_cache()
 
         self._closeable_resources = []
@@ -75,17 +74,18 @@ class BaseCollector(ABC):
         self.retry_mgr = RetryManager()
 
         self._init_db()
-        self.completed_items = set()
+        self.completed_items: set = set()
         self._load_checkpoints()
 
         self.logger.info(
-            f"🔥 {name} 초기화 완료 (샤드: {shard}, 범위: {school_range}, "
-            f"캐시: {len(self.school_cache)}개)"
+            f"🔥 {name} 초기화 완료 "
+            f"(샤드: {shard}, 범위: {school_range}, 캐시: {len(self.school_cache)}개)"
         )
 
     def record_collect_failure(
         self, region: str, year: Optional[int] = None, error: str = ""
     ):
+        """NEIS API 수집 실패 기록"""
         self.retry_mgr.record_failure(
             domain='collect',
             task_type='fetch_region',
@@ -96,6 +96,7 @@ class BaseCollector(ABC):
         self.logger.warning(f"수집 실패 기록: region={region}, year={year}")
 
     def register_resource(self, resource):
+        """종료 시 자동 close()가 호출될 리소스 등록"""
         self._closeable_resources.append(resource)
         return resource
 
@@ -108,8 +109,8 @@ class BaseCollector(ABC):
                 cur = conn.execute("""
                     SELECT sc_code, atpt_code, school_id, sc_name, sc_kind,
                            CASE WHEN sc_kind LIKE '%초등%' THEN '초'
-                                WHEN sc_kind LIKE '%중%' THEN '중'
-                                WHEN sc_kind LIKE '%고%' THEN '고'
+                                WHEN sc_kind LIKE '%중%'  THEN '중'
+                                WHEN sc_kind LIKE '%고%'  THEN '고'
                                 WHEN sc_kind LIKE '%특수%' THEN '특'
                                 ELSE '기타' END as school_level,
                            CASE WHEN sc_kind LIKE '%특수%' THEN 1 ELSE 0 END as is_special,
@@ -117,15 +118,16 @@ class BaseCollector(ABC):
                     FROM schools WHERE status = '운영'
                 """)
                 for row in cur:
-                    sc_code, atpt_code, school_id, sc_name, sc_kind, level, is_special, status = row
+                    sc_code, atpt_code, school_id, sc_name, sc_kind, \
+                        level, is_special, status = row
                     self.school_cache[sc_code] = {
-                        'atpt_code': atpt_code,
-                        'school_id': school_id,
-                        'name': sc_name,
-                        'kind': sc_kind,
-                        'level': level,
+                        'atpt_code':  atpt_code,
+                        'school_id':  school_id,
+                        'name':       sc_name,
+                        'kind':       sc_kind,
+                        'level':      level,
                         'is_special': is_special,
-                        'status': status,
+                        'status':     status,
                     }
                     self.school_by_id[school_id] = self.school_cache[sc_code]
         except Exception as e:
@@ -150,6 +152,7 @@ class BaseCollector(ABC):
         region: Optional[str] = None,
         year: Optional[int] = None
     ) -> List[dict]:
+        """페이지네이션 수집. 최대 재시도 초과 시 RetryManager에 실패 기록."""
         all_items = []
         page = 1
         retry_count = 0
@@ -177,7 +180,9 @@ class BaseCollector(ABC):
 
             except Exception as e:
                 retry_count += 1
-                self.logger.error(f"페이지 {page} 에러 ({retry_count}/{max_retries}): {e}")
+                self.logger.error(
+                    f"페이지 {page} 에러 ({retry_count}/{max_retries}): {e}"
+                )
                 if retry_count >= max_retries:
                     if region:
                         self.record_collect_failure(region, year, str(e))
@@ -195,7 +200,9 @@ class BaseCollector(ABC):
     ):
         raise NotImplementedError
 
-    def iterate_schools(self, region: str, per_school_func: Callable[[str, str], None]):
+    def iterate_schools(
+        self, region: str, per_school_func: Callable[[str, str], None]
+    ):
         raise NotImplementedError
 
     def _writer_loop(self):
@@ -294,7 +301,7 @@ class BaseCollector(ABC):
         pass
 
     def _save_batch(self, batch: List[dict]):
-        # get_db_connection이 commit()을 담당하므로 여기서 중복 호출 없음
+        # get_db_connection이 commit()을 담당 → 여기서 중복 호출 없음
         with get_db_connection(self.db_path) as conn:
             self._do_save_batch(conn, batch)
 
@@ -309,10 +316,10 @@ class BaseCollector(ABC):
     def close(self, timeout: float = 60.0):
         """
         안전한 종료 순서:
-        1. 큐가 완전히 비워질 때까지 대기 (enqueue된 모든 항목 처리 보장)
-        2. writer 스레드에 종료 신호 전송
-        3. writer 스레드 종료 대기
-        4. 등록된 리소스 정리 (MetaVocabManager 등)
+        1. q.join()  — 큐에 남은 모든 아이템 처리 완료 대기
+        2. q.put(None) — writer 스레드에 종료 신호 전송
+        3. writer_thread.join() — writer 스레드 완전 종료 대기
+        4. 리소스 정리 — writer 종료 후 MetaVocabManager 등 close()
         """
         self.logger.info(f"🔒 {self.name} 종료 시작...")
 
@@ -327,7 +334,7 @@ class BaseCollector(ABC):
         if self.writer_thread.is_alive():
             self.logger.warning("⚠️ writer_thread가 정상 종료되지 않았습니다.")
 
-        # 4. writer 스레드 완전 종료 후 리소스 정리
+        # 4. writer 완전 종료 후 리소스 정리 (MetaVocabManager 등)
         for res in self._closeable_resources:
             try:
                 res.close()
