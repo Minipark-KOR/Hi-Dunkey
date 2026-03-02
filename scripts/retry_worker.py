@@ -1,148 +1,92 @@
 #!/usr/bin/env python3
-"""
-재시도 워커 - 실패한 작업을 지수 백오프로 재시도
-크론탭 1분 간격 실행 권장:
-  * * * * * cd /path/to/Hi-Dunkey && PYTHONPATH=. python scripts/retry_worker.py
-"""
+# scripts/retry_worker.py
 import os
 import sys
-import sqlite3
+from datetime import datetime, time
 from typing import Dict, Any, Callable, Tuple
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.retry import RetryManager
 from core.logger import build_logger
+from core.kst_time import now_kst
 
 logger = build_logger("retry_worker", "logs/retry_worker.log")
-rm = RetryManager()
 
-# 핸들러 반환 타입: (success: bool, is_permanent: bool)
-# (True,  False) → 성공          → main()이 mark_resolved('SUCCESS') 호출
-# (True,  True)  → 영구 실패     → main()이 mark_orphan() 호출
-# (False, False) → 일시 실패     → main()이 record_failure() 재호출
-HandlerResult = Tuple[bool, bool]
+HandlerResult = Tuple[bool, bool]  # (success, is_permanent_failure)
 TASK_HANDLERS: Dict[tuple, Callable[[Dict[str, Any]], HandlerResult]] = {}
 
 
-def register_handler(domain: str, task_type: str, handler: Callable):
+def get_today_3pm_kst_naive() -> datetime:
+    n = now_kst()
+    if getattr(n, "tzinfo", None) is not None:
+        n = n.replace(tzinfo=None)
+    return datetime.combine(n.date(), time(15, 0))
+
+
+def register_handler(domain: str, task_type: str, handler: Callable[[Dict[str, Any]], HandlerResult]):
     TASK_HANDLERS[(domain, task_type)] = handler
 
 
-def handle_geocode_retry(failure: Dict[str, Any]) -> HandlerResult:
-    """
-    지오코딩 재시도.
-    핸들러는 순수하게 결과 튜플만 반환.
-    resolved 처리는 main()이 전담.
-    """
-    try:
-        from core.geo import VWorldGeocoder
-
-        sc_code = failure.get('sc_code', '')
-        address = failure.get('address', '')
-        shard   = failure.get('shard', '')
-
-        if not sc_code or not address or not shard:
-            logger.error(
-                f"지오코딩 재시도: 필수 정보 부족 "
-                f"sc_code={sc_code!r} address={address!r} shard={shard!r} "
-                f"id={failure['id']}"
-            )
-            return (True, True)  # 정보 부족 → 재시도 불가, orphan 처리
-
-        geo = VWorldGeocoder(calls_per_second=3.0)
-        coords = geo.geocode(address)
-        if not coords:
-            return (False, False)  # API 실패 → 재시도 예약
-
-        lon, lat = coords
-        db_path = f"data/master/school_{shard}.db"
-
-        with sqlite3.connect(db_path, timeout=30) as conn:
-            conn.execute("PRAGMA journal_mode=WAL;")
-            updated = conn.execute(
-                "UPDATE schools SET longitude=?, latitude=? WHERE sc_code=?",
-                (lon, lat, sc_code)
-            ).rowcount
-            conn.commit()
-
-        if updated == 0:
-            # DB에 해당 학교 없음 = 데이터 정합성 오류, 재시도해도 무의미
-            logger.error(
-                f"데이터 정합성 오류: sc_code={sc_code}가 {db_path}에 없음"
-            )
-            return (True, True)  # orphan 처리
-
-        return (True, False)  # 정상 성공
-
-    except Exception as e:
-        logger.error(f"지오코딩 재시도 예외: {e}", exc_info=True)
-        return (False, False)
-
-
-register_handler('geo', 'geocode', handle_geocode_retry)
-
-
 def main():
-    logger.info("🚀 재시도 워커 시작")
-    failures = rm.get_pending_retries(limit=50)
+    deadline = get_today_3pm_kst_naive()
+    now = now_kst()
+    if getattr(now, "tzinfo", None) is not None:
+        now = now.replace(tzinfo=None)
 
+    if now >= deadline:
+        logger.info(f"데드라인 이후({now} >= {deadline})이므로 retry_worker를 실행하지 않습니다.")
+        return
+
+    rm = RetryManager(max_retries=None, base_delay=60, backoff_factor=2, deadline_buffer_seconds=70)
+    logger.info(f"오늘의 재시도 데드라인(KST): {deadline}")
+
+    failures = rm.get_pending_retries(limit=50, deadline=deadline)
     if not failures:
         logger.info("재시도할 작업 없음")
         return
 
-    logger.info(f"총 {len(failures)}개 작업 재시도")
+    logger.info(f"총 {len(failures)}개 작업 재시도 (데드라인: {deadline})")
 
     for f in failures:
-        domain     = f['domain']
-        task_type  = f['task_type']
-        failure_id = f['id']
-        handler    = TASK_HANDLERS.get((domain, task_type))
+        domain = f["domain"]
+        task_type = f["task_type"]
+        failure_id = f["id"]
 
+        handler = TASK_HANDLERS.get((domain, task_type))
         if not handler:
-            logger.warning(f"처리기 없음: {domain}/{task_type} id={failure_id}")
+            msg = f"handler not found: {domain}/{task_type}"
+            logger.warning(f"{msg} id={failure_id}")
+            rm.mark_orphan(failure_id, error=msg)
             continue
 
-        logger.info(
-            f"재시도: {domain}/{task_type} id={failure_id} (retries={f['retries']})"
+        try:
+            success, is_permanent = handler(f)
+        except Exception as e:
+            logger.error(f"핸들러 예외: {e}", exc_info=True)
+            success, is_permanent = False, False
+
+        if (not success) and is_permanent:
+            rm.mark_orphan(failure_id, error=f"permanent failure: {domain}/{task_type}")
+            logger.warning(f"영구 실패(orphan) id={failure_id}")
+            continue
+
+        if success:
+            rm.mark_resolved(failure_id, status="SUCCESS")
+            logger.info(f"성공 id={failure_id}")
+            continue
+
+        still_alive = rm.schedule_retry_by_id(
+            failure_id=failure_id,
+            error="재시도 실패",
+            deadline=deadline,
         )
-        success, is_permanent = handler(f)
-
-        if success and is_permanent:
-            # 영구 실패 (정합성 오류, 필수 정보 부족 등)
-            rm.mark_orphan(
-                failure_id,
-                error=f"permanent fail: {domain}/{task_type}"
-            )
-            logger.warning(f"🚫 영구 실패(orphan) id={failure_id}")
-
-        elif success:
-            # 정상 성공
-            rm.mark_resolved(failure_id, status='SUCCESS')
-            logger.info(f"✅ 성공 id={failure_id}")
-
+        if still_alive:
+            logger.info(f"실패, 다음 재시도 예약됨 id={failure_id}")
         else:
-            # 일시 실패 → 재시도 예약
-            still_alive = rm.record_failure(
-                domain=domain,
-                task_type=task_type,
-                shard=f.get('shard'),
-                sc_code=f.get('sc_code'),
-                region=f.get('region'),
-                year=f.get('year'),
-                month=f.get('month'),
-                day=f.get('day'),
-                semester=f.get('semester'),
-                address=f.get('address'),
-                sub_key=f.get('sub_key'),
-                error="재시도 실패"
-            )
-            if still_alive:
-                logger.info(f"❌ 실패, 다음 재시도 예약됨 id={failure_id}")
-            else:
-                logger.warning(f"🚫 최대 재시도 초과, 포기 id={failure_id}")
+            logger.warning(f"데드라인 도달 또는 최대 재시도 초과로 포기 id={failure_id}")
 
-    logger.info("✅ 재시도 워커 종료")
+    logger.info("재시도 워커 종료")
 
 
 if __name__ == "__main__":

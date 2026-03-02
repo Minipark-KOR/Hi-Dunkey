@@ -1,199 +1,286 @@
-#!/usr/bin/env python3
-"""
-실패한 작업 재시도 관리 (지수 백오프)
-"""
+# core/retry.py
 import sqlite3
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
+import logging
+from pathlib import Path
 
-from .database import get_db_connection
-from .logger import build_logger
-from .kst_time import now_kst
-from .alert import send_alert
+from core.kst_time import now_kst
 
-logger = build_logger("retry", "logs/retry.log")
+logger = logging.getLogger(__name__)
 
 
 class RetryManager:
-
-    def __init__(self, db_path: str = "data/active/failures.db"):
+    def __init__(
+        self,
+        db_path: str = "data/failures.db",
+        max_retries: Optional[int] = None,
+        base_delay: int = 60,
+        backoff_factor: int = 2,
+        deadline_buffer_seconds: int = 70,  # ✅ cron 매분 대응 (60초 이상)
+    ):
         self.db_path = db_path
+        self.max_retries = max_retries
+        self.base_delay = base_delay
+        self.backoff_factor = backoff_factor
+        self.deadline_buffer = timedelta(seconds=deadline_buffer_seconds)
+
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
+    def _get_connection(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path, timeout=30)
+        conn.execute("PRAGMA busy_timeout=30000;")
+        return conn
+
+    def _now(self) -> datetime:
+        """KST now. SQLite 비교를 위해 naive로 통일."""
+        dt = now_kst()
+        if getattr(dt, "tzinfo", None) is not None:
+            dt = dt.replace(tzinfo=None)
+        return dt
+
     def _init_db(self):
-        with get_db_connection(self.db_path, timeout=30) as conn:
-            conn.execute("""
+        with self._get_connection() as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS failures (
-                    id                INTEGER PRIMARY KEY AUTOINCREMENT,
-                    domain            TEXT NOT NULL,
-                    task_type         TEXT NOT NULL,
-                    shard             TEXT NOT NULL DEFAULT '',
-                    sc_code           TEXT NOT NULL DEFAULT '',
-                    region            TEXT NOT NULL DEFAULT '',
-                    year              INTEGER NOT NULL DEFAULT 0,
-                    month             INTEGER NOT NULL DEFAULT 0,
-                    day               INTEGER NOT NULL DEFAULT 0,
-                    semester          INTEGER NOT NULL DEFAULT 0,
-                    address           TEXT NOT NULL DEFAULT '',
-                    sub_key           TEXT NOT NULL DEFAULT '',
-                    failed_at         TEXT NOT NULL,
-                    retries           INTEGER DEFAULT 0,
-                    max_retries       INTEGER DEFAULT 5,
-                    next_retry_at     TEXT,
-                    resolved          INTEGER DEFAULT 0,
-                    resolution_status TEXT DEFAULT NULL,
-                    last_error        TEXT,
-                    UNIQUE(domain, task_type, shard, sc_code, region,
-                           year, month, day, semester, sub_key)
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    domain TEXT NOT NULL,
+                    task_type TEXT NOT NULL,
+                    shard TEXT,
+                    sc_code TEXT,
+                    region TEXT,
+                    year INTEGER,
+                    month INTEGER,
+                    day INTEGER,
+                    semester INTEGER,
+                    address TEXT,
+                    sub_key TEXT,
+                    error_msg TEXT,
+                    retries INTEGER DEFAULT 0,
+                    next_attempt TIMESTAMP,
+                    status TEXT DEFAULT 'FAILED',
+                    resolved_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
-            """)
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_next_retry "
-                "ON failures(next_retry_at) WHERE resolved=0"
+                """
             )
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_domain ON failures(domain)"
+                """
+                CREATE INDEX IF NOT EXISTS idx_next_attempt_pending
+                ON failures(next_attempt)
+                WHERE status='FAILED' AND resolved_at IS NULL
+                """
             )
-
-    def record_failure(self, domain: str, task_type: str, **kwargs) -> bool:
-        """
-        실패 기록 저장 또는 갱신.
-        반환값: True = 재시도 예약됨, False = 최대 재시도 초과로 포기.
-        resolved=1인 기존 레코드는 초기화하여 새 실패로 재처리.
-        """
-        shard       = kwargs.get('shard') or ''
-        sc_code     = kwargs.get('sc_code') or ''
-        region      = kwargs.get('region') or ''
-        year        = int(kwargs.get('year') or 0)
-        month       = int(kwargs.get('month') or 0)
-        day         = int(kwargs.get('day') or 0)
-        semester    = int(kwargs.get('semester') or 0)
-        sub_key     = kwargs.get('sub_key') or ''
-        address     = kwargs.get('address') or ''
-        error       = kwargs.get('error', '')
-        max_retries = int(kwargs.get('max_retries', 5))
-
-        with get_db_connection(self.db_path, timeout=30) as conn:
-            try:
-                cur = conn.execute("""
-                    SELECT id, retries, max_retries, resolved FROM failures
-                    WHERE domain=? AND task_type=? AND shard=? AND sc_code=?
-                      AND region=? AND year=? AND month=? AND day=?
-                      AND semester=? AND sub_key=?
-                """, (domain, task_type, shard, sc_code, region,
-                      year, month, day, semester, sub_key))
-                row = cur.fetchone()
-
-                if row:
-                    failure_id, retries, stored_max, resolved = row
-
-                    # 포기된 작업이 다시 실패 → 초기화 후 새 시도로 처리
-                    if resolved == 1:
-                        next_time_str = (
-                            now_kst() + timedelta(minutes=1)
-                        ).isoformat()
-                        conn.execute("""
-                            UPDATE failures SET
-                                retries=0, resolved=0, resolution_status=NULL,
-                                failed_at=?, next_retry_at=?,
-                                last_error=?, max_retries=?
-                            WHERE id=?
-                        """, (now_kst().isoformat(), next_time_str,
-                              error, max_retries, failure_id))
-                        logger.info(
-                            f"포기된 작업 재활성화: {domain}/{task_type} id={failure_id}"
-                        )
-                        return True
-
-                    retries += 1
-                    if retries >= stored_max:
-                        conn.execute("""
-                            UPDATE failures
-                            SET resolved=1, resolution_status='GIVE_UP',
-                                last_error=?, retries=?
-                            WHERE id=?
-                        """, (error, retries, failure_id))
-                        logger.warning(
-                            f"최대 재시도 초과 → 포기: {domain}/{task_type} "
-                            f"sc_code={sc_code}"
-                        )
-                        return False
-
-                    minutes = min(2 ** retries, 24 * 60)
-                    next_time_str = (
-                        now_kst() + timedelta(minutes=minutes)
-                    ).isoformat()
-                    conn.execute("""
-                        UPDATE failures
-                        SET retries=?, next_retry_at=?, last_error=?, resolved=0
-                        WHERE id=?
-                    """, (retries, next_time_str, error, failure_id))
-
-                else:
-                    # 신규 실패 기록
-                    next_time_str = (
-                        now_kst() + timedelta(minutes=1)
-                    ).isoformat()
-                    conn.execute("""
-                        INSERT INTO failures
-                        (domain, task_type, shard, sc_code, region,
-                         year, month, day, semester, address, sub_key,
-                         failed_at, retries, max_retries, next_retry_at, last_error)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                    """, (
-                        domain, task_type, shard,
-                        sc_code, region, year, month, day, semester,
-                        address, sub_key,
-                        now_kst().isoformat(),
-                        0, max_retries, next_time_str, error
-                    ))
-
-                return True
-
-            except Exception as e:
-                logger.error(f"실패 기록 저장 오류: {e}", exc_info=True)
-                return False
 
     def get_pending_retries(
         self,
-        domain: Optional[str] = None,
-        limit: int = 100
+        limit: int = 50,
+        deadline: Optional[datetime] = None,
     ) -> List[Dict[str, Any]]:
-        """재시도 시간이 지난 미해결 실패 목록 반환"""
-        now_str = now_kst().isoformat()
-        with get_db_connection(
-            self.db_path, timeout=30, row_factory=sqlite3.Row
-        ) as conn:
+        now = self._now()
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
             query = """
                 SELECT * FROM failures
-                WHERE resolved=0 AND next_retry_at <= ?
+                WHERE status = 'FAILED'
+                  AND resolved_at IS NULL
+                  AND next_attempt IS NOT NULL
+                  AND next_attempt <= ?
             """
-            params: list = [now_str]
-            if domain:
-                query += " AND domain=?"
-                params.append(domain)
-            query += " ORDER BY next_retry_at ASC LIMIT ?"
+            params: list[Any] = [now]
+            if deadline is not None:
+                query += " AND next_attempt <= ?"
+                params.append(deadline)
+            query += " ORDER BY next_attempt ASC LIMIT ?"
             params.append(limit)
             rows = conn.execute(query, params).fetchall()
             return [dict(row) for row in rows]
 
-    def mark_resolved(self, failure_id: int, status: str = 'SUCCESS'):
-        """성공 처리"""
-        with get_db_connection(self.db_path, timeout=30) as conn:
+    def mark_resolved(self, failure_id: int, status: str = "SUCCESS", error_msg: Optional[str] = None):
+        resolved_at = self._now()
+        with self._get_connection() as conn:
+            if error_msg is not None:
+                conn.execute(
+                    """
+                    UPDATE failures
+                    SET status = ?, resolved_at = ?, error_msg = ?
+                    WHERE id = ?
+                    """,
+                    (status, resolved_at, error_msg, failure_id),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE failures
+                    SET status = ?, resolved_at = ?
+                    WHERE id = ?
+                    """,
+                    (status, resolved_at, failure_id),
+                )
+
+    def mark_orphan(self, failure_id: int, error: str):
+        self.mark_resolved(failure_id, status="ORPHAN", error_msg=error)
+
+    def mark_expired(self, failure_id: int, reason: str = "데드라인 초과"):
+        resolved_at = self._now()
+        with self._get_connection() as conn:
             conn.execute(
-                "UPDATE failures SET resolved=1, resolution_status=? WHERE id=?",
-                (status, failure_id)
+                """
+                UPDATE failures
+                SET status = 'EXPIRED', resolved_at = ?, error_msg = ?
+                WHERE id = ? AND status = 'FAILED' AND resolved_at IS NULL
+                """,
+                (resolved_at, reason, failure_id),
             )
 
-    def mark_orphan(self, failure_id: int, error: str = ""):
-        """영구 실패 처리 (데이터 정합성 오류 등)"""
-        with get_db_connection(self.db_path, timeout=30) as conn:
-            conn.execute("""
-                UPDATE failures
-                SET resolved=1, resolution_status='ORPHAN', last_error=?
-                WHERE id=?
-            """, (error, failure_id))
-        send_alert(
-            f"데이터 정합성 오류 (failure_id={failure_id}): {error}",
-            level="critical"
+    def _mark_expired_on_conn(self, conn: sqlite3.Connection, failure_id: int, reason: str):
+        """✅ 동일 커넥션에서 만료 처리"""
+        resolved_at = self._now()
+        conn.execute(
+            """
+            UPDATE failures
+            SET status = 'EXPIRED', resolved_at = ?, error_msg = ?
+            WHERE id = ? AND status = 'FAILED' AND resolved_at IS NULL
+            """,
+            (resolved_at, reason, failure_id),
         )
+
+    def _compute_next_attempt(
+        self,
+        now: datetime,
+        retries: int,
+        deadline: Optional[datetime],
+    ) -> Optional[datetime]:
+        if deadline is not None and now >= deadline:
+            return None
+        if self.max_retries is not None and retries > self.max_retries:
+            return None
+
+        delay_seconds = self.base_delay * (self.backoff_factor ** (retries - 1))
+        next_attempt = now + timedelta(seconds=delay_seconds)
+
+        if deadline is not None:
+            # ✅ cron 매분 대비: 최소 1분 전 + 분 단위 정렬
+            buffer = max(self.deadline_buffer, timedelta(minutes=1))
+            last_chance = (deadline - buffer).replace(second=0, microsecond=0)
+
+            if next_attempt > deadline:
+                if now < last_chance:
+                    next_attempt = last_chance
+                else:
+                    return None
+
+        return next_attempt
+
+    def schedule_retry_by_id(
+        self,
+        failure_id: int,
+        error: str,
+        deadline: Optional[datetime] = None,
+    ) -> bool:
+        now = self._now()
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT id, retries, status, resolved_at FROM failures WHERE id = ?",
+                (failure_id,),
+            ).fetchone()
+
+            if not row:
+                logger.warning("schedule_retry_by_id: id=%s not found", failure_id)
+                return False
+            if row["status"] != "FAILED" or row["resolved_at"] is not None:
+                return False
+
+            current_retries = int(row["retries"] or 0)
+            new_retries = current_retries + 1
+
+            next_attempt = self._compute_next_attempt(now=now, retries=new_retries, deadline=deadline)
+            if next_attempt is None:
+                self._mark_expired_on_conn(conn, failure_id, reason="데드라인 도달 또는 최대 재시도 초과")
+                return False
+
+            cur = conn.execute(
+                """
+                UPDATE failures
+                SET retries = ?, next_attempt = ?, error_msg = ?, status = 'FAILED', resolved_at = NULL
+                WHERE id = ? AND status = 'FAILED' AND resolved_at IS NULL
+                """,
+                (new_retries, next_attempt, error, failure_id),
+            )
+            return cur.rowcount == 1
+
+    def record_failure(
+        self,
+        domain: str,
+        task_type: str,
+        deadline: Optional[datetime] = None,
+        shard=None,
+        sc_code=None,
+        region=None,
+        year=None,
+        month=None,
+        day=None,
+        semester=None,
+        address=None,
+        sub_key=None,
+        error: str = "",
+    ) -> bool:
+        now = self._now()
+        next_attempt = self._compute_next_attempt(now=now, retries=1, deadline=deadline)
+        if next_attempt is None:
+            logger.warning("record_failure: 데드라인 이후이거나 정책상 예약 불가")
+            return False
+
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT id, retries FROM failures
+                WHERE domain = ? AND task_type = ?
+                  AND shard IS ? AND sc_code IS ? AND region IS ?
+                  AND year IS ? AND month IS ? AND day IS ? AND semester IS ?
+                  AND address IS ? AND sub_key IS ?
+                  AND status = 'FAILED' AND resolved_at IS NULL
+                ORDER BY id DESC LIMIT 1
+                """,
+                (domain, task_type, shard, sc_code, region, year, month, day, semester, address, sub_key),
+            ).fetchone()
+
+            if row:
+                failure_id = row["id"]
+                current_retries = int(row["retries"] or 0)
+                new_retries = current_retries + 1
+
+                next_attempt2 = self._compute_next_attempt(now=now, retries=new_retries, deadline=deadline)
+                if next_attempt2 is None:
+                    self._mark_expired_on_conn(conn, failure_id, reason="데드라인 도달 또는 최대 재시도 초과")
+                    return False
+
+                conn.execute(
+                    """
+                    UPDATE failures
+                    SET retries = ?, next_attempt = ?, error_msg = ?, status = 'FAILED', resolved_at = NULL
+                    WHERE id = ? AND status = 'FAILED' AND resolved_at IS NULL
+                    """,
+                    (new_retries, next_attempt2, error, failure_id),
+                )
+                return True
+
+            conn.execute(
+                """
+                INSERT INTO failures
+                (domain, task_type, shard, sc_code, region, year, month, day, semester, address, sub_key,
+                 retries, next_attempt, error_msg, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'FAILED')
+                """,
+                (
+                    domain, task_type, shard, sc_code, region, year, month, day, semester, address, sub_key,
+                    1, next_attempt, error,
+                ),
+            )
+            return True
+            
