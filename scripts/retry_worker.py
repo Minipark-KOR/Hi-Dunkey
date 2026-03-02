@@ -13,7 +13,7 @@ from core.retry import RetryManager
 from core.logger import build_logger
 from core.kst_time import now_kst
 from core.filters import AddressFilter
-from collectors.geo_collector import GeoCollector
+from core.geo_collector import GeoCollector
 
 logger = build_logger("retry_worker", "logs/retry_worker.log")
 
@@ -190,4 +190,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
