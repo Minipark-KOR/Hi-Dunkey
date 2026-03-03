@@ -64,7 +64,7 @@ def _geocode_vworld(gc: GeoCollector, address: str, addr_type: str = "ROAD") -> 
     if not gc.vworld_key:
         logger.error("VWORLD_API_KEY not set")
         return None, 0
-    
+
     try:
         coords = gc._geocode_with_type(address, addr_type)
         if coords:
@@ -87,11 +87,11 @@ def geocode_kakao(address: str) -> Tuple[Optional[Tuple[float, float]], int]:
     KAKAO_API_KEY = os.getenv("KAKAO_API_KEY")
     if not KAKAO_API_KEY:
         return None, 0
-    
+
     url = "https://dapi.kakao.com/v2/local/search/address.json"
     headers = {"Authorization": f"KakaoAK {KAKAO_API_KEY}"}
     params = {"query": address, "analyze_type": "exact"}
-    
+
     try:
         resp = requests.get(url, headers=headers, params=params, timeout=5)
         if resp.status_code == 200:
@@ -163,17 +163,17 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
     sc_code = failure.get("sc_code")
     address = failure.get("address")
     retries = failure.get("retries") or 0
-    
+
     if not sc_code or not address:
         return (False, True)
-    
+
     level = min(max(int(retries), 1), 4)
     cleaned = AddressFilter.clean(address, level=level)
     gc = get_geo_collector()
-    
-    final_status = 0  # 기본값
+
+    final_status = 0
     error_messages = []
-    
+
     # 1 차: VWorld road
     coords, status = _geocode_vworld(gc, cleaned, "ROAD")
     if coords:
@@ -184,7 +184,7 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
     if status > 0:
         final_status = status
         error_messages.append(f"ROAD:{status}")
-    
+
     # 2 차: VWorld parcel
     coords, status = _geocode_vworld(gc, cleaned, "PARCEL")
     if coords:
@@ -195,10 +195,10 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
     if status > 0:
         final_status = status
         error_messages.append(f"PARCEL:{status}")
-    
+
     # simplified 는 항상 정의
     simplified = re.sub(r'\s*[-,.+()].*$', '', cleaned).strip()
-    
+
     # 3 차: simplified road
     if simplified != cleaned:
         coords, status = _geocode_vworld(gc, simplified, "ROAD")
@@ -210,7 +210,7 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
         if status > 0:
             final_status = status
             error_messages.append(f"SIMPLIFIED_ROAD:{status}")
-    
+
     # 4 차: simplified parcel
     if simplified != cleaned:
         coords, status = _geocode_vworld(gc, simplified, "PARCEL")
@@ -222,7 +222,7 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
         if status > 0:
             final_status = status
             error_messages.append(f"SIMPLIFIED_PARCEL:{status}")
-    
+
     # 5 차: Kakao API
     coords, status = geocode_kakao(cleaned)
     if coords:
@@ -234,14 +234,14 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
     if status > 0:
         final_status = status
         error_messages.append(f"KAKAO:{status}")
-    
+
     # 실패 처리: 에러 분류
     consec_404 = get_consecutive_404(sc_code)
     err_info = classify_error(final_status, consec_404)
-    
+
     # 에러 메시지 저장
     full_error = f"[{','.join(error_messages)}] {err_info['message']}"
-    
+
     if err_info['action'] == 'stop':
         logger.critical(f"Fatal auth error for {sc_code}: {err_info['message']}")
         return (False, True)
@@ -260,36 +260,39 @@ def main():
     parser = argparse.ArgumentParser(description="retry worker")
     parser.add_argument("--limit", type=int, default=50, help="한 번에 처리할 작업 수")
     args = parser.parse_args()
-    
+
     now = kst_naive(now_kst())
     deadline = get_today_3pm_kst_naive(now)
-    
+
     rm = RetryManager(
-        db_path=_FAILURES_DB, 
-        max_retries=None, 
-        base_delay=60, 
-        backoff_factor=2, 
+        db_path=_FAILURES_DB,
+        max_retries=None,
+        base_delay=60,
+        backoff_factor=2,
         deadline_buffer_seconds=70
     )
-    
+
     logger.info(f"retry_worker start. now(KST)={now}, deadline={deadline}")
-    
+    print(f"🚀 retry_worker 시작 - {now}")
+
     failures = rm.get_pending_retries(limit=args.limit, deadline=deadline)
     if not failures:
         logger.info("재시도할 작업 없음")
+        print("ℹ️  재시도할 작업 없음")
         return
-    
+
     logger.info(f"총 {len(failures)}개 작업 재시도")
-    
+    print(f"📋 총 {len(failures)}개 작업 재시도")
+
     success_count = 0
     orphan_count = 0
     retry_count = 0
-    
+
     for f in failures:
         domain = f["domain"]
         task_type = f["task_type"]
         failure_id = f["id"]
-        
+
         handler = TASK_HANDLERS.get((domain, task_type))
         if not handler:
             msg = f"handler not found: {domain}/{task_type}"
@@ -297,7 +300,7 @@ def main():
             rm.mark_orphan(failure_id, error=msg)
             orphan_count += 1
             continue
-        
+
         handler_exc = None
         try:
             success, is_permanent = handler(f)
@@ -305,19 +308,21 @@ def main():
             handler_exc = str(e)[:200]
             logger.error(f"handler exception: {e}", exc_info=True)
             success, is_permanent = False, False
-        
+
         if (not success) and is_permanent:
             rm.mark_orphan(failure_id, error=f"permanent failure: {domain}/{task_type}")
             logger.warning(f"영구 실패 (orphan) id={failure_id}")
+            print(f"❌ 포기 id={failure_id}")
             orphan_count += 1
             continue
-        
+
         if success:
             rm.mark_resolved(failure_id, status="SUCCESS")
             logger.info(f"성공 id={failure_id}")
+            print(f"✅ 성공 id={failure_id}")
             success_count += 1
             continue
-        
+
         still_alive = rm.schedule_retry_by_id(
             failure_id=failure_id,
             error=handler_exc or "재시도 실패",
@@ -325,12 +330,15 @@ def main():
         )
         if still_alive:
             logger.info(f"실패, 다음 재시도 예약됨 id={failure_id}")
+            print(f"⏳ 실패, 다음 재시도 예약됨 id={failure_id}")
             retry_count += 1
         else:
             logger.warning(f"데드라인 도달 또는 최대 재시도 초과로 포기 id={failure_id}")
+            print(f"❌ 포기 id={failure_id}")
             orphan_count += 1
-    
+
     logger.info(f"재시도 워커 종료 - 성공:{success_count}, 재시도:{retry_count}, 포기:{orphan_count}")
+    print(f"🏁 재시도 워커 종료 - 성공:{success_count}, 재시도:{retry_count}, 포기:{orphan_count}")
 
 
 if __name__ == "__main__":

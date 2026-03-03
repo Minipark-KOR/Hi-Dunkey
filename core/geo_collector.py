@@ -7,7 +7,6 @@ import hashlib
 import sqlite3
 from typing import Optional, Dict, Tuple
 from datetime import datetime, time as dt_time, timedelta
-
 import requests
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -25,6 +24,7 @@ try:
 except ImportError:
     def get_db_connection(path: str):
         return sqlite3.connect(path, timeout=30)
+
 
 def _get_vworld_key() -> str:
     key = os.environ.get("VWORLD_API_KEY", "").strip()
@@ -219,7 +219,6 @@ class GeoCollector:
             return False
         return True
 
-    # ✅ 수정: _geocode_with_type 과 동일한 에러 로깅 추가
     def _geocode(self, address: str) -> Optional[Tuple[float, float]]:
         if not address:
             return None
@@ -308,14 +307,14 @@ class GeoCollector:
         if not self.vworld_key:
             logger.error("VWORLD_API_KEY not set. Geocoding impossible.")
             return None
-        
+
         addr_hash = self._hash_address(address)
         if addr_hash in self.cache:
             return self.cache[addr_hash]
-        
+
         if not self._check_api_limit():
             return None
-        
+
         params = {
             "service": "address",
             "request": "getcoord",
@@ -328,22 +327,22 @@ class GeoCollector:
             "type": addr_type,
             "key": self.vworld_key,
         }
-        
+
         try:
             resp = requests.get(self.GEOCODE_URL, params=params, timeout=10)
             self._bump_api_usage(1)
-            
+
             if resp.status_code == 429:
                 logger.warning(f"VWorld API rate limited (429) for {addr_type}")
                 return None
-            
+
             if resp.status_code >= 400:
                 logger.error(f"VWorld API HTTP {resp.status_code} for {addr_type}: {address[:50]}")
                 return None
-            
+
             data = resp.json()
             status = data.get("response", {}).get("status")
-            
+
             if status == "OK":
                 point = data["response"]["result"]["point"]
                 lon = float(point["x"])
@@ -352,16 +351,16 @@ class GeoCollector:
                 confidence = data["response"]["result"].get("confidence", "UNKNOWN")
                 self._save_to_cache(address, lon, lat, confidence)
                 return (lon, lat)
-            
+
             if status == "LIMIT_EXCEEDED":
                 logger.warning(f"VWorld API limit exceeded for {addr_type}")
                 self.api_calls_today = self.api_limit
                 self._persist_usage_if_needed(force=True)
                 return None
-            
+
             logger.debug(f"VWorld API status={status} for {addr_type}: {address[:50]}")
             return None
-            
+
         except requests.exceptions.Timeout:
             logger.error(f"VWorld API timeout for {addr_type}")
             return None
