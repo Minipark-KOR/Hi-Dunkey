@@ -39,7 +39,8 @@ class SchoolInfoCollector(BaseCollector):
         compare: bool = False,
         debug_mode: bool = False
     ):
-        super().__init__("school", BASE_DIR, shard, school_range)
+        super().__init__("school", str(MASTER_DIR.parent), shard, school_range)
+        self.db_path = str(MASTER_DB)
         self.api_context = 'school'
         self.incremental = incremental
         self.full = full
