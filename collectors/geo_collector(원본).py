@@ -7,7 +7,6 @@ import hashlib
 import sqlite3
 from typing import Optional, Dict, Tuple
 from datetime import datetime, time as dt_time, timedelta
-
 import requests
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -26,6 +25,7 @@ except ImportError:
     def get_db_connection(path: str):
         return sqlite3.connect(path, timeout=30)
 
+
 def _get_vworld_key() -> str:
     key = os.environ.get("VWORLD_API_KEY", "").strip()
     if key:
@@ -38,7 +38,7 @@ def _get_vworld_key() -> str:
 
 
 class GeoCollector:
-    # ✅ 수정 1: URL 공백 제거 (VSCode 에서 보이지 않는 trailing space 제거)
+    # ✅ 수정: 공백 제거
     GEOCODE_URL = "https://api.vworld.kr/req/address"
     DAILY_API_LIMIT = 50000
 
@@ -219,7 +219,6 @@ class GeoCollector:
             return False
         return True
 
-    # ✅ 수정 2: _geocode_with_type 과 동일한 상세 에러 로깅 추가
     def _geocode(self, address: str) -> Optional[Tuple[float, float]]:
         if not address:
             return None
@@ -266,7 +265,7 @@ class GeoCollector:
                     time.sleep(2)
                     continue
 
-                # ✅ HTTP 에러 로깅 추가
+                # ✅ 추가: HTTP 에러 로깅
                 if resp.status_code >= 400:
                     logger.error(f"VWorld API HTTP {resp.status_code} for {addr_type}: {address[:50]}")
                     time.sleep(0.2)
@@ -328,6 +327,7 @@ class GeoCollector:
             "type": addr_type,
             "key": self.vworld_key,
         }
+
         try:
             resp = requests.get(self.GEOCODE_URL, params=params, timeout=10)
             self._bump_api_usage(1)
@@ -336,13 +336,13 @@ class GeoCollector:
                 logger.warning(f"VWorld API rate limited (429) for {addr_type}")
                 return None
 
-            # ✅ HTTP 에러 로깅 추가
             if resp.status_code >= 400:
                 logger.error(f"VWorld API HTTP {resp.status_code} for {addr_type}: {address[:50]}")
                 return None
 
             data = resp.json()
             status = data.get("response", {}).get("status")
+
             if status == "OK":
                 point = data["response"]["result"]["point"]
                 lon = float(point["x"])
@@ -351,13 +351,16 @@ class GeoCollector:
                 confidence = data["response"]["result"].get("confidence", "UNKNOWN")
                 self._save_to_cache(address, lon, lat, confidence)
                 return (lon, lat)
+
             if status == "LIMIT_EXCEEDED":
                 logger.warning(f"VWorld API limit exceeded for {addr_type}")
                 self.api_calls_today = self.api_limit
                 self._persist_usage_if_needed(force=True)
                 return None
+
             logger.debug(f"VWorld API status={status} for {addr_type}: {address[:50]}")
             return None
+
         except requests.exceptions.Timeout:
             logger.error(f"VWorld API timeout for {addr_type}")
             return None
