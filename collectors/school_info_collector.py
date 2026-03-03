@@ -130,11 +130,18 @@ class SchoolInfoCollector(BaseCollector):
         if os.path.exists(self.db_path):
             try:
                 with get_db_reader(self.db_path) as conn:
+                    # ✅ 수정: geocode_attempts, last_error 포함
                     cur = conn.execute(
-                        "SELECT sc_code, address_hash, latitude, longitude FROM schools"
+                        "SELECT sc_code, address_hash, latitude, longitude, geocode_attempts, last_error FROM schools"
                     )
                     existing = {
-                        row[0]: {"hash": row[1], "lat": row[2], "lon": row[3]}
+                        row[0]: {
+                            "hash": row[1], 
+                            "lat": row[2], 
+                            "lon": row[3],
+                            "attempts": row[4],
+                            "last_error": row[5]
+                        }
                         for row in cur
                     }
             except Exception as e:
@@ -189,9 +196,14 @@ class SchoolInfoCollector(BaseCollector):
 
             if sc_code in new_coords:
                 lon, lat = new_coords[sc_code]
+                attempts = 0
+                last_error = None
             else:
                 lat = old.get("lat")
                 lon = old.get("lon")
+                # ✅ 수정: old.get("attempts") 사용 가능해짐
+                attempts = old.get("attempts", 0) + 1
+                last_error = old.get("last_error") or "Geocoding failed"
 
             # ✅ 수정: 주소 정제 및 주소 ID 추출
             cleaned = AddressFilter.clean(meta["full_address"], level=4) if meta["full_address"] else ""
@@ -265,4 +277,3 @@ if __name__ == "__main__":
         collector.fetch_region(region, **kwargs)
 
     run_collector(SchoolInfoCollector, _fetch, "학교 기본정보 수집기")
-    
