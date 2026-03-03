@@ -28,6 +28,7 @@ def migrate(db_path: str) -> bool:
             ("number_start", "INTEGER"),
             ("number_end", "INTEGER"),
             ("number_bit", "INTEGER"),
+            ("address_hash", "TEXT"),
         ]
 
         for col, typ in new_columns:
@@ -59,4 +60,3 @@ if __name__ == "__main__":
         print("🎉 마이그레이션 완료")
     else:
         sys.exit(1)
-        
