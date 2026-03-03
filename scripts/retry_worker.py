@@ -228,7 +228,7 @@ register_handler("school", "geocode", handle_school_geocode)
 def main():
     parser = argparse.ArgumentParser(description="retry worker")
     parser.add_argument("--limit", type=int, default=50, help="한 번에 처리할 작업 수")
-    # ✅ 추가: --force 옵션 (next_attempt 시간 무시)
+    # ✅ 추가: --force 옵션
     parser.add_argument("--force", action="store_true", help="next_attempt 시간 무시하고 모든 실패 작업 처리")
     args = parser.parse_args()
 
@@ -242,10 +242,8 @@ def main():
 
     # ✅ 수정: --force 옵션에 따라 다른 메서드 호출
     if args.force:
-        # next_attempt 시간 무시하고 모든 FAILED 작업 조회
         failures = rm.get_all_pending_retries(limit=args.limit)
     else:
-        # 정상: next_attempt 시간이 도래한 작업만 조회
         failures = rm.get_pending_retries(limit=args.limit, deadline=deadline)
 
     if not failures:
