@@ -539,4 +539,8 @@ class GeoCollector:
         self.flush()
         self.meta_vocab.flush()
         return success
-        
+
+    def close(self):
+        """종료 처리 (리소스 정리)"""
+        self.flush()
+        self.meta_vocab.close()
