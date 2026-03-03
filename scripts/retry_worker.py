@@ -55,55 +55,44 @@ def get_geo_collector() -> GeoCollector:
     return _GEO_COLLECTOR
 
 
-def _geocode_vworld(gc: GeoCollector, address: str, addr_type: str = "ROAD") -> Tuple[Optional[Tuple[float, float]], int]:
-    """
-    VWorld API 호출, (좌표, 상태코드) 반환
-    - 성공: (좌표, 200)
-    - 실패: (None, 상태코드)
-    """
-    if not gc.vworld_key:
-        logger.error("VWORLD_API_KEY not set")
-        return None, 0
-
+def _geocode_vworld(gc: GeoCollector, address: str, addr_type: str = "ROAD") -> Tuple[Optional[Tuple[float, float]], Optional[int]]:
+    """VWorld API 호출, (좌표, 상태코드) 반환"""
     try:
         coords = gc._geocode_with_type(address, addr_type)
         if coords:
             return coords, 200
-        # 좌표 없음은 404 로 간주
-        return None, 404
+        return None, None
     except requests.exceptions.HTTPError as e:
         if hasattr(e, 'response') and e.response is not None:
             return None, e.response.status_code
-        return None, 500
+        return None, None
     except requests.exceptions.RequestException as e:
         logger.error(f"VWorld {addr_type} request error: {e}")
-        return None, 503
+        return None, None
     except Exception as e:
         logger.error(f"VWorld {addr_type} unexpected error: {e}")
-        return None, 500
+        return None, None
 
 
-def geocode_kakao(address: str) -> Tuple[Optional[Tuple[float, float]], int]:
+def geocode_kakao(address: str) -> Tuple[Optional[Tuple[float, float]], Optional[int]]:
     KAKAO_API_KEY = os.getenv("KAKAO_API_KEY")
     if not KAKAO_API_KEY:
-        return None, 0
-
+        return None, None
     url = "https://dapi.kakao.com/v2/local/search/address.json"
     headers = {"Authorization": f"KakaoAK {KAKAO_API_KEY}"}
     params = {"query": address, "analyze_type": "exact"}
-
     try:
         resp = requests.get(url, headers=headers, params=params, timeout=5)
         if resp.status_code == 200:
             data = resp.json()
-            if data.get('documents'):
+            if data['documents']:
                 x = float(data['documents'][0]['x'])
                 y = float(data['documents'][0]['y'])
                 return (x, y), 200
         return None, resp.status_code
     except Exception as e:
         logger.error(f"Kakao geocode error: {e}")
-        return None, 500
+        return None, None
 
 
 def update_school_coords(sc_code: str, lon: float, lat: float, cleaned: str, addr_components: Dict[str, Any]):
@@ -149,11 +138,7 @@ def update_school_coords(sc_code: str, lon: float, lat: float, cleaned: str, add
 def get_consecutive_404(sc_code: str) -> int:
     with sqlite3.connect(_FAILURES_DB) as conn:
         cur = conn.execute(
-            """
-            SELECT COUNT(*) FROM failures 
-            WHERE sc_code=? AND error_msg LIKE '%404%' 
-            AND status='FAILED' AND resolved_at IS NULL
-            """,
+            "SELECT COUNT(*) FROM failures WHERE sc_code=? AND error_msg LIKE '%404%' AND status='FAILED' AND resolved_at IS NULL",
             (sc_code,)
         )
         return cur.fetchone()[0] or 0
@@ -171,8 +156,7 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
     cleaned = AddressFilter.clean(address, level=level)
     gc = get_geo_collector()
 
-    final_status = 0
-    error_messages = []
+    final_status = None
 
     # 1 차: VWorld road
     coords, status = _geocode_vworld(gc, cleaned, "ROAD")
@@ -181,9 +165,7 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
         addr_components = gc.meta_vocab.save_address(cleaned)
         update_school_coords(sc_code, lon, lat, cleaned, addr_components)
         return (True, False)
-    if status > 0:
-        final_status = status
-        error_messages.append(f"ROAD:{status}")
+    final_status = status or final_status
 
     # 2 차: VWorld parcel
     coords, status = _geocode_vworld(gc, cleaned, "PARCEL")
@@ -192,9 +174,7 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
         addr_components = gc.meta_vocab.save_address(cleaned)
         update_school_coords(sc_code, lon, lat, cleaned, addr_components)
         return (True, False)
-    if status > 0:
-        final_status = status
-        error_messages.append(f"PARCEL:{status}")
+    final_status = status or final_status
 
     # simplified 는 항상 정의
     simplified = re.sub(r'\s*[-,.+()].*$', '', cleaned).strip()
@@ -207,9 +187,7 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
             addr_components = gc.meta_vocab.save_address(simplified)
             update_school_coords(sc_code, lon, lat, simplified, addr_components)
             return (True, False)
-        if status > 0:
-            final_status = status
-            error_messages.append(f"SIMPLIFIED_ROAD:{status}")
+        final_status = status or final_status
 
     # 4 차: simplified parcel
     if simplified != cleaned:
@@ -219,9 +197,7 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
             addr_components = gc.meta_vocab.save_address(simplified)
             update_school_coords(sc_code, lon, lat, simplified, addr_components)
             return (True, False)
-        if status > 0:
-            final_status = status
-            error_messages.append(f"SIMPLIFIED_PARCEL:{status}")
+        final_status = status or final_status
 
     # 5 차: Kakao API
     coords, status = geocode_kakao(cleaned)
@@ -231,25 +207,18 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
         addr_components = gc.meta_vocab.save_address(cleaned)
         update_school_coords(sc_code, lon, lat, cleaned, addr_components)
         return (True, False)
-    if status > 0:
-        final_status = status
-        error_messages.append(f"KAKAO:{status}")
+    final_status = status or final_status
 
     # 실패 처리: 에러 분류
     consec_404 = get_consecutive_404(sc_code)
-    err_info = classify_error(final_status, consec_404)
-
-    # 에러 메시지 저장
-    full_error = f"[{','.join(error_messages)}] {err_info['message']}"
+    err_info = classify_error(final_status or 0, consec_404)
 
     if err_info['action'] == 'stop':
         logger.critical(f"Fatal auth error for {sc_code}: {err_info['message']}")
         return (False, True)
     elif err_info['action'] == 'orphan':
-        logger.warning(f"Orphan detected for {sc_code}: {full_error}")
         return (False, True)
     else:
-        logger.info(f"Transient failure for {sc_code}: {full_error}")
         return (False, False)
 
 
@@ -259,23 +228,26 @@ register_handler("school", "geocode", handle_school_geocode)
 def main():
     parser = argparse.ArgumentParser(description="retry worker")
     parser.add_argument("--limit", type=int, default=50, help="한 번에 처리할 작업 수")
+    # ✅ 추가: --force 옵션 (next_attempt 시간 무시)
+    parser.add_argument("--force", action="store_true", help="next_attempt 시간 무시하고 모든 실패 작업 처리")
     args = parser.parse_args()
 
     now = kst_naive(now_kst())
     deadline = get_today_3pm_kst_naive(now)
 
-    rm = RetryManager(
-        db_path=_FAILURES_DB,
-        max_retries=None,
-        base_delay=60,
-        backoff_factor=2,
-        deadline_buffer_seconds=70
-    )
+    rm = RetryManager(db_path=_FAILURES_DB, max_retries=None, base_delay=60, backoff_factor=2, deadline_buffer_seconds=70)
 
-    logger.info(f"retry_worker start. now(KST)={now}, deadline={deadline}")
-    print(f"🚀 retry_worker 시작 - {now}")
+    logger.info(f"retry_worker start. now(KST)={now}, deadline={deadline}, force={args.force}")
+    print(f"🚀 retry_worker 시작 - {now} (force={args.force})")
 
-    failures = rm.get_pending_retries(limit=args.limit, deadline=deadline)
+    # ✅ 수정: --force 옵션에 따라 다른 메서드 호출
+    if args.force:
+        # next_attempt 시간 무시하고 모든 FAILED 작업 조회
+        failures = rm.get_all_pending_retries(limit=args.limit)
+    else:
+        # 정상: next_attempt 시간이 도래한 작업만 조회
+        failures = rm.get_pending_retries(limit=args.limit, deadline=deadline)
+
     if not failures:
         logger.info("재시도할 작업 없음")
         print("ℹ️  재시도할 작업 없음")

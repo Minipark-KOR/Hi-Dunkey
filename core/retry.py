@@ -210,6 +210,26 @@ class RetryManager:
             )
             return cur.rowcount == 1
 
+    # core/retry.py 에 새 메서드 추가 (record_failure 메서드 근처)
+
+    def get_all_pending_retries(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        next_attempt 시간과 무관하게 모든 FAILED 레코드 조회
+        수동 테스트용 (--force 옵션 사용 시)
+        """
+        with self.get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT * FROM failures
+                WHERE status='FAILED' AND resolved_at IS NULL
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
     def record_failure(
         self,
         domain: str,
