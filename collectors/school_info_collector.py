@@ -201,11 +201,10 @@ class SchoolInfoCollector(BaseCollector):
             else:
                 lat = old.get("lat")
                 lon = old.get("lon")
-                # ✅ 수정: old.get("attempts") 사용 가능해짐
                 attempts = old.get("attempts", 0) + 1
+                # ✅ old 에 저장된 에러 우선 사용
                 last_error = old.get("last_error") or "Geocoding failed"
 
-            # ✅ 수정: 주소 정제 및 주소 ID 추출
             cleaned = AddressFilter.clean(meta["full_address"], level=4) if meta["full_address"] else ""
             addr_ids = {}
             if cleaned:
@@ -231,8 +230,9 @@ class SchoolInfoCollector(BaseCollector):
                 "load_dt": now_kst().isoformat(),
                 "latitude": lat,
                 "longitude": lon,
-                "geocode_attempts": 0 if (lat and lon) else (old.get("geocode_attempts", 0) + 1),
-                "last_error": None if (lat and lon) else "Geocoding failed",
+                "geocode_attempts": 0 if (lat and lon) else attempts,
+                # ✅ 수정: 로컬 변수 last_error 사용
+                "last_error": None if (lat and lon) else last_error,
                 "city_id": addr_ids.get("city_id", 0),
                 "district_id": addr_ids.get("district_id", 0),
                 "street_id": addr_ids.get("street_id", 0),
