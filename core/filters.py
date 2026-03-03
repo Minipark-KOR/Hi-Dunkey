@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-"""
-텍스트 필터링 및 정규화 + 주소 정제
-"""
+# core/filters.py
 import re
 import unicodedata
 import hashlib
 from typing import Optional
-
 
 class TextFilter:
     @staticmethod
@@ -54,6 +51,34 @@ class AddressFilter:
     _ROAD_TOKEN = re.compile(r"[가-힣0-9]+(?:대로|로|길)\b")
     _JIBUN_TOKEN = re.compile(r"(?:[가-힣][가-힣0-9]*동|[가-힣][가-힣0-9]*리|[가-힣][가-힣0-9]*읍|[가-힣][가-힣0-9]*면|[가-힣0-9]+가)\s*\d")
 
+    ADMIN_DISTRICT_MAP = {
+        "일광면": "일광읍",
+        "산동면": "산동읍",
+        "양북면": "문무대왕면",
+        "퇴계원면": "퇴계원읍",
+        "이동면": "이동읍",
+        "비봉면": "비봉읍",
+    }
+
+    REMOVE_DISTRICT = ["오포읍", "남면"]
+
+    @staticmethod
+    def advanced_clean(address: str) -> str:
+        if not address:
+            return ""
+        addr = address
+        addr = re.sub(r'^[가-힣]+교육청\s*', '', addr).strip()
+        for old, new in AddressFilter.ADMIN_DISTRICT_MAP.items():
+            pattern = rf'(?<![가-힣]){re.escape(old)}(?![가-힣])'
+            addr = re.sub(pattern, new, addr)
+        for district in AddressFilter.REMOVE_DISTRICT:
+            pattern = rf'(?<![가-힣]){re.escape(district)}(?![가-힣])'
+            addr = re.sub(pattern, ' ', addr)
+        addr = re.sub(r'\([^)]*\)', '', addr)
+        addr = re.sub(r'\[[^\]]*\]', '', addr)
+        addr = re.sub(r'\s+', ' ', addr).strip()
+        return addr
+
     @staticmethod
     def clean(address: str, level: int = 1) -> str:
         if not address:
@@ -61,21 +86,24 @@ class AddressFilter:
         addr = TextFilter.normalize(address)
 
         if level >= 1:
-            addr = re.sub(r"\([^)]*\)", "", addr)
-            addr = re.sub(r"\[[^\]]*\]", "", addr)
-            addr = re.sub(r"^\s*\d{5}\s+", "", addr)
-            addr = re.sub(r"\s+\d{5}\s*$", "", addr)
-            addr = re.sub(r"(\d+(?:-\d+)?)\s*번지\b", r"\1", addr)
+            addr = re.sub(r'\([^)]*\)', '', addr)
+            addr = re.sub(r'\[[^\]]*\]', '', addr)
+            addr = re.sub(r'^\s*\d{5}\s+', '', addr)
+            addr = re.sub(r'\s+\d{5}\s*$', '', addr)
+            addr = re.sub(r'(\d+(?:-\d+)?)\s*번지\b', r'\1', addr)
 
         if level >= 2:
-            addr = re.sub(r"(?<=\d)\s*-\s*(?=\d)", "-", addr)
-            addr = re.sub(r"\b([가-힣0-9]+)\s+(대로|로|길)\b", r"\1\2", addr)
-            addr = re.sub(r"\s+", " ", addr).strip()
+            addr = re.sub(r'(?<=\d)\s*-\s*(?=\d)', "-", addr)
+            addr = re.sub(r'\b([가-힣0-9]+)\s+(대로|로|길)\b', r'\1\2', addr)
+            addr = re.sub(r'\s+', " ", addr).strip()
 
         if level >= 3:
             for pat, rep in AddressFilter.REGION_SHORTEN_PREFIX:
                 addr = re.sub(pat, rep, addr)
-            addr = re.sub(r"\s+", " ", addr).strip()
+            addr = re.sub(r'\s+', " ", addr).strip()
+
+        if level >= 4:
+            addr = AddressFilter.advanced_clean(addr)
 
         return addr
 

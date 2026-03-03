@@ -1,14 +1,8 @@
 #!/usr/bin/env python3
-"""
-migrate.py
-
-schools 테이블에 필요한 컬럼들을 추가하고 인덱스를 생성합니다.
-멱등성을 보장하여 여러 번 실행해도 안전합니다.
-"""
+# migrate.py
 import sqlite3
 import sys
 import os
-
 
 def migrate(db_path: str) -> bool:
     if not os.path.exists(db_path):

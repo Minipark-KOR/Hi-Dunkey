@@ -1,20 +1,12 @@
 #!/usr/bin/env python3
-"""
-collectors/geo_collector.py
-
-위치정보 수집기 (Geo Collector)
-- VWorld geocode + 캐시 + schools 좌표 업데이트
-- AddressFilter 기반 정제 레벨(1~3) 재시도
-- 실패 시 RetryManager에 등록 (재시도 시스템 활용)
-"""
+# collectors/geo_collector.py
 import os
 import sys
 import time
 import hashlib
 import sqlite3
-import argparse
 from typing import Optional, Dict, Tuple
-from datetime import datetime, time as dt_time
+from datetime import datetime, time as dt_time, timedelta
 
 import requests
 
@@ -24,6 +16,9 @@ from core.kst_time import now_kst
 from core.meta_vocab import MetaVocabManager
 from core.filters import AddressFilter
 from core.retry import RetryManager
+from core.logger import build_logger
+
+logger = build_logger("geo_collector", "logs/geo_collector.log")
 
 try:
     from core.database import get_db_connection
@@ -43,6 +38,7 @@ def _get_vworld_key() -> str:
 
 
 class GeoCollector:
+    # ✅ 수정: 공백 제거
     GEOCODE_URL = "https://api.vworld.kr/req/address"
     DAILY_API_LIMIT = 50000
 
@@ -78,6 +74,14 @@ class GeoCollector:
         if self.debug_mode:
             print(f"[GeoCollector] init: api_calls_today={self.api_calls_today}/{self.api_limit}")
 
+    def __del__(self):
+        try:
+            self._persist_usage_if_needed(force=True)
+            self.flush()
+            self.meta_vocab.flush()
+        except Exception:
+            pass
+
     def _init_tables(self):
         os.makedirs(os.path.dirname(self.global_db_path), exist_ok=True)
         os.makedirs(os.path.dirname(self.school_db_path), exist_ok=True)
@@ -108,7 +112,6 @@ class GeoCollector:
                 )
             """)
 
-        # schools 테이블에 필요한 컬럼들 (migrate에서 이미 했다면 생략 가능)
         if os.path.exists(self.school_db_path):
             with sqlite3.connect(self.school_db_path, timeout=30) as conn:
                 conn.execute("PRAGMA journal_mode=WAL;")
@@ -216,8 +219,12 @@ class GeoCollector:
             return False
         return True
 
+    # ✅ 수정: _geocode_with_type 과 동일한 에러 로깅 추가
     def _geocode(self, address: str) -> Optional[Tuple[float, float]]:
-        if not address or not self.vworld_key:
+        if not address:
+            return None
+        if not self.vworld_key:
+            logger.error("VWORLD_API_KEY not set. Geocoding impossible.")
             return None
 
         addr_hash = self._hash_address(address)
@@ -255,7 +262,14 @@ class GeoCollector:
                 self._bump_api_usage(1)
 
                 if resp.status_code == 429:
+                    logger.warning(f"VWorld API rate limited (429) for {addr_type}")
                     time.sleep(2)
+                    continue
+
+                # ✅ 추가: HTTP 에러 로깅
+                if resp.status_code >= 400:
+                    logger.error(f"VWorld API HTTP {resp.status_code} for {addr_type}: {address[:50]}")
+                    time.sleep(0.2)
                     continue
 
                 data = resp.json()
@@ -269,15 +283,96 @@ class GeoCollector:
                     self._save_to_cache(address, lon, lat, confidence)
                     return (lon, lat)
                 if status == "LIMIT_EXCEEDED":
+                    logger.warning(f"VWorld API limit exceeded for {addr_type}")
                     self.api_calls_today = self.api_limit
                     self._persist_usage_if_needed(force=True)
                     return None
+                logger.debug(f"VWorld API status={status} for {addr_type}: {address[:50]}")
                 time.sleep(0.05)
+            except requests.exceptions.Timeout:
+                logger.error(f"VWorld API timeout for {addr_type}")
+                time.sleep(0.2)
+            except requests.exceptions.ConnectionError:
+                logger.error(f"VWorld API connection error for {addr_type}")
+                time.sleep(0.2)
             except Exception as e:
                 if self.debug_mode:
                     print(f"[GeoCollector] geocode error({addr_type}): {e}")
+                logger.error(f"VWorld API unexpected error for {addr_type}: {e}")
                 time.sleep(0.2)
         return None
+
+    def _geocode_with_type(self, address: str, addr_type: str = "ROAD") -> Optional[Tuple[float, float]]:
+        if not address:
+            return None
+        if not self.vworld_key:
+            logger.error("VWORLD_API_KEY not set. Geocoding impossible.")
+            return None
+        
+        addr_hash = self._hash_address(address)
+        if addr_hash in self.cache:
+            return self.cache[addr_hash]
+        
+        if not self._check_api_limit():
+            return None
+        
+        params = {
+            "service": "address",
+            "request": "getcoord",
+            "version": "2.0",
+            "crs": "epsg:4326",
+            "address": address,
+            "refine": "true",
+            "simple": "false",
+            "format": "json",
+            "type": addr_type,
+            "key": self.vworld_key,
+        }
+        
+        try:
+            resp = requests.get(self.GEOCODE_URL, params=params, timeout=10)
+            self._bump_api_usage(1)
+            
+            if resp.status_code == 429:
+                logger.warning(f"VWorld API rate limited (429) for {addr_type}")
+                return None
+            
+            if resp.status_code >= 400:
+                logger.error(f"VWorld API HTTP {resp.status_code} for {addr_type}: {address[:50]}")
+                return None
+            
+            data = resp.json()
+            status = data.get("response", {}).get("status")
+            
+            if status == "OK":
+                point = data["response"]["result"]["point"]
+                lon = float(point["x"])
+                lat = float(point["y"])
+                self.cache[addr_hash] = (lon, lat)
+                confidence = data["response"]["result"].get("confidence", "UNKNOWN")
+                self._save_to_cache(address, lon, lat, confidence)
+                return (lon, lat)
+            
+            if status == "LIMIT_EXCEEDED":
+                logger.warning(f"VWorld API limit exceeded for {addr_type}")
+                self.api_calls_today = self.api_limit
+                self._persist_usage_if_needed(force=True)
+                return None
+            
+            logger.debug(f"VWorld API status={status} for {addr_type}: {address[:50]}")
+            return None
+            
+        except requests.exceptions.Timeout:
+            logger.error(f"VWorld API timeout for {addr_type}")
+            return None
+        except requests.exceptions.ConnectionError:
+            logger.error(f"VWorld API connection error for {addr_type}")
+            return None
+        except Exception as e:
+            if self.debug_mode:
+                print(f"[GeoCollector] geocode_with_type error({addr_type}): {e}")
+            logger.error(f"VWorld API unexpected error for {addr_type}: {e}")
+            return None
 
     def _save_to_cache(self, address: str, lon: float, lat: float, confidence: str = "UNKNOWN"):
         self.pending_inserts.append((address, lon, lat, confidence))
@@ -324,46 +419,59 @@ class GeoCollector:
             print(f"[GeoCollector] cache flush failed: {e}")
 
     def _update_school_coords(self, sc_code: str, lon: float, lat: float, cleaned: str, addr_components: dict):
-        """좌표 성공 시 schools 테이블 업데이트 (재시도 핸들러에서도 사용)"""
         with sqlite3.connect(self.school_db_path, timeout=30) as conn:
             conn.execute("PRAGMA journal_mode=WAL;")
             conn.execute("PRAGMA busy_timeout=30000;")
-            conn.execute(
-                """
-                UPDATE schools
-                SET longitude = ?, latitude = ?,
-                    cleaned_address = ?,
-                    geocode_attempts = 0,
-                    last_error = NULL,
-                    city_id = ?, district_id = ?, street_id = ?,
-                    number_type = ?, number_value = ?, number_start = ?, number_end = ?, number_bit = ?
-                WHERE sc_code = ?
-                """,
-                (
-                    lon, lat, cleaned,
-                    addr_components.get("city_id", 0),
-                    addr_components.get("district_id", 0),
-                    addr_components.get("street_id", 0),
-                    addr_components.get("number_type"),
-                    addr_components.get("number"),
-                    addr_components.get("number_start"),
-                    addr_components.get("number_end"),
-                    addr_components.get("number_bit"),
-                    sc_code,
-                ),
-            )
+            try:
+                conn.execute(
+                    """
+                    UPDATE schools
+                    SET longitude = ?, latitude = ?,
+                        cleaned_address = ?,
+                        geocode_attempts = 0,
+                        last_error = NULL,
+                        city_id = ?, district_id = ?, street_id = ?,
+                        number_type = ?, number_value = ?, number_start = ?, number_end = ?, number_bit = ?
+                    WHERE sc_code = ?
+                    """,
+                    (
+                        lon, lat, cleaned,
+                        addr_components.get("city_id", 0),
+                        addr_components.get("district_id", 0),
+                        addr_components.get("street_id", 0),
+                        addr_components.get("number_type"),
+                        addr_components.get("number"),
+                        addr_components.get("number_start"),
+                        addr_components.get("number_end"),
+                        addr_components.get("number_bit"),
+                        sc_code,
+                    ),
+                )
+            except sqlite3.OperationalError:
+                conn.execute(
+                    """
+                    UPDATE schools
+                    SET longitude = ?, latitude = ?, cleaned_address = ?
+                    WHERE sc_code = ?
+                    """,
+                    (lon, lat, cleaned, sc_code),
+                )
+
+    def _get_deadline(self) -> datetime:
+        now = now_kst()
+        today_15 = datetime.combine(now.date(), dt_time(15, 0))
+        if now < today_15:
+            return today_15
+        else:
+            return today_15 + timedelta(days=1)
 
     def save_location(self, domain: str, item_id: str, address: str) -> Dict:
-        """
-        학교 위치 정보 저장 (실패 시 RetryManager에 등록)
-        """
         if domain != "school" or not address:
             return {"error": "Invalid domain or empty address"}
 
         if not os.path.exists(self.school_db_path):
             return {"error": f"School DB not found: {self.school_db_path}"}
 
-        # 현재 좌표 확인
         with sqlite3.connect(self.school_db_path, timeout=30) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
@@ -373,8 +481,7 @@ class GeoCollector:
             if row and row["longitude"] is not None and row["latitude"] is not None:
                 return {"coords": (row["longitude"], row["latitude"]), "status": "existing"}
 
-        # 정제
-        cleaned = AddressFilter.clean(address, level=1)  # 기본 정제, 실제 재시도 핸들러에서 레벨 조정 가능
+        cleaned = AddressFilter.clean(address, level=1)
         coords = None
         error_msg = None
         try:
@@ -389,8 +496,7 @@ class GeoCollector:
             self._update_school_coords(item_id, lon, lat, cleaned, addr_components)
             status = "success"
         else:
-            # 실패 시 RetryManager에 등록 (오늘 15시 데드라인)
-            deadline = datetime.combine(now_kst().date(), dt_time(15, 0))
+            deadline = self._get_deadline()
             self.retry_mgr.record_failure(
                 domain="school",
                 task_type="geocode",
@@ -408,13 +514,13 @@ class GeoCollector:
         }
 
     def batch_update_schools(self, limit: int = 100):
-        """기존 방식으로 일괄 처리 (초기 누락 학교 처리용)"""
-        with sqlite3.connect(self.school_db_path) as conn:
+        with sqlite3.connect(self.school_db_path, timeout=30) as conn:
             schools = conn.execute(
                 """
                 SELECT sc_code, sc_name, address
                 FROM schools
-                WHERE address IS NOT NULL AND address != ''
+                WHERE address IS NOT NULL
+                  AND address != ''
                   AND (latitude IS NULL OR longitude IS NULL)
                 ORDER BY RANDOM()
                 LIMIT ?
@@ -437,31 +543,4 @@ class GeoCollector:
         self.flush()
         self.meta_vocab.flush()
         return success
-
-
-def main():
-    parser = argparse.ArgumentParser(description="GeoCollector CLI")
-    parser.add_argument("--schools", action="store_true", help="학교 좌표 배치 업데이트 실행")
-    parser.add_argument("--limit", type=int, default=100, help="배치 처리 개수")
-    parser.add_argument("--debug", action="store_true", help="디버그 로그")
-    parser.add_argument("--global-db", default="data/global_vocab.db")
-    parser.add_argument("--school-db", default="data/master/school_info.db")
-    parser.add_argument("--failures-db", default="data/failures.db")
-    args = parser.parse_args()
-
-    gc = GeoCollector(
-        global_db_path=args.global_db,
-        school_db_path=args.school_db,
-        failures_db_path=args.failures_db,
-        debug_mode=args.debug,
-    )
-
-    if args.schools:
-        gc.batch_update_schools(limit=args.limit)
-    else:
-        parser.print_help()
-
-
-if __name__ == "__main__":
-    main()
-    
+        

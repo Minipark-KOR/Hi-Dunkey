@@ -1,33 +1,40 @@
 #!/usr/bin/env python3
-"""
-로깅 설정
-"""
-import os
+# core/logger.py
 import logging
-from typing import Optional
+from logging.handlers import RotatingFileHandler
+import os
 
-def build_logger(name: str, log_path: str, level: int = logging.INFO) -> logging.Logger:
+def build_logger(name: str, log_file: str, level=logging.INFO):
     """
-    로거 생성 (파일 + 콘솔)
+    RotatingFileHandler를 적용한 로거 생성 (5MB, 5개 백업)
+    - 이미 핸들러가 있으면 중복 추가하지 않음
+    - LOG_CONSOLE 환경변수가 'true'이면 콘솔에도 출력
     """
-    os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    
     logger = logging.getLogger(name)
+    logger.setLevel(level)
+
     if logger.handlers:
         return logger
-    
-    logger.setLevel(level)
-    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-    
-    # 파일 핸들러
-    fh = logging.FileHandler(log_path, encoding='utf-8')
-    fh.setFormatter(formatter)
-    logger.addHandler(fh)
-    
-    # 콘솔 핸들러
-    sh = logging.StreamHandler()
-    sh.setFormatter(formatter)
-    logger.addHandler(sh)
-    
+
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=5*1024*1024,
+        backupCount=5,
+        encoding='utf-8'
+    )
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    if os.environ.get('LOG_CONSOLE', 'false').lower() == 'true':
+        console = logging.StreamHandler()
+        console.setFormatter(formatter)
+        logger.addHandler(console)
+
     return logger
     
