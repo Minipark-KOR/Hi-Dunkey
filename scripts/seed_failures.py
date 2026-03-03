@@ -1,7 +1,8 @@
+# scripts/seed_failures.py 에 올바른 코드 저장
+cat > scripts/seed_failures.py << 'EOF'
 #!/usr/bin/env python3
 """
 초기 누락 학교를 실패 큐에 등록
-- 지오코딩 좌표가 없는 학교를 failures.db 에 등록하여 retry_worker 가 처리하도록 함
 """
 import os
 import sys
@@ -19,9 +20,6 @@ def seed_missing_schools(
     school_db_path: str = "data/master/school_info.db",
     failures_db_path: str = "data/failures.db",
 ):
-    """
-    지오코딩 누락 학교를 failures 큐에 등록
-    """
     rm = RetryManager(db_path=failures_db_path, max_retries=None)
     
     if not os.path.exists(school_db_path):
@@ -57,10 +55,10 @@ def seed_missing_schools(
         )
         if ok:
             count += 1
-            if count <= 10:  # 최대 10 개까지 상세 출력
+            if count <= 10:
                 print(f"  ✅ [{count:3d}] {sc_code}: {address[:50]}...")
         else:
-            logger.warning(f"Failed to register: {sc_code} - {address[:50]}...")
+            logger.warning(f"Failed to register: {sc_code}")
     
     if len(rows) > 10:
         print(f"  ... (생략: {len(rows) - 10}개)")
@@ -79,4 +77,4 @@ if __name__ == "__main__":
     print("🚀 seed_failures 시작...")
     seed_missing_schools(args.school_db, args.failures_db)
     print("✨ seed_failures 완료!")
-    
+EOF
