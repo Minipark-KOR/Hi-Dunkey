@@ -27,6 +27,9 @@ _GEO_COLLECTOR: Optional[GeoCollector] = None
 _SCHOOL_DB = "data/master/school_info.db"
 _FAILURES_DB = "data/failures.db"
 
+# ✅ 추가: _LAST_ERROR_MSG 초기화 (NameError 방지)
+_LAST_ERROR_MSG: Optional[str] = None
+
 
 def kst_naive(dt: datetime) -> datetime:
     if getattr(dt, "tzinfo", None) is not None:
@@ -78,6 +81,7 @@ def geocode_kakao(address: str) -> Tuple[Optional[Tuple[float, float]], Optional
     KAKAO_API_KEY = os.getenv("KAKAO_API_KEY")
     if not KAKAO_API_KEY:
         return None, None
+    # ✅ 수정: URL 공백 제거
     url = "https://dapi.kakao.com/v2/local/search/address.json"
     headers = {"Authorization": f"KakaoAK {KAKAO_API_KEY}"}
     params = {"query": address, "analyze_type": "exact"}
@@ -145,6 +149,9 @@ def get_consecutive_404(sc_code: str) -> int:
 
 
 def handle_school_geocode(failure: dict) -> HandlerResult:
+    global _LAST_ERROR_MSG  # ✅ 전역 변수 사용 선언
+    _LAST_ERROR_MSG = None  # ✅ 매 호출 시 초기화
+    
     sc_code = failure.get("sc_code")
     address = failure.get("address")
     retries = failure.get("retries") or 0
@@ -156,7 +163,9 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
     cleaned = AddressFilter.clean(address, level=level)
     gc = get_geo_collector()
 
-    final_status = None
+    # ✅ 수정: 에러 상태 코드 목록 유지
+    final_status = 0
+    error_messages = []
 
     # 1 차: VWorld road
     coords, status = _geocode_vworld(gc, cleaned, "ROAD")
@@ -165,7 +174,9 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
         addr_components = gc.meta_vocab.save_address(cleaned)
         update_school_coords(sc_code, lon, lat, cleaned, addr_components)
         return (True, False)
-    final_status = status or final_status
+    if status and status > 0:
+        final_status = status
+        error_messages.append(f"ROAD:{status}")
 
     # 2 차: VWorld parcel
     coords, status = _geocode_vworld(gc, cleaned, "PARCEL")
@@ -174,7 +185,9 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
         addr_components = gc.meta_vocab.save_address(cleaned)
         update_school_coords(sc_code, lon, lat, cleaned, addr_components)
         return (True, False)
-    final_status = status or final_status
+    if status and status > 0:  # ✅ 수정: status 가 0 일 때 final_status 유지 안 함
+        final_status = status
+        error_messages.append(f"PARCEL:{status}")
 
     # simplified 는 항상 정의
     simplified = re.sub(r'\s*[-,.+()].*$', '', cleaned).strip()
@@ -187,7 +200,9 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
             addr_components = gc.meta_vocab.save_address(simplified)
             update_school_coords(sc_code, lon, lat, simplified, addr_components)
             return (True, False)
-        final_status = status or final_status
+        if status and status > 0:
+            final_status = status
+            error_messages.append(f"SIMPLIFIED_ROAD:{status}")
 
     # 4 차: simplified parcel
     if simplified != cleaned:
@@ -197,7 +212,9 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
             addr_components = gc.meta_vocab.save_address(simplified)
             update_school_coords(sc_code, lon, lat, simplified, addr_components)
             return (True, False)
-        final_status = status or final_status
+        if status and status > 0:
+            final_status = status
+            error_messages.append(f"SIMPLIFIED_PARCEL:{status}")
 
     # 5 차: Kakao API
     coords, status = geocode_kakao(cleaned)
@@ -207,18 +224,28 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
         addr_components = gc.meta_vocab.save_address(cleaned)
         update_school_coords(sc_code, lon, lat, cleaned, addr_components)
         return (True, False)
-    final_status = status or final_status
+    if status and status > 0:
+        final_status = status
+        error_messages.append(f"KAKAO:{status}")
 
+    # ✅ 수정: 에러 메시지 구성
+    full_error = f"[{','.join(error_messages)}] 지오코딩 실패" if error_messages else "지오코딩 실패"
+    
     # 실패 처리: 에러 분류
     consec_404 = get_consecutive_404(sc_code)
-    err_info = classify_error(final_status or 0, consec_404)
+    err_info = classify_error(final_status, consec_404)
 
     if err_info['action'] == 'stop':
         logger.critical(f"Fatal auth error for {sc_code}: {err_info['message']}")
+        _LAST_ERROR_MSG = f"FATAL: {err_info['message']}"
         return (False, True)
     elif err_info['action'] == 'orphan':
+        logger.warning(f"Orphan detected for {sc_code}: {full_error}")
+        _LAST_ERROR_MSG = full_error
         return (False, True)
     else:
+        _LAST_ERROR_MSG = full_error
+        logger.info(f"Transient failure for {sc_code}: {full_error}")
         return (False, False)
 
 
@@ -226,9 +253,10 @@ register_handler("school", "geocode", handle_school_geocode)
 
 
 def main():
+    global _LAST_ERROR_MSG  # ✅ 전역 변수 사용 선언
+    
     parser = argparse.ArgumentParser(description="retry worker")
     parser.add_argument("--limit", type=int, default=50, help="한 번에 처리할 작업 수")
-    # ✅ 추가: --force 옵션
     parser.add_argument("--force", action="store_true", help="next_attempt 시간 무시하고 모든 실패 작업 처리")
     args = parser.parse_args()
 
@@ -240,7 +268,6 @@ def main():
     logger.info(f"retry_worker start. now(KST)={now}, deadline={deadline}, force={args.force}")
     print(f"🚀 retry_worker 시작 - {now} (force={args.force})")
 
-    # ✅ 수정: --force 옵션에 따라 다른 메서드 호출
     if args.force:
         failures = rm.get_all_pending_retries(limit=args.limit)
     else:
@@ -262,6 +289,9 @@ def main():
         domain = f["domain"]
         task_type = f["task_type"]
         failure_id = f["id"]
+        
+        # ✅ 매 작업 시작 시 에러 메시지 초기화
+        _LAST_ERROR_MSG = None
 
         handler = TASK_HANDLERS.get((domain, task_type))
         if not handler:
@@ -293,9 +323,11 @@ def main():
             success_count += 1
             continue
 
+        # ✅ 수정: 에러 메시지 우선순위 (handler_exc > _LAST_ERROR_MSG > 기본)
+        error_msg = handler_exc or _LAST_ERROR_MSG or "재시도 실패"
         still_alive = rm.schedule_retry_by_id(
             failure_id=failure_id,
-            error=handler_exc or "재시도 실패",
+            error=error_msg,
             deadline=deadline,
         )
         if still_alive:
