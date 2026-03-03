@@ -71,7 +71,7 @@ class BaseCollector(ABC):
         self._closeable_resources = []
         self.data_guard = DataGuard()
         self.collect_log = CollectLog()
-        self.retry_mgr = RetryManager()
+        self.retry_mgr = RetryManager(db_path="data/failures.db")
 
         self._init_db()
         self.completed_items: set = set()
