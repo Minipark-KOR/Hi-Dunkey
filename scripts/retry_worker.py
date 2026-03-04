@@ -30,6 +30,7 @@ TASK_HANDLERS: Dict[tuple, Callable[[Dict[str, Any]], HandlerResult]] = {}
 _GEO_COLLECTOR: Optional[GeoCollector] = None
 _SCHOOL_DB = "data/master/school_info.db"
 _FAILURES_DB = "data/failures.db"
+_LAST_ERROR_MSG: Optional[str] = None
 
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
@@ -283,12 +284,16 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
 
     if err_info['action'] == 'stop':
         logger.critical(f"Fatal auth error for {sc_code}: {err_info['message']}")
+        global _LAST_ERROR_MSG
+        _LAST_ERROR_MSG = full_error
         return (False, True)
     elif err_info['action'] == 'orphan':
         logger.warning(f"Orphan detected for {sc_code}: {full_error}")
+        _LAST_ERROR_MSG = full_error
         return (False, True)
     else:
         logger.info(f"Transient failure for {sc_code}: {full_error}")
+        _LAST_ERROR_MSG = full_error
         return (False, False)
 
 
@@ -364,7 +369,12 @@ def main():
         task_type = f["task_type"]
         failure_id = f["id"]
 
+        # ✅ 작업 시작 시 에러 메시지 초기화
+        global _LAST_ERROR_MSG
+        _LAST_ERROR_MSG = None
+
         handler = TASK_HANDLERS.get((domain, task_type))
+        
         if not handler:
             msg = f"handler not found: {domain}/{task_type}"
             logger.warning(f"{msg} id={failure_id}")
@@ -388,16 +398,17 @@ def main():
             rm.mark_resolved(failure_id, status="SUCCESS")
             success_count += 1
         else:
-            # ✅ 수정: 상세 에러 메시지 전달
+            # ✅ 전역 변수에 저장된 상세 에러 사용
             still_alive = rm.schedule_retry_by_id(
                 failure_id=failure_id,
-                error=full_error,
+                error=_LAST_ERROR_MSG or "재시도 실패",
                 deadline=deadline,
             )
             if still_alive:
                 retry_count += 1
             else:
                 orphan_count += 1
+
 
         if time.time() - last_update >= 0.2:
             print_progress(i, len(failures), success_count, retry_count, orphan_count, start_time)
