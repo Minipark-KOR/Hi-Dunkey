@@ -1,0 +1,25 @@
+# .github/workflows/deadline_notify.yml
+name: Deadline Notifier
+
+on:
+  schedule:
+    - cron: '5 6 * * *'  # 15:05 KST (UTC 06:05)
+  workflow_dispatch:
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:   # ✅ 수정: proper YAML indentation
+          python-version: '3.10'
+
+      - run: pip install -r requirements.txt
+
+      - run: python scripts/deadline_notifier.py
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPO: ${{ github.repository }}
+          

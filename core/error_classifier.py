@@ -1,9 +1,5 @@
 # core/error_classifier.py
 def classify_error(status_code: int, consecutive_404: int = 0) -> dict:
-    """
-    HTTP 상태 코드에 따른 에러 분류
-    반환값: {'type': str, 'action': str, 'message': str}
-    """
     if status_code in (401, 403):
         return {
             'type': 'FATAL_AUTH',
@@ -11,7 +7,7 @@ def classify_error(status_code: int, consecutive_404: int = 0) -> dict:
             'message': '인증 실패! API 키를 확인하세요.'
         }
     elif status_code == 404:
-        if consecutive_404 >= 2:  # 3회 연속(0,1,2) → ORPHAN
+        if consecutive_404 >= 2:
             return {
                 'type': 'ORPHAN',
                 'action': 'orphan',

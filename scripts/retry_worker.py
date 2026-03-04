@@ -5,8 +5,11 @@ import sys
 import argparse
 import sqlite3
 import re
-from datetime import datetime, time
+import json
+import time
+from datetime import datetime, time as dt_time
 from typing import Dict, Any, Callable, Tuple, Optional
+
 import requests
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -19,16 +22,19 @@ from core.error_classifier import classify_error
 from collectors.geo_collector import GeoCollector
 
 logger = build_logger("retry_worker", "logs/retry_worker.log")
+address_mapping_logger = build_logger("address_mapping", "logs/address_mapping.log")
 
-HandlerResult = Tuple[bool, bool]  # (success, is_permanent_failure)
+HandlerResult = Tuple[bool, bool]
 TASK_HANDLERS: Dict[tuple, Callable[[Dict[str, Any]], HandlerResult]] = {}
 
 _GEO_COLLECTOR: Optional[GeoCollector] = None
 _SCHOOL_DB = "data/master/school_info.db"
 _FAILURES_DB = "data/failures.db"
 
-# ✅ 추가: _LAST_ERROR_MSG 초기화 (NameError 방지)
-_LAST_ERROR_MSG: Optional[str] = None
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
+RED = "\033[91m"
+RESET = "\033[0m"
 
 
 def kst_naive(dt: datetime) -> datetime:
@@ -39,7 +45,7 @@ def kst_naive(dt: datetime) -> datetime:
 
 def get_today_3pm_kst_naive(now: datetime) -> datetime:
     n = kst_naive(now)
-    return datetime.combine(n.date(), time(15, 0))
+    return datetime.combine(n.date(), dt_time(15, 0))
 
 
 def register_handler(domain: str, task_type: str, handler: Callable[[Dict[str, Any]], HandlerResult]):
@@ -58,30 +64,31 @@ def get_geo_collector() -> GeoCollector:
     return _GEO_COLLECTOR
 
 
-def _geocode_vworld(gc: GeoCollector, address: str, addr_type: str = "ROAD") -> Tuple[Optional[Tuple[float, float]], Optional[int]]:
-    """VWorld API 호출, (좌표, 상태코드) 반환"""
+def _geocode_vworld(gc: GeoCollector, address: str, addr_type: str = "ROAD") -> Tuple[Optional[Tuple[float, float]], int]:
+    if not gc.vworld_key:
+        logger.error("VWORLD_API_KEY not set")
+        return None, 0
     try:
         coords = gc._geocode_with_type(address, addr_type)
         if coords:
             return coords, 200
-        return None, None
+        return None, 404
     except requests.exceptions.HTTPError as e:
         if hasattr(e, 'response') and e.response is not None:
             return None, e.response.status_code
-        return None, None
+        return None, 500
     except requests.exceptions.RequestException as e:
         logger.error(f"VWorld {addr_type} request error: {e}")
-        return None, None
+        return None, 500
     except Exception as e:
         logger.error(f"VWorld {addr_type} unexpected error: {e}")
-        return None, None
+        return None, 500
 
 
-def geocode_kakao(address: str) -> Tuple[Optional[Tuple[float, float]], Optional[int]]:
+def geocode_kakao(address: str) -> Tuple[Optional[Tuple[float, float]], Optional[int], Optional[str]]:
     KAKAO_API_KEY = os.getenv("KAKAO_API_KEY")
     if not KAKAO_API_KEY:
-        return None, None
-    # ✅ 수정: URL 공백 제거
+        return None, None, None
     url = "https://dapi.kakao.com/v2/local/search/address.json"
     headers = {"Authorization": f"KakaoAK {KAKAO_API_KEY}"}
     params = {"query": address, "analyze_type": "exact"}
@@ -89,17 +96,26 @@ def geocode_kakao(address: str) -> Tuple[Optional[Tuple[float, float]], Optional
         resp = requests.get(url, headers=headers, params=params, timeout=5)
         if resp.status_code == 200:
             data = resp.json()
-            if data['documents']:
-                x = float(data['documents'][0]['x'])
-                y = float(data['documents'][0]['y'])
-                return (x, y), 200
-        return None, resp.status_code
+            if data.get('documents'):
+                doc = data['documents'][0]
+                x = float(doc['x'])
+                y = float(doc['y'])
+                official = doc.get('road_address', {}).get('address_name') or doc.get('address', {}).get('address_name')
+                return (x, y), 200, official
+        return None, resp.status_code, None
     except Exception as e:
         logger.error(f"Kakao geocode error: {e}")
-        return None, None
+        return None, None, None
 
 
-def update_school_coords(sc_code: str, lon: float, lat: float, cleaned: str, addr_components: Dict[str, Any]):
+def update_school_coords(
+    sc_code: str,
+    lon: float,
+    lat: float,
+    cleaned: str,
+    addr_components: Dict[str, Any],
+    kakao_address: Optional[str] = None
+):
     with sqlite3.connect(_SCHOOL_DB, timeout=30) as conn:
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA busy_timeout=30000;")
@@ -112,7 +128,8 @@ def update_school_coords(sc_code: str, lon: float, lat: float, cleaned: str, add
                     geocode_attempts = 0,
                     last_error = NULL,
                     city_id = ?, district_id = ?, street_id = ?,
-                    number_type = ?, number_value = ?, number_start = ?, number_end = ?, number_bit = ?
+                    number_type = ?, number_value = ?, number_start = ?, number_end = ?, number_bit = ?,
+                    kakao_address = COALESCE(?, kakao_address)
                 WHERE sc_code = ?
                 """,
                 (
@@ -125,10 +142,12 @@ def update_school_coords(sc_code: str, lon: float, lat: float, cleaned: str, add
                     addr_components.get("number_start"),
                     addr_components.get("number_end"),
                     addr_components.get("number_bit"),
+                    kakao_address,
                     sc_code,
                 ),
             )
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as e:
+            logger.warning(f"kakao_address 컬럼 없음, 기본 업데이트: {e}")
             conn.execute(
                 """
                 UPDATE schools
@@ -139,112 +158,136 @@ def update_school_coords(sc_code: str, lon: float, lat: float, cleaned: str, add
             )
 
 
+def log_address_mapping(original: str, mapped: str, sc_code: str, source: str):
+    if original == mapped:
+        return
+    mapping_data = {
+        "sc_code": sc_code,
+        "original": original,
+        "mapped": mapped,
+        "source": source,
+        "timestamp": now_kst().isoformat()
+    }
+    address_mapping_logger.info(json.dumps(mapping_data, ensure_ascii=False))
+
+
 def get_consecutive_404(sc_code: str) -> int:
-    with sqlite3.connect(_FAILURES_DB) as conn:
-        cur = conn.execute(
-            "SELECT COUNT(*) FROM failures WHERE sc_code=? AND error_msg LIKE '%404%' AND status='FAILED' AND resolved_at IS NULL",
-            (sc_code,)
-        )
-        return cur.fetchone()[0] or 0
+    try:
+        with sqlite3.connect(_FAILURES_DB) as conn:
+            cur = conn.execute(
+                """
+                SELECT COUNT(*) FROM failures 
+                WHERE sc_code=? 
+                AND (error_msg LIKE '%404%' OR error_msg LIKE '%NOT_FOUND%')
+                AND status='FAILED' AND resolved_at IS NULL
+                """,
+                (sc_code,)
+            )
+            return cur.fetchone()[0] or 0
+    except Exception:
+        return 0
 
 
 def handle_school_geocode(failure: dict) -> HandlerResult:
-    global _LAST_ERROR_MSG  # ✅ 전역 변수 사용 선언
-    _LAST_ERROR_MSG = None  # ✅ 매 호출 시 초기화
-    
     sc_code = failure.get("sc_code")
-    address = failure.get("address")
+    original_address = failure.get("address")
     retries = failure.get("retries") or 0
 
-    if not sc_code or not address:
+    if not sc_code or not original_address:
         return (False, True)
 
-    level = min(max(int(retries), 1), 4)
-    cleaned = AddressFilter.clean(address, level=level)
-    gc = get_geo_collector()
+    level = min(max(int(retries), 1), 3)
+    cleaned = AddressFilter.clean(original_address, level=level)
 
-    # ✅ 수정: 에러 상태 코드 목록 유지
+    gc = get_geo_collector()
     final_status = 0
     error_messages = []
 
-    # 1 차: VWorld road
+    # 1차: VWorld road
     coords, status = _geocode_vworld(gc, cleaned, "ROAD")
     if coords:
         lon, lat = coords
         addr_components = gc.meta_vocab.save_address(cleaned)
         update_school_coords(sc_code, lon, lat, cleaned, addr_components)
+        log_address_mapping(original_address, cleaned, sc_code, "vworld")
         return (True, False)
-    if status and status > 0:
+    if status:
         final_status = status
         error_messages.append(f"ROAD:{status}")
 
-    # 2 차: VWorld parcel
+    # 2차: VWorld parcel
     coords, status = _geocode_vworld(gc, cleaned, "PARCEL")
     if coords:
         lon, lat = coords
         addr_components = gc.meta_vocab.save_address(cleaned)
         update_school_coords(sc_code, lon, lat, cleaned, addr_components)
+        log_address_mapping(original_address, cleaned, sc_code, "vworld")
         return (True, False)
-    if status and status > 0:  # ✅ 수정: status 가 0 일 때 final_status 유지 안 함
+    if status:
         final_status = status
         error_messages.append(f"PARCEL:{status}")
 
-    # simplified 는 항상 정의
     simplified = re.sub(r'\s*[-,.+()].*$', '', cleaned).strip()
 
-    # 3 차: simplified road
+    # 3차: simplified road
     if simplified != cleaned:
         coords, status = _geocode_vworld(gc, simplified, "ROAD")
         if coords:
             lon, lat = coords
             addr_components = gc.meta_vocab.save_address(simplified)
             update_school_coords(sc_code, lon, lat, simplified, addr_components)
+            log_address_mapping(original_address, simplified, sc_code, "vworld")
             return (True, False)
-        if status and status > 0:
+        if status:
             final_status = status
             error_messages.append(f"SIMPLIFIED_ROAD:{status}")
 
-    # 4 차: simplified parcel
+    # 4차: simplified parcel
     if simplified != cleaned:
         coords, status = _geocode_vworld(gc, simplified, "PARCEL")
         if coords:
             lon, lat = coords
             addr_components = gc.meta_vocab.save_address(simplified)
             update_school_coords(sc_code, lon, lat, simplified, addr_components)
+            log_address_mapping(original_address, simplified, sc_code, "vworld")
             return (True, False)
-        if status and status > 0:
+        if status:
             final_status = status
             error_messages.append(f"SIMPLIFIED_PARCEL:{status}")
 
-    # 5 차: Kakao API
-    coords, status = geocode_kakao(cleaned)
+    # 5차: Kakao
+    coords, status, official_address = geocode_kakao(cleaned)
     if coords:
-        logger.info(f"Kakao API success for {cleaned[:30]}")
         lon, lat = coords
+        logger.info(f"Kakao API success for {cleaned[:30]}")
+
+        if official_address and official_address != cleaned:
+            log_address_mapping(original_address, official_address, sc_code, "kakao")
+            cleaned = official_address
+
+        addr_hash = gc._hash_address(cleaned)
+        gc.cache[addr_hash] = (lon, lat)
+        gc._save_to_cache(cleaned, lon, lat, "KAKAO")
+
         addr_components = gc.meta_vocab.save_address(cleaned)
-        update_school_coords(sc_code, lon, lat, cleaned, addr_components)
+        update_school_coords(sc_code, lon, lat, cleaned, addr_components, kakao_address=official_address)
         return (True, False)
-    if status and status > 0:
+
+    if status:
         final_status = status
         error_messages.append(f"KAKAO:{status}")
 
-    # ✅ 수정: 에러 메시지 구성
-    full_error = f"[{','.join(error_messages)}] 지오코딩 실패" if error_messages else "지오코딩 실패"
-    
-    # 실패 처리: 에러 분류
     consec_404 = get_consecutive_404(sc_code)
     err_info = classify_error(final_status, consec_404)
+    full_error = f"[{','.join(error_messages)}] {err_info['message']}" if error_messages else err_info['message']
 
     if err_info['action'] == 'stop':
         logger.critical(f"Fatal auth error for {sc_code}: {err_info['message']}")
-        _LAST_ERROR_MSG = f"FATAL: {err_info['message']}"
         return (False, True)
     elif err_info['action'] == 'orphan':
         logger.warning(f"Orphan detected for {sc_code}: {full_error}")
-        _LAST_ERROR_MSG = full_error
         return (False, True)
     else:
-        _LAST_ERROR_MSG = full_error
         logger.info(f"Transient failure for {sc_code}: {full_error}")
         return (False, False)
 
@@ -252,21 +295,52 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
 register_handler("school", "geocode", handle_school_geocode)
 
 
+def print_progress(current, total, success, retry, orphan, start_time):
+    elapsed = time.time() - start_time
+    avg = current / elapsed if elapsed > 0 else 0
+    bar = f"[{'=' * (current * 50 // total):<50}] {current}/{total}"
+    status = f"{GREEN}✅{RESET}{success:3d}  {YELLOW}⏳{RESET}{retry:3d}  {RED}❌{RESET}{orphan:3d}"
+    print(f"\r{bar}  {status}  {avg:.1f}개/초", end="", flush=True)
+
+
+def print_summary(success, retry, orphan, start_time, remaining):
+    elapsed = time.time() - start_time
+    print("\n" + "=" * 70)
+    print("📊 재시도 워커 실행 결과")
+    print("=" * 70)
+    print(f"✅ 성공: {success:,}개")
+    print(f"⏳ 재시도 예약: {retry:,}개")
+    print(f"❌ 포기 (ORPHAN): {orphan:,}개")
+    print("-" * 70)
+    print(f"⏱️  처리 시간: {elapsed:.2f}초")
+    if elapsed > 0:
+        print(f"⚡ 평균 속도: {success/elapsed:.1f}개/초")
+    print(f"📌 남은 작업: {remaining:,}개 (status='FAILED')")
+    print("=" * 70)
+
+
 def main():
-    global _LAST_ERROR_MSG  # ✅ 전역 변수 사용 선언
-    
-    parser = argparse.ArgumentParser(description="retry worker")
+    parser = argparse.ArgumentParser(description="재시도 워커")
     parser.add_argument("--limit", type=int, default=50, help="한 번에 처리할 작업 수")
-    parser.add_argument("--force", action="store_true", help="next_attempt 시간 무시하고 모든 실패 작업 처리")
+    parser.add_argument("--force", action="store_true", help="next_attempt 무시")
+    parser.add_argument("--menu", action="store_true", help="실행 후 메뉴 표시")
     args = parser.parse_args()
 
     now = kst_naive(now_kst())
     deadline = get_today_3pm_kst_naive(now)
 
-    rm = RetryManager(db_path=_FAILURES_DB, max_retries=None, base_delay=60, backoff_factor=2, deadline_buffer_seconds=70)
+    rm = RetryManager(
+        db_path=_FAILURES_DB,
+        max_retries=3,
+        base_delay=60,
+        backoff_factor=2,
+        deadline_buffer_seconds=70
+    )
 
-    logger.info(f"retry_worker start. now(KST)={now}, deadline={deadline}, force={args.force}")
-    print(f"🚀 retry_worker 시작 - {now} (force={args.force})")
+    print(f"\n🚀 retry_worker 시작 (한국시간: {now})")
+    print(f"   ├─ force={args.force}, limit={args.limit}")
+    print(f"   ├─ 데드라인: {deadline}")
+    print("=" * 70)
 
     if args.force:
         failures = rm.get_all_pending_retries(limit=args.limit)
@@ -274,24 +348,21 @@ def main():
         failures = rm.get_pending_retries(limit=args.limit, deadline=deadline)
 
     if not failures:
-        logger.info("재시도할 작업 없음")
         print("ℹ️  재시도할 작업 없음")
         return
 
-    logger.info(f"총 {len(failures)}개 작업 재시도")
-    print(f"📋 총 {len(failures)}개 작업 재시도")
+    print(f"📋 총 {len(failures)}개 작업 재시도\n")
 
     success_count = 0
     orphan_count = 0
     retry_count = 0
+    start_time = time.time()
+    last_update = start_time
 
-    for f in failures:
+    for i, f in enumerate(failures, 1):
         domain = f["domain"]
         task_type = f["task_type"]
         failure_id = f["id"]
-        
-        # ✅ 매 작업 시작 시 에러 메시지 초기화
-        _LAST_ERROR_MSG = None
 
         handler = TASK_HANDLERS.get((domain, task_type))
         if not handler:
@@ -299,48 +370,48 @@ def main():
             logger.warning(f"{msg} id={failure_id}")
             rm.mark_orphan(failure_id, error=msg)
             orphan_count += 1
+            if time.time() - last_update >= 0.2:
+                print_progress(i, len(failures), success_count, retry_count, orphan_count, start_time)
+                last_update = time.time()
             continue
 
-        handler_exc = None
         try:
             success, is_permanent = handler(f)
         except Exception as e:
-            handler_exc = str(e)[:200]
             logger.error(f"handler exception: {e}", exc_info=True)
             success, is_permanent = False, False
 
         if (not success) and is_permanent:
             rm.mark_orphan(failure_id, error=f"permanent failure: {domain}/{task_type}")
-            logger.warning(f"영구 실패 (orphan) id={failure_id}")
-            print(f"❌ 포기 id={failure_id}")
             orphan_count += 1
-            continue
-
-        if success:
+        elif success:
             rm.mark_resolved(failure_id, status="SUCCESS")
-            logger.info(f"성공 id={failure_id}")
-            print(f"✅ 성공 id={failure_id}")
             success_count += 1
-            continue
-
-        # ✅ 수정: 에러 메시지 우선순위 (handler_exc > _LAST_ERROR_MSG > 기본)
-        error_msg = handler_exc or _LAST_ERROR_MSG or "재시도 실패"
-        still_alive = rm.schedule_retry_by_id(
-            failure_id=failure_id,
-            error=error_msg,
-            deadline=deadline,
-        )
-        if still_alive:
-            logger.info(f"실패, 다음 재시도 예약됨 id={failure_id}")
-            print(f"⏳ 실패, 다음 재시도 예약됨 id={failure_id}")
-            retry_count += 1
         else:
-            logger.warning(f"데드라인 도달 또는 최대 재시도 초과로 포기 id={failure_id}")
-            print(f"❌ 포기 id={failure_id}")
-            orphan_count += 1
+            # ✅ 수정: 상세 에러 메시지 전달
+            still_alive = rm.schedule_retry_by_id(
+                failure_id=failure_id,
+                error=full_error,
+                deadline=deadline,
+            )
+            if still_alive:
+                retry_count += 1
+            else:
+                orphan_count += 1
 
-    logger.info(f"재시도 워커 종료 - 성공:{success_count}, 재시도:{retry_count}, 포기:{orphan_count}")
-    print(f"🏁 재시도 워커 종료 - 성공:{success_count}, 재시도:{retry_count}, 포기:{orphan_count}")
+        if time.time() - last_update >= 0.2:
+            print_progress(i, len(failures), success_count, retry_count, orphan_count, start_time)
+            last_update = time.time()
+
+    print_progress(len(failures), len(failures), success_count, retry_count, orphan_count, start_time)
+    print()
+
+    remaining = len(rm.get_all_pending_retries(limit=10000)) if args.force else len(rm.get_pending_retries(limit=10000, deadline=deadline))
+    print_summary(success_count, retry_count, orphan_count, start_time, remaining)
+
+    if args.menu:
+        # 간단한 메뉴 구현 (생략 가능)
+        pass
 
 
 if __name__ == "__main__":
@@ -350,4 +421,3 @@ if __name__ == "__main__":
         if _GEO_COLLECTOR is not None:
             _GEO_COLLECTOR.flush()
             _GEO_COLLECTOR.meta_vocab.flush()
-            

@@ -2,8 +2,6 @@
 """
 학교 기본정보 수집기 (Diff 기반 좌표 갱신)
 - GeoCollector 통합으로 캐시 및 API 사용량 추적
-- AddressFilter 로 주소 정제 후 지오코딩
-- BaseCollector.retry_mgr 와 완전 연동
 """
 import os
 import time
@@ -20,7 +18,6 @@ from core.kst_time import now_kst
 from constants.codes import NEIS_ENDPOINTS
 from constants.paths import MASTER_DB_PATH as MASTER_DB, MASTER_DIR
 
-# ✅ 수정: GeoCollector 사용 (VWorldGeocoder 대신)
 from collectors.geo_collector import GeoCollector
 
 BASE_DIR = str(MASTER_DIR)
@@ -41,19 +38,18 @@ class SchoolInfoCollector(BaseCollector):
     ):
         super().__init__("school", str(MASTER_DIR.parent), shard, school_range)
         self.db_path = str(MASTER_DB)
+
         self.api_context = 'school'
         self.incremental = incremental
         self.full = full
         self.compare = compare
         self.debug_mode = debug_mode
         self.run_date = now_kst().strftime("%Y%m%d")
-        
-        # ✅ 수정: MetaVocabManager 등록 (자동 close)
+
         self.meta_vocab = self.register_resource(
             MetaVocabManager(GLOBAL_VOCAB_PATH, debug_mode)
         )
-        
-        # ✅ 수정: GeoCollector 등록 (자동 close, 캐시/추적 포함)
+
         self.geo_collector = self.register_resource(
             GeoCollector(
                 global_db_path=GLOBAL_VOCAB_PATH,
@@ -62,10 +58,7 @@ class SchoolInfoCollector(BaseCollector):
                 debug_mode=debug_mode,
             )
         )
-        
-        # ✅ BaseCollector 에서 self.retry_mgr 이미 제공됨
-        # 추가 초기화 불필요 (base_collector.py 에서 이미 생성)
-        
+
         self.logger.info("🏫 SchoolInfoCollector 초기화 완료")
 
     def _init_db(self):
@@ -126,23 +119,15 @@ class SchoolInfoCollector(BaseCollector):
         self._update_schools_with_diff(rows, region_code)
 
     def _update_schools_with_diff(self, new_rows: List[dict], region_code: str):
-        # 읽기 전용 연결 사용
         existing = {}
         if os.path.exists(self.db_path):
             try:
                 with get_db_reader(self.db_path) as conn:
-                    # ✅ 수정: geocode_attempts, last_error 포함
                     cur = conn.execute(
                         "SELECT sc_code, address_hash, latitude, longitude, geocode_attempts, last_error FROM schools"
                     )
                     existing = {
-                        row[0]: {
-                            "hash": row[1], 
-                            "lat": row[2], 
-                            "lon": row[3],
-                            "attempts": row[4],
-                            "last_error": row[5]
-                        }
+                        row[0]: {"hash": row[1], "lat": row[2], "lon": row[3], "attempts": row[4], "last_error": row[5]}
                         for row in cur
                     }
             except Exception as e:
@@ -156,35 +141,27 @@ class SchoolInfoCollector(BaseCollector):
             full_address = row.get("ORG_RDNMA", "")
             new_hash = AddressFilter.hash(full_address) if full_address else ""
             row_meta[sc_code] = {
-                "row": row,
-                "full_address": full_address,
-                "new_hash": new_hash,
-                "old": existing.get(sc_code, {}),
+                "row": row, "full_address": full_address,
+                "new_hash": new_hash, "old": existing.get(sc_code, {}),
             }
 
         new_coords: Dict[str, Tuple[float, float]] = {}
         for sc_code, meta in row_meta.items():
             if meta["old"].get("hash") != meta["new_hash"] and meta["full_address"]:
-                # ✅ 수정: 주소 정제 후 지오코딩
                 cleaned = AddressFilter.clean(meta["full_address"], level=3)
                 coords = self.geo_collector._geocode(cleaned)
                 if coords:
                     new_coords[sc_code] = coords
                 else:
-                    # ✅ 수정: BaseCollector.retry_mgr 사용, 도메인 일치
                     if self.shard != "none":
                         deadline = now_kst().replace(hour=15, minute=0, second=0, microsecond=0)
                         if now_kst() > deadline:
                             deadline = deadline.replace(day=deadline.day + 1)
                         self.retry_mgr.record_failure(
-                            domain='school',  # ✅ retry_worker.py 와 일치
-                            task_type='geocode',
-                            shard=self.shard,
-                            sc_code=sc_code,
-                            region=region_code,
-                            address=meta["full_address"],
-                            error="Geocoding failed",
-                            deadline=deadline,
+                            domain='school', task_type='geocode',
+                            shard=self.shard, sc_code=sc_code,
+                            region=region_code, address=meta["full_address"],
+                            error="Geocoding failed", deadline=deadline,
                         )
                     else:
                         self.logger.warning(f"샤드 없음 → 지오코딩 실패 기록 생략: {sc_code}")
@@ -197,13 +174,10 @@ class SchoolInfoCollector(BaseCollector):
 
             if sc_code in new_coords:
                 lon, lat = new_coords[sc_code]
-                attempts = 0
-                last_error = None
+                attempts, last_error = 0, None
             else:
-                lat = old.get("lat")
-                lon = old.get("lon")
+                lat, lon = old.get("lat"), old.get("lon")
                 attempts = old.get("attempts", 0) + 1
-                # ✅ old 에 저장된 에러 우선 사용
                 last_error = old.get("last_error") or "Geocoding failed"
 
             cleaned = AddressFilter.clean(meta["full_address"], level=4) if meta["full_address"] else ""
@@ -215,25 +189,15 @@ class SchoolInfoCollector(BaseCollector):
                     self.logger.error(f"주소 변환 실패 {sc_code}: {e}")
 
             self.enqueue([{
-                "sc_code": sc_code,
-                "school_id": create_school_id(atpt_code, sc_code),
-                "sc_name": row.get("SCHUL_NM", ""),
-                "eng_name": row.get("ENG_SCHUL_NM", ""),
-                "sc_kind": row.get("SCHUL_KND_SC_NM", ""),
-                "atpt_code": atpt_code,
-                "address": meta["full_address"],
-                "cleaned_address": cleaned,
-                "address_hash": meta["new_hash"],
-                "tel": row.get("ORG_TELNO", ""),
-                "homepage": row.get("HMPG_ADRES", ""),
-                "status": "운영",
-                "last_seen": int(self.run_date),
-                "load_dt": now_kst().isoformat(),
-                "latitude": lat,
-                "longitude": lon,
-                "geocode_attempts": 0 if (lat and lon) else attempts,
-                # ✅ 수정: 로컬 변수 last_error 사용
-                "last_error": None if (lat and lon) else last_error,
+                "sc_code": sc_code, "school_id": create_school_id(atpt_code, sc_code),
+                "sc_name": row.get("SCHUL_NM", ""), "eng_name": row.get("ENG_SCHUL_NM", ""),
+                "sc_kind": row.get("SCHUL_KND_SC_NM", ""), "atpt_code": atpt_code,
+                "address": meta["full_address"], "cleaned_address": cleaned,
+                "address_hash": meta["new_hash"], "tel": row.get("ORG_TELNO", ""),
+                "homepage": row.get("HMPG_ADRES", ""), "status": "운영",
+                "last_seen": int(self.run_date), "load_dt": now_kst().isoformat(),
+                "latitude": lat, "longitude": lon,
+                "geocode_attempts": attempts, "last_error": last_error,
                 "city_id": addr_ids.get("city_id", 0),
                 "district_id": addr_ids.get("district_id", 0),
                 "street_id": addr_ids.get("street_id", 0),
@@ -241,7 +205,7 @@ class SchoolInfoCollector(BaseCollector):
                 "number_value": addr_ids.get("number"),
                 "number_start": addr_ids.get("number_start"),
                 "number_end": addr_ids.get("number_end"),
-                "number_bit": addr_ids.get("number_bit"),
+                "number_bit": addr_ids.get("number_bit", 0),
             }])
 
         self.logger.info(f"[{region_code}] 좌표 갱신: {len(new_coords)}개 / 완료")
@@ -257,7 +221,7 @@ class SchoolInfoCollector(BaseCollector):
              last_seen, load_dt, latitude, longitude, geocode_attempts, last_error,
              city_id, district_id, street_id, number_type, number_value, 
              number_start, number_end, number_bit)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, [
             (it['sc_code'], it['school_id'], it['sc_name'], it['eng_name'],
              it['sc_kind'], it['atpt_code'], it['address'], it['cleaned_address'],
@@ -273,8 +237,7 @@ class SchoolInfoCollector(BaseCollector):
 
 if __name__ == "__main__":
     from core.collector_cli import run_collector
-
     def _fetch(collector, region, **kwargs):
         collector.fetch_region(region, **kwargs)
-
     run_collector(SchoolInfoCollector, _fetch, "학교 기본정보 수집기")
+    

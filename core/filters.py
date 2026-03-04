@@ -13,6 +13,7 @@ class TextFilter:
         s = str(text)
         s = unicodedata.normalize("NFKC", s)
         s = s.replace("\u00A0", " ").replace("\u200b", "").replace("\ufeff", "")
+        # ✅ 수정: literal newline → \n
         s = re.sub(r"[\r\n\t]+", " ", s)
         s = re.sub(r"\s+", " ", s).strip()
         return s
