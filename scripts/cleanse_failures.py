@@ -28,7 +28,11 @@ def _get_change_type(original: str, cleaned: str) -> str:
     return ', '.join(changes) if changes else '일반정제'
 
 
-def cleanse_and_requeue(failures_db: str = "data/failures.db", show_changes: bool = True):
+def cleanse_and_requeue(
+    failures_db: str = "data/failures.db",
+    school_db: str = "data/master/school_info.db",
+    show_changes: bool = True
+):
     if not os.path.exists(failures_db):
         logger.error(f"DB 파일을 찾을 수 없습니다: {failures_db}")
         print(f"❌ DB 파일을 찾을 수 없습니다: {failures_db}")
@@ -51,42 +55,60 @@ def cleanse_and_requeue(failures_db: str = "data/failures.db", show_changes: boo
     skipped_same = 0
     changes = []
 
-    for row in rows:
-        fid = row["id"]
-        original = row["address"]
-        sc_code = row["sc_code"]
+    # 학교 DB 연결 (지번 저장용)
+    with sqlite3.connect(school_db) as conn_s:
+        conn_s.execute("PRAGMA journal_mode=WAL")  # 성능 최적화
 
-        cleaned = AddressFilter.clean(original, level=4)
+        for row in rows:
+            fid = row["id"]
+            original = row["address"]
+            sc_code = row["sc_code"]
 
-        if cleaned != original:
-            rm.mark_expired(fid, reason=f"주소 보정 후 재등록: {original} -> {cleaned}")
+            # 1. 지번 추출 및 schools 테이블 업데이트
+            jibun = AddressFilter.extract_jibun(original)
+            if jibun:
+                conn_s.execute(
+                    "UPDATE schools SET jibun_address = ? WHERE sc_code = ?",
+                    (jibun, sc_code)
+                )
+                logger.info(f"📌 지번 업데이트: {sc_code} → {jibun}")
 
-            success = rm.record_failure(
-                domain="school",
-                task_type="geocode",
-                sc_code=sc_code,
-                address=cleaned,
-                error="주소 보정 후 자동 재등록",
-                deadline=None
-            )
+            # 2. 주소 정제 (level 4)
+            cleaned = AddressFilter.clean(original, level=4)
 
-            if success:
-                updated += 1
-                changes.append({
-                    'sc_code': sc_code,
-                    'original': original,
-                    'cleaned': cleaned,
-                    'change_type': _get_change_type(original, cleaned)
-                })
-                logger.info(f"✅ [재등록 성공] {sc_code}: {cleaned[:60]}")
-                if show_changes:
-                    print(f"✅ {sc_code}")
+            # 3. 원본과 다르면 재등록 (지번 정보 함께 저장)
+            if cleaned != original:
+                rm.mark_expired(fid, reason=f"주소 보정 후 재등록: {original} -> {cleaned}")
+
+                success = rm.record_failure(
+                    domain="school",
+                    task_type="geocode",
+                    sc_code=sc_code,
+                    address=cleaned,
+                    error="주소 보정 후 자동 재등록",
+                    deadline=None,
+                    jibun_address=jibun,  # ✅ 지번 함께 저장
+                )
+
+                if success:
+                    updated += 1
+                    changes.append({
+                        'sc_code': sc_code,
+                        'original': original,
+                        'cleaned': cleaned,
+                        'change_type': _get_change_type(original, cleaned)
+                    })
+                    logger.info(f"✅ [재등록 성공] {sc_code}: {cleaned[:60]}")
+                    if show_changes:
+                        print(f"✅ {sc_code}")
+                else:
+                    logger.error(f"❌ [재등록 실패] {sc_code}")
+                    print(f"❌ {sc_code}")
             else:
-                logger.error(f"❌ [재등록 실패] {sc_code}")
-                print(f"❌ {sc_code}")
-        else:
-            skipped_same += 1
-            logger.debug(f"⏩ [변경 없음] {sc_code}")
+                skipped_same += 1
+                logger.debug(f"⏩ [변경 없음] {sc_code}")
+
+        conn_s.commit()  # 학교 DB 변경사항 저장
 
     # 변경 사항 상세 출력
     if show_changes and changes:
@@ -102,12 +124,13 @@ def cleanse_and_requeue(failures_db: str = "data/failures.db", show_changes: boo
         print("\n" + "=" * 80)
 
     # 최종 요약
+    total = len(rows)
     summary = f"""
 ✨ 작업 완료
-   - 총 검토       : {len(rows)}개
+   - 총 검토       : {total}개
    - 보정 성공     : {updated}개
    - 변경 없음     : {skipped_same}개
-   - 보정율        : {(updated/len(rows)*100) if rows else 0:.1f}%
+   - 보정율        : {(updated/total*100) if total else 0:.1f}%
 """
     logger.info(summary)
     print(summary)
@@ -117,9 +140,14 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="실패 주소 정제 및 재등록")
     parser.add_argument("--failures-db", default="data/failures.db")
+    parser.add_argument("--school-db", default="data/master/school_info.db")
     parser.add_argument("--quiet", action="store_true", help="상세 출력 없이 요약만 표시")
     args = parser.parse_args()
 
     print("🚀 cleanse_failures 시작...")
-    cleanse_and_requeue(args.failures_db, show_changes=not args.quiet)
+    cleanse_and_requeue(
+        failures_db=args.failures_db,
+        school_db=args.school_db,
+        show_changes=not args.quiet
+    )
     
