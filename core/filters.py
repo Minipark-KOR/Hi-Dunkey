@@ -13,6 +13,7 @@ class TextFilter:
         s = str(text)
         s = unicodedata.normalize("NFKC", s)
         s = s.replace("\u00A0", " ").replace("\u200b", "").replace("\ufeff", "")
+        # ✅ 수정: literal newline → \n
         s = re.sub(r"[\r\n\t]+", " ", s)
         s = re.sub(r"\s+", " ", s).strip()
         return s
@@ -23,8 +24,7 @@ class TextFilter:
             return ""
         t = TextFilter.normalize(text)
         t = re.sub(r"\s+", "", t)
-        # ✅ 공백 제거: [^a-zA-Z0-9가-힣]
-        t = re.sub(r"[^a-zA-Z0-9가-힣]", "", t)
+        t = re.sub(r"[^a-zA-Z0-9가-힣]", "", t)  # ✅ 공백 제거
         return t.lower()
 
 
@@ -49,7 +49,7 @@ class AddressFilter:
         (r"^제주특별자치도\s*", "제주 "),
     ]
 
-    # ✅ 공백 제거
+    # ✅ 공백 제거: [가-힣0-9]
     _ROAD_TOKEN = re.compile(r"[가-힣0-9]+(?:대로|로|길)\b")
     _JIBUN_TOKEN = re.compile(r"(?:[가-힣][가-힣0-9]*동|[가-힣][가-힣0-9]*리|[가-힣][가-힣0-9]*읍|[가-힣][가-힣0-9]*면|[가-힣0-9]+가)\s*\d")
 
@@ -89,7 +89,7 @@ class AddressFilter:
 
         if level >= 1:
             addr = re.sub(r'\([^)]*\)', '', addr)
-            addr = re.sub(r'\[[^\]]*\]', '', addr)
+            addr = re.sub(r'\[[^\]]*\)', '', addr)
             addr = re.sub(r'^\s*\d{5}\s+', '', addr)
             addr = re.sub(r'\s+\d{5}\s*$', '', addr)
             addr = re.sub(r'(\d+(?:-\d+)?)\s*번지\b', r'\1', addr)

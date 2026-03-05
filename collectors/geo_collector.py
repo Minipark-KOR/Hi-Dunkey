@@ -38,7 +38,7 @@ def _get_vworld_key() -> str:
 
 
 class GeoCollector:
-    # ✅ 수정 1: URL 끝 공백 제거
+    # ✅ 수정: URL 끝 공백 제거
     GEOCODE_URL = "https://api.vworld.kr/req/address"
     DAILY_API_LIMIT = 50000
 
@@ -82,7 +82,7 @@ class GeoCollector:
         except Exception:
             pass
 
-    # ✅ 수정 2: close 메서드 추가
+    # ✅ 추가: close 메서드
     def close(self):
         """종료 처리 (리소스 정리)"""
         try:
@@ -228,7 +228,6 @@ class GeoCollector:
             return False
         return True
 
-    # ✅ 수정 3: _geocode 에러 로깅 강화
     def _geocode(self, address: str) -> Optional[Tuple[float, float]]:
         if not address:
             return None
@@ -275,7 +274,6 @@ class GeoCollector:
                     time.sleep(2)
                     continue
 
-                # ✅ HTTP 에러 로깅 추가
                 if resp.status_code >= 400:
                     logger.error(f"VWorld API HTTP {resp.status_code} for {addr_type}: {address[:50]}")
                     time.sleep(0.2)
@@ -345,7 +343,6 @@ class GeoCollector:
                 logger.warning(f"VWorld API rate limited (429) for {addr_type}")
                 return None
 
-            # ✅ HTTP 에러 로깅 추가
             if resp.status_code >= 400:
                 logger.error(f"VWorld API HTTP {resp.status_code} for {addr_type}: {address[:50]}")
                 return None
