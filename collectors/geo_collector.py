@@ -38,7 +38,7 @@ def _get_vworld_key() -> str:
 
 
 class GeoCollector:
-    # ✅ 수정 1: URL 공백 제거 (VSCode 에서 보이지 않는 trailing space 제거)
+    # ✅ 수정 1: URL 끝 공백 제거
     GEOCODE_URL = "https://api.vworld.kr/req/address"
     DAILY_API_LIMIT = 50000
 
@@ -81,6 +81,15 @@ class GeoCollector:
             self.meta_vocab.flush()
         except Exception:
             pass
+
+    # ✅ 수정 2: close 메서드 추가
+    def close(self):
+        """종료 처리 (리소스 정리)"""
+        try:
+            self.flush()
+            self.meta_vocab.close()
+        except Exception as e:
+            logger.warning(f"GeoCollector close error: {e}")
 
     def _init_tables(self):
         os.makedirs(os.path.dirname(self.global_db_path), exist_ok=True)
@@ -219,7 +228,7 @@ class GeoCollector:
             return False
         return True
 
-    # ✅ 수정 2: _geocode_with_type 과 동일한 상세 에러 로깅 추가
+    # ✅ 수정 3: _geocode 에러 로깅 강화
     def _geocode(self, address: str) -> Optional[Tuple[float, float]]:
         if not address:
             return None
@@ -539,11 +548,4 @@ class GeoCollector:
         self.flush()
         self.meta_vocab.flush()
         return success
-
-    def close(self):
-        """종료 처리 (리소스 정리)"""
-        try:
-            self.flush()
-            self.meta_vocab.close()
-        except Exception as e:
-            logger.warning(f"GeoCollector close error: {e}")
+        

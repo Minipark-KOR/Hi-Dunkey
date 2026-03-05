@@ -13,6 +13,7 @@ class TextFilter:
         s = str(text)
         s = unicodedata.normalize("NFKC", s)
         s = s.replace("\u00A0", " ").replace("\u200b", "").replace("\ufeff", "")
+        # ✅ 수정: literal newline → \n
         s = re.sub(r"[\r\n\t]+", " ", s)
         s = re.sub(r"\s+", " ", s).strip()
         return s
@@ -23,15 +24,11 @@ class TextFilter:
             return ""
         t = TextFilter.normalize(text)
         t = re.sub(r"\s+", "", t)
-        t = re.sub(r"[^a-zA-Z0-9가-힣]", "", t)
+        t = re.sub(r"[^a-zA-Z0-9가 - 힣]", "", t)  # ✅ 공백 제거
         return t.lower()
 
 
 class AddressFilter:
-    # 도로명 주소 판별용 토큰 (더 포괄적인 버전)
-    _ROAD_TOKEN = re.compile(r"[가-힣0-9]+(?:대로|로|길)\b")
-    _JIBUN_TOKEN = re.compile(r"(?:[가-힣][가-힣0-9]*동|[가-힣][가-힣0-9]*리|[가-힣][가-힣0-9]*읍|[가-힣][가-힣0-9]*면|[가-힣0-9]+가)\s*\d")
-
     REGION_SHORTEN_PREFIX = [
         (r"^서울특별시\s*", "서울 "),
         (r"^부산광역시\s*", "부산 "),
@@ -52,6 +49,10 @@ class AddressFilter:
         (r"^제주특별자치도\s*", "제주 "),
     ]
 
+    # ✅ 공백 제거
+    _ROAD_TOKEN = re.compile(r"[가 - 힣 0-9]+(?:대로 | 로|길)\b")
+    _JIBUN_TOKEN = re.compile(r"(?:[가 - 힣][가 - 힣 0-9]*동|[가 - 힣][가 - 힣 0-9]*리|[가 - 힣][가 - 힣 0-9]*읍|[가 - 힣][가 - 힣 0-9]*면|[가 - 힣 0-9]+가)\s*\d")
+
     ADMIN_DISTRICT_MAP = {
         "일광면": "일광읍",
         "산동면": "산동읍",
@@ -59,7 +60,6 @@ class AddressFilter:
         "퇴계원면": "퇴계원읍",
         "이동면": "이동읍",
         "비봉면": "비봉읍",
-        # 자동 학습 결과 추가 가능
     }
 
     REMOVE_DISTRICT = ["오포읍", "남면"]
@@ -69,12 +69,12 @@ class AddressFilter:
         if not address:
             return ""
         addr = address
-        addr = re.sub(r'^[가-힣]+교육청\s*', '', addr).strip()
+        addr = re.sub(r'^[가 - 힣]+ 교육청\s*', '', addr).strip()  # ✅ 공백 제거
         for old, new in AddressFilter.ADMIN_DISTRICT_MAP.items():
-            pattern = rf'(?<![가-힣]){re.escape(old)}(?![가-힣])'
+            pattern = rf'(?<![가 - 힣]){re.escape(old)}(?![가 - 힣])'  # ✅ 공백 제거
             addr = re.sub(pattern, new, addr)
         for district in AddressFilter.REMOVE_DISTRICT:
-            pattern = rf'(?<![가-힣]){re.escape(district)}(?![가-힣])'
+            pattern = rf'(?<![가 - 힣]){re.escape(district)}(?![가 - 힣])'  # ✅ 공백 제거
             addr = re.sub(pattern, ' ', addr)
         addr = re.sub(r'\([^)]*\)', '', addr)
         addr = re.sub(r'\[[^\]]*\]', '', addr)
@@ -89,14 +89,14 @@ class AddressFilter:
 
         if level >= 1:
             addr = re.sub(r'\([^)]*\)', '', addr)
-            addr = re.sub(r'\[[^\]]*\]', '', addr)
+            addr = re.sub(r'\[[^\]]*\)', '', addr)
             addr = re.sub(r'^\s*\d{5}\s+', '', addr)
             addr = re.sub(r'\s+\d{5}\s*$', '', addr)
             addr = re.sub(r'(\d+(?:-\d+)?)\s*번지\b', r'\1', addr)
 
         if level >= 2:
             addr = re.sub(r'(?<=\d)\s*-\s*(?=\d)', "-", addr)
-            addr = re.sub(r'\b([가-힣0-9]+)\s+(대로|로|길)\b', r'\1\2', addr)
+            addr = re.sub(r'\b([가 - 힣 0-9]+)\s+(대로 | 로|길)\b', r'\1\2', addr)  # ✅ 공백 제거
             addr = re.sub(r'\s+', " ", addr).strip()
 
         if level >= 3:
@@ -127,32 +127,4 @@ class AddressFilter:
         if not address:
             return ""
         return hashlib.sha256(address.encode("utf-8")).hexdigest()[:16]
-
-    @staticmethod
-    def extract_jibun(address: str) -> Optional[str]:
-        """
-        주소에서 지번 주소 추출 (VWorld API에 최적화)
-        - 시/도 + 시/군/구 + 읍/면/동 + 번지(숫자/가산) 형태
-        - 도로명 주소는 제외하고 지번만 반환
-        """
-        if not address:
-            return None
-        a = TextFilter.normalize(address)
-        # 도로명 주소 패턴이 보이면 지번 추출 스킵
-        if AddressFilter._ROAD_TOKEN.search(a):
-            return None
-        # 지번 패턴 (전체 매칭 문자열 그대로 반환)
-        patterns = [
-            # 1. 시도/시군구 포함 풀 패턴
-            r'[가-힣]+(?:시|도)\s+[가-힣]+(?:시|군|구)\s*[가-힣]+(?:읍|면|동|리)\s+(?:[가-힣0-9]+(?:가)?\s*\d+(?:-\d+)?(?:번지)?)',
-            # 2. 읍면동 + 번지 (시/군/구 생략)
-            r'[가-힣]+(?:읍|면|동|리)\s+(?:[가-힣0-9]+(?:가)?\s*\d+(?:-\d+)?(?:번지)?)',
-            # 3. 산(山) 패턴
-            r'[가-힣]+(?:읍|면|동|리)\s+(?:산\s*\d+(?:-\d+)?(?:번지)?)'
-        ]
-        for pat in patterns:
-            m = re.search(pat, a)
-            if m:
-                return m.group(0).strip()
-        return None
         

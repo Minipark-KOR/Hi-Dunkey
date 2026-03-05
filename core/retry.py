@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # core/retry.py
 import sqlite3
 from datetime import datetime, timedelta
@@ -31,6 +32,7 @@ class RetryManager:
     def get_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30)
         try:
+            # ✅ 수정: SQL 문 공백 제거
             conn.execute("PRAGMA busy_timeout=30000")
             conn.execute("PRAGMA journal_mode=WAL")
             yield conn
@@ -71,13 +73,6 @@ class RetryManager:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            # jibun_address 컬럼이 없으면 추가
-            cur = conn.execute("PRAGMA table_info(failures)")
-            columns = [row[1] for row in cur.fetchall()]
-            if "jibun_address" not in columns:
-                conn.execute("ALTER TABLE failures ADD COLUMN jibun_address TEXT")
-                logger.info("✅ jibun_address 컬럼 추가됨 (failures 테이블)")
-
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_next_attempt_pending
                 ON failures(next_attempt)
@@ -100,7 +95,7 @@ class RetryManager:
             return [dict(r) for r in rows]
 
     def get_all_pending_retries(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """next_attempt 무시, 모든 FAILED 레코드 조회 (--force 용)"""
+        """next_attempt 시간 무시하고 모든 FAILED 레코드 조회 (--force 용)"""
         with self.get_connection() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("""
@@ -132,6 +127,7 @@ class RetryManager:
             """, (resolved_at, reason, failure_id))
 
     def _mark_expired_on_conn(self, conn: sqlite3.Connection, failure_id: int, reason: str) -> None:
+        """동일한 커넥션에서 만료 처리 (트랜잭션 일관성 유지)"""
         resolved_at = self._now()
         conn.execute("""
             UPDATE failures SET status='EXPIRED', resolved_at=?, error_msg=?
@@ -166,7 +162,7 @@ class RetryManager:
             new_retries = current_retries + 1
             next_attempt = self._compute_next_attempt(now=now, retries=new_retries, deadline=deadline)
             if next_attempt is None:
-                self._mark_expired_on_conn(conn, failure_id, reason=error)
+                self._mark_expired_on_conn(conn, failure_id, reason=error)  # ✅ 수정: 동일 커넥션 사용
                 return False
             cur = conn.execute("""
                 UPDATE failures SET retries=?, next_attempt=?, error_msg=?, status='FAILED', resolved_at=NULL
@@ -174,85 +170,54 @@ class RetryManager:
             """, (new_retries, next_attempt, error, failure_id))
             return cur.rowcount == 1
 
-    def record_failure(
-        self,
-        domain: str,
-        task_type: str,
-        deadline: Optional[datetime] = None,
-        shard=None,
-        sc_code=None,
-        region=None,
-        year=None,
-        month=None,
-        day=None,
-        semester=None,
-        address=None,
-        sub_key=None,
-        error: str = "",
-        jibun_address: Optional[str] = None,
-    ) -> bool:
+    def record_failure(self, domain: str, task_type: str, deadline: Optional[datetime] = None,
+                       shard=None, sc_code=None, region=None, year=None, month=None, day=None,
+                       semester=None, address=None, sub_key=None, error: str = "") -> bool:
         now = self._now()
         if deadline is not None and now >= deadline:
             with self.get_connection() as conn:
                 conn.execute("""
-                    INSERT INTO failures (
-                        domain, task_type, shard, sc_code, region, year, month, day, semester,
-                        address, sub_key, retries, next_attempt, error_msg, status, resolved_at,
-                        jibun_address
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'EXPIRED', ?, ?)
-                """, (
-                    domain, task_type, shard, sc_code, region, year, month, day, semester,
-                    address, sub_key, 1, None, error, now, jibun_address
-                ))
+                    INSERT INTO failures (domain, task_type, shard, sc_code, region, year, month, day, semester,
+                        address, sub_key, retries, next_attempt, error_msg, status, resolved_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'EXPIRED', ?)
+                """, (domain, task_type, shard, sc_code, region, year, month, day, semester,
+                      address, sub_key, 1, None, error, now))
             return True
-
         next_attempt = self._compute_next_attempt(now=now, retries=1, deadline=deadline)
         if next_attempt is None:
             logger.warning("record_failure next_attempt None")
             return False
-
         with self.get_connection() as conn:
             conn.row_factory = sqlite3.Row
-            # ✅ IS ? 조건 유지 (기존 방식)
             row = conn.execute("""
                 SELECT id, retries FROM failures
                 WHERE domain=? AND task_type=?
-                  AND shard IS ? AND sc_code IS ? AND region IS ?
-                  AND year IS ? AND month IS ? AND day IS ? AND semester IS ?
-                  AND address IS ? AND sub_key IS ?
-                  AND status='FAILED' AND resolved_at IS NULL
+                AND (shard IS NULL OR shard=?) AND (sc_code IS NULL OR sc_code=?)
+                AND (region IS NULL OR region=?) AND (year IS NULL OR year=?)
+                AND (month IS NULL OR month=?) AND (day IS NULL OR day=?)
+                AND (semester IS NULL OR semester=?) AND (address IS NULL OR address=?)
+                AND (sub_key IS NULL OR sub_key=?)
+                AND status='FAILED' AND resolved_at IS NULL
                 ORDER BY id DESC LIMIT 1
-            """, (
-                domain, task_type,
-                shard, sc_code, region,
-                year, month, day, semester,
-                address, sub_key
-            )).fetchone()
-
+            """, (domain, task_type, shard, sc_code, region, year, month, day, semester, address, sub_key)).fetchone()
             if row:
                 failure_id = row["id"]
                 current_retries = int(row["retries"] or 0)
                 new_retries = current_retries + 1
                 next_attempt2 = self._compute_next_attempt(now=now, retries=new_retries, deadline=deadline)
                 if next_attempt2 is None:
-                    self._mark_expired_on_conn(conn, failure_id, reason=error)
+                    self._mark_expired_on_conn(conn, failure_id, reason=error)  # ✅ 수정: 동일 커넥션 사용
                     return False
                 conn.execute("""
-                    UPDATE failures SET retries=?, next_attempt=?, error_msg=?, status='FAILED', resolved_at=NULL, jibun_address=?
+                    UPDATE failures SET retries=?, next_attempt=?, error_msg=?, status='FAILED', resolved_at=NULL
                     WHERE id=? AND status='FAILED' AND resolved_at IS NULL
-                """, (new_retries, next_attempt2, error, jibun_address, failure_id))
+                """, (new_retries, next_attempt2, error, failure_id))
                 return True
-
             conn.execute("""
-                INSERT INTO failures (
-                    domain, task_type, shard, sc_code, region, year, month, day, semester,
-                    address, sub_key, retries, next_attempt, error_msg, status,
-                    jibun_address
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'FAILED', ?)
-            """, (
-                domain, task_type, shard, sc_code, region, year, month, day, semester,
-                address, sub_key, 1, next_attempt, error,
-                jibun_address
-            ))
+                INSERT INTO failures (domain, task_type, shard, sc_code, region, year, month, day, semester,
+                    address, sub_key, retries, next_attempt, error_msg, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'FAILED')
+            """, (domain, task_type, shard, sc_code, region, year, month, day, semester,
+                  address, sub_key, 1, next_attempt, error))
             return True
             

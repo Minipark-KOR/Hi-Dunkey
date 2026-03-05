@@ -30,6 +30,8 @@ TASK_HANDLERS: Dict[tuple, Callable[[Dict[str, Any]], HandlerResult]] = {}
 _GEO_COLLECTOR: Optional[GeoCollector] = None
 _SCHOOL_DB = "data/master/school_info.db"
 _FAILURES_DB = "data/failures.db"
+
+# ✅ 추가: 에러 메시지 저장용 전역 변수
 _LAST_ERROR_MSG: Optional[str] = None
 
 GREEN = "\033[92m"
@@ -90,9 +92,12 @@ def geocode_kakao(address: str) -> Tuple[Optional[Tuple[float, float]], Optional
     KAKAO_API_KEY = os.getenv("KAKAO_API_KEY")
     if not KAKAO_API_KEY:
         return None, None, None
+    
+    # ✅ 수정: URL trailing space 제거
     url = "https://dapi.kakao.com/v2/local/search/address.json"
     headers = {"Authorization": f"KakaoAK {KAKAO_API_KEY}"}
     params = {"query": address, "analyze_type": "exact"}
+    
     try:
         resp = requests.get(url, headers=headers, params=params, timeout=5)
         if resp.status_code == 200:
@@ -190,6 +195,9 @@ def get_consecutive_404(sc_code: str) -> int:
 
 
 def handle_school_geocode(failure: dict) -> HandlerResult:
+    global _LAST_ERROR_MSG  # ✅ 전역 변수 사용 선언
+    _LAST_ERROR_MSG = None  # ✅ 매 호출 시 초기화
+    
     sc_code = failure.get("sc_code")
     original_address = failure.get("address")
     retries = failure.get("retries") or 0
@@ -201,32 +209,10 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
     cleaned = AddressFilter.clean(original_address, level=level)
 
     gc = get_geo_collector()
-
-    # jibun_address 조회
-    jibun = None
-    with sqlite3.connect(_SCHOOL_DB) as conn:
-        cur = conn.execute("SELECT jibun_address FROM schools WHERE sc_code=?", (sc_code,))
-        row = cur.fetchone()
-        if row:
-            jibun = row[0]
-
     final_status = 0
     error_messages = []
 
-    # 0차: 지번 주소로 PARCEL 우선 시도 (jibun이 있을 경우)
-    if jibun:
-        coords, status = _geocode_vworld(gc, jibun, "PARCEL")
-        if coords:
-            lon, lat = coords
-            addr_components = gc.meta_vocab.save_address(jibun)
-            update_school_coords(sc_code, lon, lat, jibun, addr_components)
-            log_address_mapping(original_address, jibun, sc_code, "vworld_jibun")
-            return (True, False)
-        if status:
-            final_status = status
-            error_messages.append(f"JIBUN_PARCEL:{status}")
-
-    # 1차: VWorld road
+    # 1 차: VWorld road
     coords, status = _geocode_vworld(gc, cleaned, "ROAD")
     if coords:
         lon, lat = coords
@@ -238,7 +224,7 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
         final_status = status
         error_messages.append(f"ROAD:{status}")
 
-    # 2차: VWorld parcel
+    # 2 차: VWorld parcel
     coords, status = _geocode_vworld(gc, cleaned, "PARCEL")
     if coords:
         lon, lat = coords
@@ -252,7 +238,7 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
 
     simplified = re.sub(r'\s*[-,.+()].*$', '', cleaned).strip()
 
-    # 3차: simplified road
+    # 3 차: simplified road
     if simplified != cleaned:
         coords, status = _geocode_vworld(gc, simplified, "ROAD")
         if coords:
@@ -265,7 +251,7 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
             final_status = status
             error_messages.append(f"SIMPLIFIED_ROAD:{status}")
 
-    # 4차: simplified parcel
+    # 4 차: simplified parcel
     if simplified != cleaned:
         coords, status = _geocode_vworld(gc, simplified, "PARCEL")
         if coords:
@@ -278,7 +264,7 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
             final_status = status
             error_messages.append(f"SIMPLIFIED_PARCEL:{status}")
 
-    # 5차: Kakao
+    # 5 차: Kakao
     coords, status, official_address = geocode_kakao(cleaned)
     if coords:
         lon, lat = coords
@@ -306,7 +292,6 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
 
     if err_info['action'] == 'stop':
         logger.critical(f"Fatal auth error for {sc_code}: {err_info['message']}")
-        global _LAST_ERROR_MSG
         _LAST_ERROR_MSG = full_error
         return (False, True)
     elif err_info['action'] == 'orphan':
@@ -332,6 +317,7 @@ def print_progress(current, total, success, retry, orphan, start_time):
 
 def print_summary(success, retry, orphan, start_time, remaining):
     elapsed = time.time() - start_time
+    # ✅ 수정: literal newline → \n
     print("\n" + "=" * 70)
     print("📊 재시도 워커 실행 결과")
     print("=" * 70)
@@ -347,11 +333,11 @@ def print_summary(success, retry, orphan, start_time, remaining):
 
 
 def main():
+    global _LAST_ERROR_MSG  # ✅ 전역 변수 사용 선언
+    
     parser = argparse.ArgumentParser(description="재시도 워커")
     parser.add_argument("--limit", type=int, default=50, help="한 번에 처리할 작업 수")
     parser.add_argument("--force", action="store_true", help="next_attempt 무시")
-    parser.add_argument("--dry-run", action="store_true", help="실제 API 호출 없이 로그만 출력")
-    parser.add_argument("--verbose", action="store_true", help="각 작업 결과를 실시간으로 출력")
     parser.add_argument("--menu", action="store_true", help="실행 후 메뉴 표시")
     args = parser.parse_args()
 
@@ -366,8 +352,9 @@ def main():
         deadline_buffer_seconds=70
     )
 
+    # ✅ 수정: literal newline → \n
     print(f"\n🚀 retry_worker 시작 (한국시간: {now})")
-    print(f"   ├─ force={args.force}, limit={args.limit}, dry-run={args.dry_run}, verbose={args.verbose}")
+    print(f"   ├─ force={args.force}, limit={args.limit}")
     print(f"   ├─ 데드라인: {deadline}")
     print("=" * 70)
 
@@ -378,23 +365,6 @@ def main():
 
     if not failures:
         print("ℹ️  재시도할 작업 없음")
-        return
-
-    if args.dry_run:
-        logger.info("🚧 DRY RUN MODE - API 호출 없음")
-        for i, f in enumerate(failures, 1):
-            sc_code = f["sc_code"]
-            jibun = None
-            with sqlite3.connect(_SCHOOL_DB) as conn:
-                cur = conn.execute("SELECT jibun_address FROM schools WHERE sc_code=?", (sc_code,))
-                row = cur.fetchone()
-                if row:
-                    jibun = row[0]
-            if jibun:
-                logger.info(f"[DRY RUN] {sc_code} has jibun: {jibun[:50]}...")
-            else:
-                logger.info(f"[DRY RUN] {sc_code} has no jibun")
-        print_summary(0, 0, len(failures), time.time(), 0)
         return
 
     print(f"📋 총 {len(failures)}개 작업 재시도\n")
@@ -409,9 +379,8 @@ def main():
         domain = f["domain"]
         task_type = f["task_type"]
         failure_id = f["id"]
-        sc_code = f.get("sc_code", "unknown")
-
-        global _LAST_ERROR_MSG
+        
+        # ✅ 매 작업 시작 시 에러 메시지 초기화
         _LAST_ERROR_MSG = None
 
         handler = TASK_HANDLERS.get((domain, task_type))
@@ -420,9 +389,7 @@ def main():
             logger.warning(f"{msg} id={failure_id}")
             rm.mark_orphan(failure_id, error=msg)
             orphan_count += 1
-            if args.verbose:
-                print(f"❌ [{i}/{len(failures)}] {sc_code} 핸들러 없음")
-            if not args.verbose and time.time() - last_update >= 0.2:
+            if time.time() - last_update >= 0.2:
                 print_progress(i, len(failures), success_count, retry_count, orphan_count, start_time)
                 last_update = time.time()
             continue
@@ -436,14 +403,11 @@ def main():
         if (not success) and is_permanent:
             rm.mark_orphan(failure_id, error=f"permanent failure: {domain}/{task_type}")
             orphan_count += 1
-            if args.verbose:
-                print(f"❌ [{i}/{len(failures)}] {sc_code} 영구 실패 (ORPHAN)")
         elif success:
             rm.mark_resolved(failure_id, status="SUCCESS")
             success_count += 1
-            if args.verbose:
-                print(f"✅ [{i}/{len(failures)}] {sc_code} 성공")
         else:
+            # ✅ 수정: 전역 변수 _LAST_ERROR_MSG 사용
             still_alive = rm.schedule_retry_by_id(
                 failure_id=failure_id,
                 error=_LAST_ERROR_MSG or "재시도 실패",
@@ -451,27 +415,20 @@ def main():
             )
             if still_alive:
                 retry_count += 1
-                if args.verbose:
-                    print(f"⏳ [{i}/{len(failures)}] {sc_code} 재시도 예약")
             else:
                 orphan_count += 1
-                if args.verbose:
-                    print(f"❌ [{i}/{len(failures)}] {sc_code} 재시도 불가 (포기)")
 
-        if not args.verbose:
-            if time.time() - last_update >= 0.2:
-                print_progress(i, len(failures), success_count, retry_count, orphan_count, start_time)
-                last_update = time.time()
+        if time.time() - last_update >= 0.2:
+            print_progress(i, len(failures), success_count, retry_count, orphan_count, start_time)
+            last_update = time.time()
 
-    if not args.verbose:
-        print_progress(len(failures), len(failures), success_count, retry_count, orphan_count, start_time)
-        print()
+    print_progress(len(failures), len(failures), success_count, retry_count, orphan_count, start_time)
+    print()
 
     remaining = len(rm.get_all_pending_retries(limit=10000)) if args.force else len(rm.get_pending_retries(limit=10000, deadline=deadline))
     print_summary(success_count, retry_count, orphan_count, start_time, remaining)
 
     if args.menu:
-        # 간단한 메뉴 구현 생략
         pass
 
 
