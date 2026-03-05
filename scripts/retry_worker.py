@@ -32,7 +32,7 @@ _GEO_COLLECTOR: Optional[GeoCollector] = None
 _SCHOOL_DB = "data/master/school_info.db"
 _FAILURES_DB = "data/failures.db"
 
-# ✅ 에러 메시지 저장용 전역 변수
+# 에러 메시지 저장용 전역 변수
 _LAST_ERROR_MSG: Optional[str] = None
 
 GREEN, RED, YELLOW, RESET = "\033[92m", "\033[91m", "\033[93m", "\033[0m"
@@ -341,7 +341,7 @@ def print_summary(success, retry, orphan, start_time, remaining):
 
 
 # ========================================================
-# 메뉴 기능 (seed_failures.py 스타일)
+# 메뉴 기능
 # ========================================================
 
 def check_missing_count(school_db: str):
@@ -377,12 +377,16 @@ def check_db_size(school_db: str, failures_db: str):
             print(f"  {label}: 없음")
 
 
-def run_retry_worker():
-    """retry_worker를 다시 실행 (현재 스크립트 재호출)"""
-    print("\n🚀 retry_worker 다시 실행 중...")
+def run_retry_worker(force: bool = False, limit: int = 100):
+    """retry_worker를 다시 실행 (force 옵션 및 limit 지정 가능)"""
+    mode = "force" if force else "normal"
+    print(f"\n🚀 retry_worker 다시 실행 중... (mode: {mode}, limit: {limit})")
     script_dir = os.path.dirname(os.path.abspath(__file__))
+    cmd = [sys.executable, __file__, "--limit", str(limit)]
+    if force:
+        cmd.append("--force")
     subprocess.run(
-        [sys.executable, __file__, "--limit", "50", "--force"],
+        cmd,
         cwd=script_dir,
         env={**os.environ, "PYTHONPATH": os.path.dirname(script_dir)}
     )
@@ -422,8 +426,32 @@ def list_failed_schools(school_db: str, failures_db: str):
         print(f"❌ 조회 실패: {e}")
 
 
+def reset_orphan_and_cleanse(failures_db: str, school_db: str):
+    """ORPHAN 상태를 FAILED로 초기화하고 cleanse_failures 실행"""
+    print("\n🔄 ORPHAN → FAILED 초기화 중...")
+    try:
+        with sqlite3.connect(failures_db) as conn:
+            cur = conn.execute("UPDATE failures SET status='FAILED', retries=0, resolved_at=NULL WHERE status='ORPHAN';")
+            conn.commit()
+            print(f"✅ {cur.rowcount}개 레코드가 FAILED로 변경되었습니다.")
+    except Exception as e:
+        print(f"❌ 초기화 실패: {e}")
+        return
+
+    print("\n🚀 cleanse_failures.py 실행 중...")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    result = subprocess.run(
+        [sys.executable, os.path.join(script_dir, "cleanse_failures.py")],
+        cwd=os.path.dirname(script_dir),
+        env={**os.environ, "PYTHONPATH": os.path.dirname(script_dir)}
+    )
+    if result.returncode == 0:
+        print("✅ cleanse_failures 완료")
+    else:
+        print(f"⚠️ cleanse_failures 종료 코드: {result.returncode}")
+
+
 def show_menu(rm: RetryManager, school_db: str, failures_db: str):
-    """추가 작업 메뉴 표시"""
     while True:
         print("\n" + "=" * 70)
         print("📋 추가 작업 메뉴")
@@ -431,12 +459,13 @@ def show_menu(rm: RetryManager, school_db: str, failures_db: str):
         print("  1. 누락 학교 개수 확인")
         print("  2. failures 큐 상태 확인")
         print("  3. DB 파일 크기 확인")
-        print("  4. retry_worker 즉시 실행")
-        print("  5. 실패한 학교 목록 확인")
+        print("  4. 실패한 학교 목록 확인")
+        print("  5. ORPHAN 초기화 및 지번 정제 실행")
+        print("  6. retry_worker 즉시 실행 (force) - limit 입력 가능")
         print("  0. 종료")
         print("=" * 70)
 
-        choice = input("번호를 선택하세요 (0-5): ").strip()
+        choice = input("번호를 선택하세요 (0-6): ").strip()
 
         if choice == '1':
             check_missing_count(school_db)
@@ -445,9 +474,24 @@ def show_menu(rm: RetryManager, school_db: str, failures_db: str):
         elif choice == '3':
             check_db_size(school_db, failures_db)
         elif choice == '4':
-            run_retry_worker()
-        elif choice == '5':
             list_failed_schools(school_db, failures_db)
+        elif choice == '5':
+            reset_orphan_and_cleanse(failures_db, school_db)
+        elif choice == '6':
+            # limit 입력 받기
+            limit_input = input("처리할 작업 수를 입력하세요 [기본: 100] (엔터시 100): ").strip()
+            if limit_input == "":
+                limit = 100
+            else:
+                try:
+                    limit = int(limit_input)
+                    if limit <= 0:
+                        print("⚠️  1 이상의 숫자를 입력하세요. 기본값 100을 사용합니다.")
+                        limit = 100
+                except ValueError:
+                    print("⚠️  숫자를 입력하세요. 기본값 100을 사용합니다.")
+                    limit = 100
+            run_retry_worker(force=True, limit=limit)
         elif choice == '0':
             print("👋 종료합니다.")
             break
