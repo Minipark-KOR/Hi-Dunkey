@@ -50,6 +50,7 @@ class RetryManager:
 
     def _init_db(self) -> None:
         with self.get_connection() as conn:
+            # ✅ 수정: jibun_address 컬럼 추가 (총 18 개 컬럼)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS failures (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,7 +64,7 @@ class RetryManager:
                     day INTEGER,
                     semester INTEGER,
                     address TEXT,
-                    jibun_address TEXT,      -- ✅ 지번 주소 컬럼 추가
+                    jibun_address TEXT,      -- ✅ 추가
                     sub_key TEXT,
                     error_msg TEXT,
                     retries INTEGER DEFAULT 0,
@@ -169,25 +170,36 @@ class RetryManager:
             """, (new_retries, next_attempt, error, failure_id))
             return cur.rowcount == 1
 
+    # ✅ 수정: jibun_address 파라미터 추가 + INSERT 문 컬럼/값 개수 일치 (18 개)
     def record_failure(self, domain: str, task_type: str, deadline: Optional[datetime] = None,
                        shard=None, sc_code=None, region=None, year=None, month=None, day=None,
                        semester=None, address=None, jibun_address=None, sub_key=None, error: str = "") -> bool:
         now = self._now()
+        
+        # 1. 데드라인이 지났을 경우 (EXPIRED)
         if deadline is not None and now >= deadline:
             with self.get_connection() as conn:
                 conn.execute("""
-                    INSERT INTO failures (domain, task_type, shard, sc_code, region, year, month, day, semester,
-                        address, jibun_address, sub_key, retries, next_attempt, error_msg, status, resolved_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'EXPIRED', ?)
-                """, (domain, task_type, shard, sc_code, region, year, month, day, semester,
-                      address, jibun_address, sub_key, 1, None, error, now))
+                    INSERT INTO failures (
+                        domain, task_type, shard, sc_code, region, year, month, day, semester,
+                        address, jibun_address, sub_key, retries, next_attempt, error_msg, status, resolved_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'EXPIRED', ?)
+                """, (
+                    domain, task_type, shard, sc_code, region, year, month, day, semester,
+                    address, jibun_address, sub_key, 1, None, error, now
+                ))
             return True
+            
+        # 2. 재시도 예약 (FAILED)
         next_attempt = self._compute_next_attempt(now=now, retries=1, deadline=deadline)
         if next_attempt is None:
             logger.warning("record_failure next_attempt None")
             return False
+            
         with self.get_connection() as conn:
             conn.row_factory = sqlite3.Row
+            # 기존 실패 레코드 확인 (jibun_address 포함)
             row = conn.execute("""
                 SELECT id, retries FROM failures
                 WHERE domain=? AND task_type=?
@@ -200,7 +212,9 @@ class RetryManager:
                 AND status='FAILED' AND resolved_at IS NULL
                 ORDER BY id DESC LIMIT 1
             """, (domain, task_type, shard, sc_code, region, year, month, day, semester, address, jibun_address, sub_key)).fetchone()
+            
             if row:
+                # 기존 레코드 업데이트
                 failure_id = row["id"]
                 current_retries = int(row["retries"] or 0)
                 new_retries = current_retries + 1
@@ -213,11 +227,17 @@ class RetryManager:
                     WHERE id=? AND status='FAILED' AND resolved_at IS NULL
                 """, (new_retries, next_attempt2, error, failure_id))
                 return True
-            conn.execute("""
-                INSERT INTO failures (domain, task_type, shard, sc_code, region, year, month, day, semester,
-                    address, jibun_address, sub_key, retries, next_attempt, error_msg, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'FAILED')
-            """, (domain, task_type, shard, sc_code, region, year, month, day, semester,
-                  address, jibun_address, sub_key, 1, next_attempt, error))
-            return True
-            
+            else:
+                # 새 레코드 삽입 (jibun_address 포함)
+                conn.execute("""
+                    INSERT INTO failures (
+                        domain, task_type, shard, sc_code, region, year, month, day, semester,
+                        address, jibun_address, sub_key, retries, next_attempt, error_msg, status
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'FAILED')
+                """, (
+                    domain, task_type, shard, sc_code, region, year, month, day, semester,
+                    address, jibun_address, sub_key, 1, next_attempt, error
+                ))
+                return True
+                
