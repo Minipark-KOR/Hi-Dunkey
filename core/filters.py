@@ -58,6 +58,11 @@ class AddressFilter:
         "퇴계원면": "퇴계원읍",
         "이동면": "이동읍",
         "비봉면": "비봉읍",
+        "홍북면": "홍북읍",
+        "양지면": "양지읍",
+        "정관면": "정관읍",
+        "능서면": "세종대왕면",
+        "안중읍": "현덕면",  # 특수 케이스
     }
 
     REMOVE_DISTRICT = ["오포읍", "남면"]
@@ -150,4 +155,3 @@ class AddressFilter:
                 number_part = m.group(2).strip()
                 return re.sub(r'\s+', ' ', f"{jibun_part} {number_part}").strip()
         return None
-        
