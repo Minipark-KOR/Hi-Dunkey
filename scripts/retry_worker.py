@@ -117,6 +117,9 @@ def geocode_kakao(address: str) -> Tuple[Optional[Tuple[float, float]], Optional
                 y = float(doc['y'])
                 official = doc.get('road_address', {}).get('address_name') or doc.get('address', {}).get('address_name')
                 return (x, y), 200, official
+            else:
+                # documents가 없으면 404로 간주
+                return None, 404, None   # ✅ 404 반환
         return None, resp.status_code, None
     except Exception as e:
         logger.error(f"Kakao geocode error: {e}")
@@ -450,4 +453,3 @@ if __name__ == "__main__":
         if _GEO_COLLECTOR is not None:
             _GEO_COLLECTOR.flush()
             _GEO_COLLECTOR.meta_vocab.flush()
-            
