@@ -339,6 +339,7 @@ def main():
     parser.add_argument("--limit", type=int, default=50, help="한 번에 처리할 작업 수")
     parser.add_argument("--force", action="store_true", help="next_attempt 무시")
     parser.add_argument("--menu", action="store_true", help="실행 후 메뉴 표시")
+    parser.add_argument("--dry-run", action="store_true", help="실제 API 호출 없이 로그만 확인")
     args = parser.parse_args()
 
     now = kst_naive(now_kst())
@@ -439,4 +440,3 @@ if __name__ == "__main__":
         if _GEO_COLLECTOR is not None:
             _GEO_COLLECTOR.flush()
             _GEO_COLLECTOR.meta_vocab.flush()
-            
