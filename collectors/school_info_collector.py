@@ -206,18 +206,17 @@ class SchoolInfoCollector(BaseCollector):
         # ✅ limit 상태 표시를 위한 변수
         limit_active = limit is not None
 
-        def _print_progress(current, total, success, failed, skipped, start_t):
-            if self.quiet_mode:
-                return
-            elapsed = time.time() - start_t
-            avg = current / elapsed if elapsed > 0 else 0
-            bar_len = 40
-            filled = int(bar_len * current / total) if total > 0 else 0
-            bar = '█' * filled + '░' * (bar_len - filled)
-            status = f"{GREEN}✅{RESET}{success:3d} {RED}❌{RESET}{failed:3d} {YELLOW}⏭️{RESET}{skipped:3d}"
-            # ✅ 수정: (limit or 0) → limit (limit_active 가 True 면 None 아님)
-            suffix = f" [LIMIT:{limit}]" if limit_active and current >= limit else ""
-            print(f"\r[{bar}] {current}/{total}{suffix} {status} {avg:4.1f} 개/초", end="", flush=True)
+    def _print_progress(current, total, success, failed, skipped, start_t):
+        if self.quiet_mode:
+            return
+        elapsed = time.time() - start_t
+        avg = current / elapsed if elapsed > 0 else 0
+        bar_len = 40
+        filled = int(bar_len * current / total) if total > 0 else 0
+        bar = '█' * filled + '░' * (bar_len - filled)
+        status = f"{GREEN}✅{RESET}{success:3d} {RED}❌{RESET}{failed:3d} {YELLOW}⏭️{RESET}{skipped:3d}"
+        suffix = f" [LIMIT:{limit}]" if limit_active and current >= limit else ""
+        print(f"\r[{bar}] {current}/{total}{suffix} {status} {avg:6.1f}개/초", end="", flush=True)
 
         total_items = len(row_meta)
         for i, (sc_code, meta) in enumerate(row_meta.items(), 1):
@@ -401,4 +400,3 @@ if __name__ == "__main__":
         print("✅ 수집 완료")
     else:
         collector.logger.info("수집 완료")
-        
