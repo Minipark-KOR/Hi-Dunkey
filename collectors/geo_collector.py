@@ -36,10 +36,22 @@ def _get_vworld_key() -> str:
     except Exception:
         return ""
 
+def _get_kakao_key() -> str:
+    """Kakao API 키 로드 (환경변수 또는 constants.codes)"""
+    key = os.environ.get("KAKAO_API_KEY", "").strip()
+    if key:
+        return key
+    try:
+        from constants.codes import KAKAO_API_KEY as CONST_KEY
+        return (CONST_KEY or "").strip()
+    except Exception:
+        return ""
+
 
 class GeoCollector:
     # ✅ 수정: URL 끝 공백 제거
     GEOCODE_URL = "https://api.vworld.kr/req/address"
+    KAKAO_GEOCODE_URL = "https://dapi.kakao.com/v2/local/search/address.json"
     DAILY_API_LIMIT = 50000
 
     def __init__(
@@ -55,6 +67,7 @@ class GeoCollector:
         self.debug_mode = debug_mode
 
         self.vworld_key = _get_vworld_key()
+        self.kakao_key = _get_kakao_key()
         self.api_limit = api_limit if api_limit is not None else self.DAILY_API_LIMIT
 
         self.meta_vocab = MetaVocabManager(global_db_path, debug_mode)
@@ -73,6 +86,8 @@ class GeoCollector:
 
         if self.debug_mode:
             print(f"[GeoCollector] init: api_calls_today={self.api_calls_today}/{self.api_limit}")
+            print(f"  VWorld 키: {'✅' if self.vworld_key else '❌'}")
+            print(f"  Kakao 키:  {'✅' if self.kakao_key else '❌'}")
 
     def __del__(self):
         try:
@@ -82,7 +97,6 @@ class GeoCollector:
         except Exception:
             pass
 
-    # ✅ 추가: close 메서드
     def close(self):
         """종료 처리 (리소스 정리)"""
         try:
@@ -140,6 +154,8 @@ class GeoCollector:
                     ("number_start", "INTEGER"),
                     ("number_end", "INTEGER"),
                     ("number_bit", "INTEGER"),
+                    ("kakao_address", "TEXT"),
+                    ("jibun_address", "TEXT"),
                 ]
                 for col, typ in new_columns:
                     if col not in existing:
@@ -228,6 +244,30 @@ class GeoCollector:
             return False
         return True
 
+    def _geocode_kakao(self, address: str) -> Optional[Tuple[float, float]]:
+        """Kakao API 를 통한 지오코딩 (VWorld 실패 시 폴백)"""
+        if not self.kakao_key:
+            logger.warning("KAKAO_API_KEY not set")
+            return None
+        
+        headers = {"Authorization": f"KakaoAK {self.kakao_key}"}
+        params = {"query": address, "analyze_type": "exact"}
+        
+        try:
+            resp = requests.get(self.KAKAO_GEOCODE_URL, headers=headers, params=params, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get('documents'):
+                    doc = data['documents'][0]
+                    x = float(doc['x'])
+                    y = float(doc['y'])
+                    return (x, y)
+            logger.warning(f"Kakao API HTTP {resp.status_code}: {address[:50]}")
+            return None
+        except Exception as e:
+            logger.error(f"Kakao geocode error: {e}")
+            return None
+
     def _geocode(self, address: str) -> Optional[Tuple[float, float]]:
         if not address:
             return None
@@ -250,6 +290,7 @@ class GeoCollector:
         else:
             type_order = ["ROAD", "PARCEL", "JIBUN"]
 
+        # VWorld 시도
         for addr_type in type_order:
             if not self._check_api_limit():
                 break
@@ -307,6 +348,17 @@ class GeoCollector:
                     print(f"[GeoCollector] geocode error({addr_type}): {e}")
                 logger.error(f"VWorld API unexpected error for {addr_type}: {e}")
                 time.sleep(0.2)
+        
+        # VWorld 모두 실패 시 Kakao 폴백
+        if self.kakao_key:
+            logger.info(f"VWorld 실패, Kakao 폴백 시도: {address[:50]}")
+            coords = self._geocode_kakao(address)
+            if coords:
+                lon, lat = coords
+                self.cache[addr_hash] = (lon, lat)
+                self._save_to_cache(address, lon, lat, "KAKAO")
+                return coords
+        
         return None
 
     def _geocode_with_type(self, address: str, addr_type: str = "ROAD") -> Optional[Tuple[float, float]]:
@@ -420,7 +472,7 @@ class GeoCollector:
         except Exception as e:
             print(f"[GeoCollector] cache flush failed: {e}")
 
-    def _update_school_coords(self, sc_code: str, lon: float, lat: float, cleaned: str, addr_components: dict):
+    def _update_school_coords(self, sc_code: str, lon: float, lat: float, cleaned: str, addr_components: dict, kakao_address: Optional[str] = None):
         with sqlite3.connect(self.school_db_path, timeout=30) as conn:
             conn.execute("PRAGMA journal_mode=WAL;")
             conn.execute("PRAGMA busy_timeout=30000;")
@@ -433,7 +485,8 @@ class GeoCollector:
                         geocode_attempts = 0,
                         last_error = NULL,
                         city_id = ?, district_id = ?, street_id = ?,
-                        number_type = ?, number_value = ?, number_start = ?, number_end = ?, number_bit = ?
+                        number_type = ?, number_value = ?, number_start = ?, number_end = ?, number_bit = ?,
+                        kakao_address = COALESCE(?, kakao_address)
                     WHERE sc_code = ?
                     """,
                     (
@@ -446,6 +499,7 @@ class GeoCollector:
                         addr_components.get("number_start"),
                         addr_components.get("number_end"),
                         addr_components.get("number_bit"),
+                        kakao_address,
                         sc_code,
                     ),
                 )

@@ -9,7 +9,6 @@ import json
 import time
 from datetime import datetime, time as dt_time
 from typing import Dict, Any, Callable, Tuple, Optional
-
 import requests
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -34,10 +33,7 @@ _FAILURES_DB = "data/failures.db"
 # ✅ 추가: 에러 메시지 저장용 전역 변수
 _LAST_ERROR_MSG: Optional[str] = None
 
-GREEN = "\033[92m"
-YELLOW = "\033[93m"
-RED = "\033[91m"
-RESET = "\033[0m"
+GREEN, RED, YELLOW, RESET = "\033[92m", "\033[91m", "\033[93m", "\033[0m"
 
 
 def kst_naive(dt: datetime) -> datetime:
@@ -88,14 +84,27 @@ def _geocode_vworld(gc: GeoCollector, address: str, addr_type: str = "ROAD") -> 
         return None, 500
 
 
+def _get_kakao_key() -> str:
+    """Kakao API 키 로드"""
+    key = os.getenv("KAKAO_API_KEY", "").strip()
+    if key:
+        return key
+    try:
+        from constants.codes import KAKAO_API_KEY
+        return (KAKAO_API_KEY or "").strip()
+    except:
+        return ""
+
+
 def geocode_kakao(address: str) -> Tuple[Optional[Tuple[float, float]], Optional[int], Optional[str]]:
-    KAKAO_API_KEY = os.getenv("KAKAO_API_KEY")
-    if not KAKAO_API_KEY:
+    """Kakao API 지오코딩 (폴백용)"""
+    kakao_key = _get_kakao_key()
+    if not kakao_key:
         return None, None, None
     
     # ✅ 수정: URL trailing space 제거
     url = "https://dapi.kakao.com/v2/local/search/address.json"
-    headers = {"Authorization": f"KakaoAK {KAKAO_API_KEY}"}
+    headers = {"Authorization": f"KakaoAK {kakao_key}"}
     params = {"query": address, "analyze_type": "exact"}
     
     try:
@@ -195,8 +204,8 @@ def get_consecutive_404(sc_code: str) -> int:
 
 
 def handle_school_geocode(failure: dict) -> HandlerResult:
-    global _LAST_ERROR_MSG  # ✅ 전역 변수 사용 선언
-    _LAST_ERROR_MSG = None  # ✅ 매 호출 시 초기화
+    global _LAST_ERROR_MSG
+    _LAST_ERROR_MSG = None
     
     sc_code = failure.get("sc_code")
     original_address = failure.get("address")
@@ -264,8 +273,11 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
             final_status = status
             error_messages.append(f"SIMPLIFIED_PARCEL:{status}")
 
-    # 5 차: Kakao
+    # 5 차: Kakao API (최종 폴백)
     coords, status, official_address = geocode_kakao(cleaned)
+    if final_status == 0:
+        final_status = 404  # 기본값 설정
+
     if coords:
         lon, lat = coords
         logger.info(f"Kakao API success for {cleaned[:30]}")
@@ -282,9 +294,12 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
         update_school_coords(sc_code, lon, lat, cleaned, addr_components, kakao_address=official_address)
         return (True, False)
 
+    # Kakao 실패 시 에러 메시지 추가
     if status:
         final_status = status
         error_messages.append(f"KAKAO:{status}")
+    else:
+        error_messages.append("KAKAO:NOT_CALLED")
 
     consec_404 = get_consecutive_404(sc_code)
     err_info = classify_error(final_status, consec_404)
@@ -317,7 +332,6 @@ def print_progress(current, total, success, retry, orphan, start_time):
 
 def print_summary(success, retry, orphan, start_time, remaining):
     elapsed = time.time() - start_time
-    # ✅ 수정: literal newline → \n
     print("\n" + "=" * 70)
     print("📊 재시도 워커 실행 결과")
     print("=" * 70)
@@ -333,13 +347,12 @@ def print_summary(success, retry, orphan, start_time, remaining):
 
 
 def main():
-    global _LAST_ERROR_MSG  # ✅ 전역 변수 사용 선언
+    global _LAST_ERROR_MSG
     
     parser = argparse.ArgumentParser(description="재시도 워커")
     parser.add_argument("--limit", type=int, default=50, help="한 번에 처리할 작업 수")
     parser.add_argument("--force", action="store_true", help="next_attempt 무시")
     parser.add_argument("--menu", action="store_true", help="실행 후 메뉴 표시")
-    parser.add_argument("--dry-run", action="store_true", help="실제 API 호출 없이 로그만 확인")
     args = parser.parse_args()
 
     now = kst_naive(now_kst())
@@ -353,7 +366,6 @@ def main():
         deadline_buffer_seconds=70
     )
 
-    # ✅ 수정: literal newline → \n
     print(f"\n🚀 retry_worker 시작 (한국시간: {now})")
     print(f"   ├─ force={args.force}, limit={args.limit}")
     print(f"   ├─ 데드라인: {deadline}")
@@ -381,7 +393,6 @@ def main():
         task_type = f["task_type"]
         failure_id = f["id"]
         
-        # ✅ 매 작업 시작 시 에러 메시지 초기화
         _LAST_ERROR_MSG = None
 
         handler = TASK_HANDLERS.get((domain, task_type))
@@ -408,7 +419,6 @@ def main():
             rm.mark_resolved(failure_id, status="SUCCESS")
             success_count += 1
         else:
-            # ✅ 수정: 전역 변수 _LAST_ERROR_MSG 사용
             still_alive = rm.schedule_retry_by_id(
                 failure_id=failure_id,
                 error=_LAST_ERROR_MSG or "재시도 실패",
@@ -440,3 +450,4 @@ if __name__ == "__main__":
         if _GEO_COLLECTOR is not None:
             _GEO_COLLECTOR.flush()
             _GEO_COLLECTOR.meta_vocab.flush()
+            

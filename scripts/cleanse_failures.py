@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # scripts/cleanse_failures.py
+"""
+실패 큐의 도로명 주소에서 지번 주소를 추출하여 보정
+"""
 import sqlite3
 import os
 import sys
-import re
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.retry import RetryManager
@@ -12,33 +14,25 @@ from core.logger import build_logger
 
 logger = build_logger("cleanse_failures", "logs/cleanse_failures.log")
 
-
-def _get_change_type(original: str, cleaned: str) -> str:
-    """어떤 유형의 정제가 이루어졌는지 분류"""
-    changes = []
-    if len(original) > len(cleaned):
-        changes.append("단축")
-    if re.search(r'\([^)]*\)', original) and not re.search(r'\([^)]*\)', cleaned):
-        changes.append("괄호제거")
-    if '특별시' in original or '광역시' in original:
-        if '서울 ' in cleaned or '부산 ' in cleaned:
-            changes.append("지역명단축")
-    if '번지' in original and '번지' not in cleaned:
-        changes.append("번지제거")
-    return ', '.join(changes) if changes else '일반정제'
+DB_PATH = "data/failures.db"
+SCHOOL_DB = "data/master/school_info.db"
 
 
-def cleanse_and_requeue(
-    failures_db: str = "data/failures.db",
-    school_db: str = "data/master/school_info.db",
-    show_changes: bool = True
-):
-    if not os.path.exists(failures_db):
-        logger.error(f"DB 파일을 찾을 수 없습니다: {failures_db}")
-        print(f"❌ DB 파일을 찾을 수 없습니다: {failures_db}")
+def cleanse_failures():
+    if not os.path.exists(DB_PATH):
+        logger.error(f"DB 파일을 찾을 수 없습니다: {DB_PATH}")
+        print(f"❌ DB 파일을 찾을 수 없습니다: {DB_PATH}")
         return
 
-    rm = RetryManager(db_path=failures_db)
+    rm = RetryManager(db_path=DB_PATH)
+
+    # failures 테이블에 jibun_address 컬럼이 없으면 추가
+    with rm.get_connection() as conn:
+        try:
+            conn.execute("ALTER TABLE failures ADD COLUMN jibun_address TEXT")
+            print("✅ failures.jibun_address 컬럼 추가됨")
+        except sqlite3.OperationalError:
+            print("⏭️  jibun_address 컬럼 이미 존재")
 
     rows = []
     with rm.get_connection() as conn:
@@ -53,11 +47,10 @@ def cleanse_and_requeue(
 
     updated = 0
     skipped_same = 0
-    changes = []
 
     # 학교 DB 연결 (지번 저장용)
-    with sqlite3.connect(school_db) as conn_s:
-        conn_s.execute("PRAGMA journal_mode=WAL")  # 성능 최적화
+    with sqlite3.connect(SCHOOL_DB) as conn_s:
+        conn_s.execute("PRAGMA journal_mode=WAL")
 
         for row in rows:
             fid = row["id"]
@@ -87,41 +80,20 @@ def cleanse_and_requeue(
                     address=cleaned,
                     error="주소 보정 후 자동 재등록",
                     deadline=None,
-                    jibun_address=jibun,  # ✅ 지번 함께 저장
+                    jibun_address=jibun,
                 )
 
                 if success:
                     updated += 1
-                    changes.append({
-                        'sc_code': sc_code,
-                        'original': original,
-                        'cleaned': cleaned,
-                        'change_type': _get_change_type(original, cleaned)
-                    })
                     logger.info(f"✅ [재등록 성공] {sc_code}: {cleaned[:60]}")
-                    if show_changes:
-                        print(f"✅ {sc_code}")
+                    print(f"✅ {sc_code}")
                 else:
                     logger.error(f"❌ [재등록 실패] {sc_code}")
                     print(f"❌ {sc_code}")
             else:
                 skipped_same += 1
-                logger.debug(f"⏩ [변경 없음] {sc_code}")
 
-        conn_s.commit()  # 학교 DB 변경사항 저장
-
-    # 변경 사항 상세 출력
-    if show_changes and changes:
-        print("\n" + "=" * 80)
-        print("📝 [주소 보정 상세 내역]")
-        print("=" * 80)
-
-        for i, ch in enumerate(changes, 1):
-            print(f"\n[{i}/{len(changes)}] {ch['sc_code']} ({ch['change_type']})")
-            print(f"   원본  : {ch['original']}")
-            print(f"   → 보정 : {ch['cleaned']}")
-
-        print("\n" + "=" * 80)
+        conn_s.commit()
 
     # 최종 요약
     total = len(rows)
@@ -139,15 +111,11 @@ def cleanse_and_requeue(
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="실패 주소 정제 및 재등록")
-    parser.add_argument("--failures-db", default="data/failures.db")
-    parser.add_argument("--school-db", default="data/master/school_info.db")
+    parser.add_argument("--failures-db", default=DB_PATH)
+    parser.add_argument("--school-db", default=SCHOOL_DB)
     parser.add_argument("--quiet", action="store_true", help="상세 출력 없이 요약만 표시")
     args = parser.parse_args()
 
     print("🚀 cleanse_failures 시작...")
-    cleanse_and_requeue(
-        failures_db=args.failures_db,
-        school_db=args.school_db,
-        show_changes=not args.quiet
-    )
+    cleanse_failures()
     

@@ -6,6 +6,7 @@
 - 전체 수집 완료 후 누적 통계 표시 (성공률 포함)
 - GitHub Actions 환경에서는 자동으로 quiet 모드
 - 진행률에 [LIMIT:xx] 표시 추가
+- 지번 주소 (jibun_address) 추출 및 저장
 """
 import os
 import sys
@@ -17,7 +18,6 @@ from typing import List, Dict, Tuple, Optional
 from datetime import timedelta
 from pathlib import Path
 
-# ✅ 직접 실행을 위한 경로 추가
 sys.path.append(str(Path(__file__).parent.parent))
 
 from core.base_collector import BaseCollector
@@ -28,14 +28,13 @@ from core.filters import AddressFilter
 from core.kst_time import now_kst
 from constants.codes import NEIS_ENDPOINTS, ALL_REGIONS, REGION_NAMES
 from constants.paths import MASTER_DB_PATH as MASTER_DB, MASTER_DIR
-
 from collectors.geo_collector import GeoCollector
 
 BASE_DIR = str(MASTER_DIR)
 GLOBAL_VOCAB_PATH = str(MASTER_DIR.parent / "active" / "global_vocab.db")
 NEIS_URL = NEIS_ENDPOINTS['school']
 
-# ✅ ANSI 색상 코드 (진행률 표시용)
+# ✅ ANSI 색상 코드
 GREEN, RED, YELLOW, RESET = "\033[92m", "\033[91m", "\033[93m", "\033[0m"
 
 
@@ -55,7 +54,6 @@ class SchoolInfoCollector(BaseCollector):
     ):
         super().__init__("school", str(MASTER_DIR.parent), shard, school_range)
         self.db_path = str(MASTER_DB)
-
         self.api_context = 'school'
         self.incremental = incremental
         self.full = full
@@ -67,7 +65,6 @@ class SchoolInfoCollector(BaseCollector):
         self.meta_vocab = self.register_resource(
             MetaVocabManager(GLOBAL_VOCAB_PATH, debug_mode)
         )
-
         self.geo_collector = self.register_resource(
             GeoCollector(
                 global_db_path=GLOBAL_VOCAB_PATH,
@@ -115,17 +112,14 @@ class SchoolInfoCollector(BaseCollector):
                     number_value INTEGER,
                     number_start INTEGER,
                     number_end INTEGER,
-                    number_bit INTEGER
+                    number_bit INTEGER,
+                    kakao_address TEXT,
+                    jibun_address TEXT
                 )
             """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_address_hash ON schools(address_hash)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON schools(status)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_city ON schools(city_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_district ON schools(district_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_street ON schools(street_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_schools_missing ON schools(latitude) WHERE latitude IS NULL")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_schools_region ON schools(atpt_code, last_seen)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_schools_coords ON schools(latitude, longitude)")
+            for idx in ["idx_address_hash","idx_status","idx_city","idx_district","idx_street",
+                        "idx_schools_missing","idx_schools_region","idx_schools_coords"]:
+                conn.execute(f"CREATE INDEX IF NOT EXISTS {idx} ON schools({idx.split('_',2)[-1] if idx!='idx_schools_missing' else 'latitude'})")
             self._init_db_common(conn)
 
     def _get_target_key(self) -> str:
@@ -178,9 +172,10 @@ class SchoolInfoCollector(BaseCollector):
                     }
             except sqlite3.OperationalError as e:
                 self.logger.error(f"DB 읽기 실패: {e}")
-                return 0, 0, 0
+                return 0, 0, 0  # ✅ 반드시 튜플 반환
             except Exception as e:
                 self.logger.error(f"기존 데이터 조회 실패: {e}")
+                return 0, 0, 0  # ✅ 반드시 튜플 반환
 
         row_meta = {}
         for row in new_rows:
@@ -206,27 +201,34 @@ class SchoolInfoCollector(BaseCollector):
         # ✅ limit 상태 표시를 위한 변수
         limit_active = limit is not None
 
-    def _print_progress(current, total, success, failed, skipped, start_t):
-        if self.quiet_mode:
-            return
-        elapsed = time.time() - start_t
-        avg = current / elapsed if elapsed > 0 else 0
-        bar_len = 40
-        filled = int(bar_len * current / total) if total > 0 else 0
-        bar = '█' * filled + '░' * (bar_len - filled)
-        status = f"{GREEN}✅{RESET}{success:3d} {RED}❌{RESET}{failed:3d} {YELLOW}⏭️{RESET}{skipped:3d}"
-        suffix = f" [LIMIT:{limit}]" if limit_active and current >= limit else ""
-        print(f"\r[{bar}] {current}/{total}{suffix} {status} {avg:6.1f}개/초", end="", flush=True)
+        # ✅ 수정: 중첩 함수로 올바르게 정의 (quiet 인자 사용)
+        def _print_progress(current, total, success, failed, skipped, start_t, quiet):
+            if quiet:
+                return
+            elapsed = time.time() - start_t
+            avg = current / elapsed if elapsed > 0 else 0
+            bar_len = 40
+            filled = int(bar_len * current / total) if total > 0 else 0
+            bar = '█' * filled + '░' * (bar_len - filled)
+            status = f"{GREEN}✅{RESET}{success:3d} {RED}❌{RESET}{failed:3d} {YELLOW}⏭️{RESET}{skipped:3d}"
+            # ✅ 개선: limit 이 걸려있으면 표시
+            suffix = f" [LIMIT:{limit}]" if limit_active and current >= limit else ""
+            print(f"\r[{bar}] {current}/{total}{suffix} {status} {avg:6.1f} 개/초", end="", flush=True)
 
         total_items = len(row_meta)
         for i, (sc_code, meta) in enumerate(row_meta.items(), 1):
             if limit and processed_count >= limit:
                 if not self.quiet_mode:
                     print(f"\n⚠️  제한 ({limit} 개) 도달, 수집 중단")
-                break
+                return len(new_coords), failed_count, skipped_count  # ✅ 명시적 return
 
             if meta["old"].get("hash") != meta["new_hash"] and meta["full_address"]:
                 cleaned = AddressFilter.clean(meta["full_address"], level=self.LEVEL_GEOCODING)
+                
+                # ✅ 지번 주소 추출 (AddressFilter 통합)
+                jibun = AddressFilter.extract_jibun(meta["full_address"])
+                meta["jibun_address"] = jibun
+                
                 try:
                     coords = self.geo_collector._geocode(cleaned)
                 except Exception as e:
@@ -240,7 +242,7 @@ class SchoolInfoCollector(BaseCollector):
                 else:
                     failed_count += 1
                     if self.shard != "none":
-                        # ✅ 수정: 타임존 문제 해결 (naive 로 변환 후 계산)
+                        # ✅ 타임존 문제 해결 (naive 로 변환 후 계산)
                         now_naive = now_kst().replace(tzinfo=None)
                         deadline = now_naive.replace(hour=15, minute=0, second=0, microsecond=0)
                         if now_naive > deadline:
@@ -249,6 +251,7 @@ class SchoolInfoCollector(BaseCollector):
                             domain='school', task_type='geocode',
                             shard=self.shard, sc_code=sc_code,
                             region=region_code, address=meta["full_address"],
+                            jibun_address=jibun,  # ✅ 실패 큐에 지번 저장
                             error="Geocoding failed", deadline=deadline,
                         )
             else:
@@ -256,12 +259,14 @@ class SchoolInfoCollector(BaseCollector):
 
             processed_count += 1
             if not self.quiet_mode and (time.time() - last_update >= 0.2 or i == total_items):
-                _print_progress(i, total_items, len(new_coords), failed_count, skipped_count, start_time)
+                # ✅ 수정: quiet_mode 를 인자로 전달
+                _print_progress(i, total_items, len(new_coords), failed_count, skipped_count, start_time, self.quiet_mode)
                 last_update = time.time()
 
         if not self.quiet_mode:
             print()
 
+        # ✅ 저장할 데이터 구성 및 enqueue (jibun_address 포함)
         for sc_code, meta in row_meta.items():
             row = meta["row"]
             atpt_code = row.get("ATPT_OFCDC_SC_CODE") or ""
@@ -310,26 +315,29 @@ class SchoolInfoCollector(BaseCollector):
                 "number_start": addr_ids.get("number_start"),
                 "number_end": addr_ids.get("number_end"),
                 "number_bit": addr_ids.get("number_bit", 0),
+                "jibun_address": meta.get("jibun_address"),  # ✅ 지번 주소 포함
+                "kakao_address": None,  # ✅ retry_worker 가 업데이트
             }])
 
         region_name = REGION_NAMES.get(region_code, region_code)
         self.logger.info(f"[{region_name}] 좌표 갱신: {len(new_coords)}개 / 완료")
 
-        return len(new_coords), failed_count, skipped_count
+        return len(new_coords), failed_count, skipped_count  # ✅ 함수 끝에서도 항상 튜플 반환
 
     def _process_item(self, raw_item: dict) -> List[dict]:
         return []
 
     def _do_save_batch(self, conn: sqlite3.Connection, batch: List[dict]):
         try:
+            # ✅ jibun_address, kakao_address 컬럼 포함
             conn.executemany("""
                 INSERT OR REPLACE INTO schools
                 (sc_code, school_id, sc_name, eng_name, sc_kind, atpt_code,
                  address, cleaned_address, address_hash, tel, homepage, status,
                  last_seen, load_dt, latitude, longitude, geocode_attempts, last_error,
                  city_id, district_id, street_id, number_type, number_value,
-                 number_start, number_end, number_bit)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 number_start, number_end, number_bit, jibun_address, kakao_address)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, [
                 (it['sc_code'], it['school_id'], it['sc_name'], it['eng_name'],
                  it['sc_kind'], it['atpt_code'], it['address'], it['cleaned_address'],
@@ -338,7 +346,7 @@ class SchoolInfoCollector(BaseCollector):
                  it['geocode_attempts'], it['last_error'], it['city_id'],
                  it['district_id'], it['street_id'], it['number_type'],
                  it['number_value'], it['number_start'], it['number_end'],
-                 it['number_bit'])
+                 it['number_bit'], it.get('jibun_address'), it.get('kakao_address'))
                 for it in batch
             ])
             if self.debug_mode and not self.quiet_mode:
@@ -400,3 +408,4 @@ if __name__ == "__main__":
         print("✅ 수집 완료")
     else:
         collector.logger.info("수집 완료")
+        
