@@ -113,7 +113,7 @@ def geocode_kakao(address: str) -> Tuple[Optional[Tuple[float, float]], Optional
                 official = doc.get('road_address', {}).get('address_name') or doc.get('address', {}).get('address_name')
                 return (x, y), 200, official
             else:
-                # documents가 없으면 404로 처리 (좌표 없음)
+                # documents가 없으면 404로 처리
                 return None, 404, None
         return None, resp.status_code, None
     except Exception as e:
@@ -339,6 +339,19 @@ def print_summary(success, retry, orphan, start_time, remaining):
     print(f"📌 남은 작업: {remaining:,}개 (status='FAILED')")
     print("=" * 70)
 
+    # ✅ 이번 실행 결과를 파일에 저장
+    try:
+        os.makedirs("logs", exist_ok=True)
+        with open("logs/last_result.txt", "w", encoding="utf-8") as f:
+            f.write(f"성공: {success}\n")
+            f.write(f"재시도: {retry}\n")
+            f.write(f"포기: {orphan}\n")
+            f.write(f"처리 시간: {elapsed:.2f}초\n")
+            f.write(f"평균 속도: {success/elapsed:.1f}개/초\n")
+            f.write(f"남은 작업: {remaining}\n")
+    except Exception as e:
+        logger.error(f"결과 저장 실패: {e}")
+
 
 # ========================================================
 # 메뉴 기능
@@ -362,7 +375,7 @@ def check_failures_queue(failures_db: str):
     with sqlite3.connect(failures_db) as conn:
         cur = conn.execute("SELECT status, COUNT(*) FROM failures GROUP BY status")
         rows = cur.fetchall()
-        print("\n📊 failures 큐 상태")
+        print("\n📊 failures 큐 상태 (전체 누적)")
         for s, c in rows:
             print(f"  - {s}: {c}개")
 
@@ -377,12 +390,83 @@ def check_db_size(school_db: str, failures_db: str):
             print(f"  {label}: 없음")
 
 
+def list_failed_schools(school_db: str, failures_db: str):
+    """실패한 학교 목록 출력 (학교명, 도로명 주소, 지번 주소) - 3줄 표시"""
+    print("\n📋 실패한 학교 목록 (status='FAILED')")
+    print("=" * 90)
+    try:
+        # 1. failures DB에서 FAILED 상태인 sc_code 목록 가져오기
+        with sqlite3.connect(failures_db) as conn_f:
+            conn_f.row_factory = sqlite3.Row
+            cur_f = conn_f.execute("SELECT sc_code, error_msg, retries FROM failures WHERE status='FAILED'")
+            failed_rows = {row['sc_code']: {'error_msg': row['error_msg'], 'retries': row['retries']} for row in cur_f.fetchall()}
+
+        if not failed_rows:
+            print("ℹ️  현재 FAILED 상태인 학교가 없습니다.")
+            return
+
+        # 2. schools DB에서 해당 학교 정보 조회
+        with sqlite3.connect(school_db) as conn_s:
+            conn_s.row_factory = sqlite3.Row
+            placeholders = ','.join(['?'] * len(failed_rows))
+            cur_s = conn_s.execute(f"""
+                SELECT sc_code, sc_name, address, jibun_address
+                FROM schools
+                WHERE sc_code IN ({placeholders})
+                ORDER BY sc_name
+                LIMIT 50
+            """, list(failed_rows.keys()))
+            rows = cur_s.fetchall()
+
+        print(f"총 {len(rows)}개 (최대 50개 표시)")
+        print("-" * 90)
+        for row in rows:
+            sc_code = row['sc_code']
+            info = failed_rows.get(sc_code, {})
+            print(f"학교명: {row['sc_name']} (코드: {sc_code})")
+            print(f"도로명: {row['address']}")
+            print(f"지번: {row['jibun_address'] or '없음'}")
+            print(f"에러: {info.get('error_msg', '없음')}")
+            print(f"재시도: {info.get('retries', 0)}")
+            print("-" * 90)
+    except Exception as e:
+        print(f"❌ 조회 실패: {e}")
+
+
+def reset_orphan_only(failures_db: str):
+    """ORPHAN 상태를 FAILED로 초기화"""
+    print("\n🔄 ORPHAN → FAILED 초기화 중...")
+    try:
+        with sqlite3.connect(failures_db) as conn:
+            cur = conn.execute("UPDATE failures SET status='FAILED', retries=0, resolved_at=NULL WHERE status='ORPHAN';")
+            conn.commit()
+            print(f"✅ {cur.rowcount}개 레코드가 FAILED로 변경되었습니다.")
+    except Exception as e:
+        print(f"❌ 초기화 실패: {e}")
+
+
+def reset_expired_and_orphan(failures_db: str):
+    """EXPIRED와 ORPHAN 상태를 모두 FAILED로 초기화 (3번 메뉴용)"""
+    print("\n🔄 EXPIRED, ORPHAN → FAILED 초기화 중...")
+    try:
+        with sqlite3.connect(failures_db) as conn:
+            cur = conn.execute("""
+                UPDATE failures 
+                SET status='FAILED', retries=0, resolved_at=NULL 
+                WHERE status IN ('EXPIRED', 'ORPHAN')
+            """)
+            conn.commit()
+            print(f"✅ {cur.rowcount}개 레코드가 FAILED로 변경되었습니다.")
+    except Exception as e:
+        print(f"❌ 초기화 실패: {e}")
+
+
 def run_retry_worker(force: bool = False, limit: int = 100):
     """retry_worker를 다시 실행 (force 옵션 및 limit 지정 가능)"""
     mode = "force" if force else "normal"
     print(f"\n🚀 retry_worker 다시 실행 중... (mode: {mode}, limit: {limit})")
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    cmd = [sys.executable, __file__, "--limit", str(limit), "--no-menu"]  # 메뉴 없이 실행
+    cmd = [sys.executable, __file__, "--limit", str(limit), "--no-menu"]
     if force:
         cmd.append("--force")
     subprocess.run(
@@ -392,52 +476,8 @@ def run_retry_worker(force: bool = False, limit: int = 100):
     )
 
 
-def list_failed_schools(school_db: str, failures_db: str):
-    """실패한 학교 목록 출력 (학교명, 도로명 주소, 지번 주소)"""
-    print("\n📋 실패한 학교 목록 (status='FAILED')")
-    print("=" * 90)
-    try:
-        with sqlite3.connect(school_db) as conn:
-            conn.row_factory = sqlite3.Row
-            cur = conn.execute("""
-                SELECT s.sc_code, s.sc_name, s.address, s.jibun_address,
-                       f.error_msg, f.retries
-                FROM schools s
-                JOIN failures f ON s.sc_code = f.sc_code
-                WHERE f.status = 'FAILED'
-                ORDER BY s.sc_name
-                LIMIT 50
-            """)
-            rows = cur.fetchall()
-            if not rows:
-                print("ℹ️  현재 FAILED 상태인 학교가 없습니다.")
-                return
-
-            print(f"총 {len(rows)}개 (최대 50개 표시)")
-            print("-" * 90)
-            for row in rows:
-                print(f"학교명: {row['sc_name']}")
-                print(f"주소: {row['address']}")
-                print(f"지번: {row['jibun_address'] or '없음'}")
-                print(f"에러: {row['error_msg'] or '없음'}")
-                print(f"재시도: {row['retries']}")
-                print("-" * 90)
-    except Exception as e:
-        print(f"❌ 조회 실패: {e}")
-
-
-def reset_orphan_and_cleanse(failures_db: str, school_db: str):
-    """ORPHAN 상태를 FAILED로 초기화하고 cleanse_failures 실행"""
-    print("\n🔄 ORPHAN → FAILED 초기화 중...")
-    try:
-        with sqlite3.connect(failures_db) as conn:
-            cur = conn.execute("UPDATE failures SET status='FAILED', retries=0, resolved_at=NULL WHERE status='ORPHAN';")
-            conn.commit()
-            print(f"✅ {cur.rowcount}개 레코드가 FAILED로 변경되었습니다.")
-    except Exception as e:
-        print(f"❌ 초기화 실패: {e}")
-        return
-
+def run_cleanse_failures():
+    """cleanse_failures.py 실행"""
     print("\n🚀 cleanse_failures.py 실행 중...")
     script_dir = os.path.dirname(os.path.abspath(__file__))
     result = subprocess.run(
@@ -451,34 +491,84 @@ def reset_orphan_and_cleanse(failures_db: str, school_db: str):
         print(f"⚠️ cleanse_failures 종료 코드: {result.returncode}")
 
 
+def run_seed_failures():
+    """seed_failures.py 실행 (누락 학교 등록)"""
+    print("\n🚀 seed_failures.py 실행 중...")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    result = subprocess.run(
+        [sys.executable, os.path.join(script_dir, "seed_failures.py"), "--menu"],
+        cwd=os.path.dirname(script_dir),
+        env={**os.environ, "PYTHONPATH": os.path.dirname(script_dir)}
+    )
+    if result.returncode == 0:
+        print("✅ seed_failures 완료")
+    else:
+        print(f"⚠️ seed_failures 종료 코드: {result.returncode}")
+
+
+def show_last_result():
+    """가장 최근 실행 결과 보기 (3번 메뉴)"""
+    result_file = "logs/last_result.txt"
+    if not os.path.exists(result_file):
+        print("ℹ️  이전 실행 결과가 없습니다.")
+        return
+    with open(result_file, "r", encoding="utf-8") as f:
+        print("\n📊 [이번 실행 결과]")
+        print(f.read())
+
+
+def clear_logs():
+    """모든 로그 파일 삭제 (10번 메뉴)"""
+    confirm = input("정말 모든 로그 파일을 삭제하시겠습니까? (y/N): ").strip().lower()
+    if confirm == 'y':
+        log_dir = "logs"
+        deleted = 0
+        for f in os.listdir(log_dir):
+            if f.endswith(".log") or f == "last_result.txt":
+                os.remove(os.path.join(log_dir, f))
+                deleted += 1
+        print(f"✅ {deleted}개 로그 파일이 삭제되었습니다.")
+    else:
+        print("취소되었습니다.")
+
+
 def show_menu(rm: RetryManager, school_db: str, failures_db: str):
     while True:
         print("\n" + "=" * 70)
         print("📋 추가 작업 메뉴")
         print("=" * 70)
-        print("  1. 누락 학교 개수 확인")
-        print("  2. failures 큐 상태 확인")
-        print("  3. DB 파일 크기 확인")
-        print("  4. 실패한 학교 목록 확인")
-        print("  5. ORPHAN 초기화 및 지번 정제 실행")
-        print("  6. retry_worker limit mode (작업 수 입력, force 실행)")
+        print("  1. 누락된 학교 수 확인")
+        print("  2. failures 전체 상태 확인 (누적)")
+        print("  3. 이번 실행 결과 보기")
+        print("  4. DB 파일 크기 확인")
+        print("  5. 실패한 학교 목록 확인 (학교명, 도로명, 지번)")
+        print("  6. ORPHAN 초기화 (ORPHAN → FAILED)")
+        print("  7. 주소 정제 실행 (cleanse_failures.py)")
+        print("  8. 누락 학교 등록 (seed_failures.py)")
+        print("  9. 데이터 수집 재시도 (limit 입력, force 실행)")
+        print(" 10. 로그 초기화 (모든 로그 삭제)")
         print("  0. 종료")
         print("=" * 70)
 
-        choice = input("번호를 선택하세요 (0-6): ").strip()
+        choice = input("번호를 선택하세요 (0-10): ").strip()
 
         if choice == '1':
             check_missing_count(school_db)
         elif choice == '2':
             check_failures_queue(failures_db)
         elif choice == '3':
-            check_db_size(school_db, failures_db)
+            show_last_result()
         elif choice == '4':
-            list_failed_schools(school_db, failures_db)
+            check_db_size(school_db, failures_db)
         elif choice == '5':
-            reset_orphan_and_cleanse(failures_db, school_db)
+            list_failed_schools(school_db, failures_db)
         elif choice == '6':
-            # limit 입력 받기
+            reset_orphan_only(failures_db)
+        elif choice == '7':
+            run_cleanse_failures()
+        elif choice == '8':
+            run_seed_failures()
+        elif choice == '9':
             limit_input = input("처리할 작업 수를 입력하세요 (기본: 100): ").strip()
             if limit_input == "":
                 limit = 100
@@ -492,11 +582,14 @@ def show_menu(rm: RetryManager, school_db: str, failures_db: str):
                     print("⚠️  숫자를 입력하세요. 기본값 100을 사용합니다.")
                     limit = 100
             run_retry_worker(force=True, limit=limit)
+        elif choice == '10':
+            clear_logs()
         elif choice == '0':
             print("👋 종료합니다.")
             break
         else:
             print("❌ 잘못된 입력입니다.")
+
 
 # ========================================================
 # 메인
@@ -609,3 +702,4 @@ if __name__ == "__main__":
         if _GEO_COLLECTOR is not None:
             _GEO_COLLECTOR.flush()
             _GEO_COLLECTOR.meta_vocab.flush()
+            
