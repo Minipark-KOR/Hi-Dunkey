@@ -13,7 +13,6 @@ class TextFilter:
         s = str(text)
         s = unicodedata.normalize("NFKC", s)
         s = s.replace("\u00A0", " ").replace("\u200b", "").replace("\ufeff", "")
-        # ✅ 수정: literal newline → \n
         s = re.sub(r"[\r\n\t]+", " ", s)
         s = re.sub(r"\s+", " ", s).strip()
         return s
@@ -24,7 +23,8 @@ class TextFilter:
             return ""
         t = TextFilter.normalize(text)
         t = re.sub(r"\s+", "", t)
-        t = re.sub(r"[^a-zA-Z0-9가 - 힣]", "", t)  # ✅ 공백 제거
+        # ✅ 공백 제거: [^a-zA-Z0-9가-힣]
+        t = re.sub(r"[^a-zA-Z0-9가-힣]", "", t)
         return t.lower()
 
 
@@ -50,8 +50,8 @@ class AddressFilter:
     ]
 
     # ✅ 공백 제거
-    _ROAD_TOKEN = re.compile(r"[가 - 힣 0-9]+(?:대로 | 로|길)\b")
-    _JIBUN_TOKEN = re.compile(r"(?:[가 - 힣][가 - 힣 0-9]*동|[가 - 힣][가 - 힣 0-9]*리|[가 - 힣][가 - 힣 0-9]*읍|[가 - 힣][가 - 힣 0-9]*면|[가 - 힣 0-9]+가)\s*\d")
+    _ROAD_TOKEN = re.compile(r"[가-힣0-9]+(?:대로|로|길)\b")
+    _JIBUN_TOKEN = re.compile(r"(?:[가-힣][가-힣0-9]*동|[가-힣][가-힣0-9]*리|[가-힣][가-힣0-9]*읍|[가-힣][가-힣0-9]*면|[가-힣0-9]+가)\s*\d")
 
     ADMIN_DISTRICT_MAP = {
         "일광면": "일광읍",
@@ -69,12 +69,12 @@ class AddressFilter:
         if not address:
             return ""
         addr = address
-        addr = re.sub(r'^[가 - 힣]+ 교육청\s*', '', addr).strip()  # ✅ 공백 제거
+        addr = re.sub(r'^[가-힣]+교육청\s*', '', addr).strip()
         for old, new in AddressFilter.ADMIN_DISTRICT_MAP.items():
-            pattern = rf'(?<![가 - 힣]){re.escape(old)}(?![가 - 힣])'  # ✅ 공백 제거
+            pattern = rf'(?<![가-힣]){re.escape(old)}(?![가-힣])'
             addr = re.sub(pattern, new, addr)
         for district in AddressFilter.REMOVE_DISTRICT:
-            pattern = rf'(?<![가 - 힣]){re.escape(district)}(?![가 - 힣])'  # ✅ 공백 제거
+            pattern = rf'(?<![가-힣]){re.escape(district)}(?![가-힣])'
             addr = re.sub(pattern, ' ', addr)
         addr = re.sub(r'\([^)]*\)', '', addr)
         addr = re.sub(r'\[[^\]]*\]', '', addr)
@@ -89,14 +89,14 @@ class AddressFilter:
 
         if level >= 1:
             addr = re.sub(r'\([^)]*\)', '', addr)
-            addr = re.sub(r'\[[^\]]*\)', '', addr)
+            addr = re.sub(r'\[[^\]]*\]', '', addr)
             addr = re.sub(r'^\s*\d{5}\s+', '', addr)
             addr = re.sub(r'\s+\d{5}\s*$', '', addr)
             addr = re.sub(r'(\d+(?:-\d+)?)\s*번지\b', r'\1', addr)
 
         if level >= 2:
             addr = re.sub(r'(?<=\d)\s*-\s*(?=\d)', "-", addr)
-            addr = re.sub(r'\b([가 - 힣 0-9]+)\s+(대로 | 로|길)\b', r'\1\2', addr)  # ✅ 공백 제거
+            addr = re.sub(r'\b([가-힣0-9]+)\s+(대로|로|길)\b', r'\1\2', addr)
             addr = re.sub(r'\s+', " ", addr).strip()
 
         if level >= 3:
