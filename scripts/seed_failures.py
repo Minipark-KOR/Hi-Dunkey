@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""
-초기 누락 학교를 실패 큐에 등록
-- 상세 출력으로 진행 상황 확인 가능
-- 실행 후 메뉴에서 추가 작업 선택 가능
-"""
+# scripts/seed_failures.py
 import os
 import sys
 import sqlite3
@@ -12,7 +8,7 @@ import subprocess
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.retry import RetryManager
-from core.kst_time import now_kst
+from core.filters import AddressFilter
 from core.logger import build_logger
 
 logger = build_logger("seed_failures", "logs/seed_failures.log")
@@ -38,7 +34,6 @@ def seed_missing_schools(
 
     rm = RetryManager(db_path=failures_db_path, max_retries=None)
 
-    # ✅ 수정: literal newline → \n
     print(f"\n🔍 누락 학교 검색 시작: {school_db_path}")
     print("=" * 70)
 
@@ -65,6 +60,7 @@ def seed_missing_schools(
         skipped = 0
 
         for i, (sc_code, sc_name, address) in enumerate(rows, 1):
+            jibun = AddressFilter.extract_jibun(address)
             ok = rm.record_failure(
                 domain="school",
                 task_type="geocode",
@@ -72,6 +68,7 @@ def seed_missing_schools(
                 address=address,
                 error="initial missing",
                 deadline=None,
+                jibun_address=jibun,
             )
             if ok:
                 count += 1
@@ -104,8 +101,8 @@ def seed_missing_schools(
 
 
 def show_menu(school_db_path: str, failures_db_path: str):
+    """추가 작업 메뉴 표시"""
     while True:
-        # ✅ 수정: literal newline → \n
         print("\n" + "=" * 70)
         print("📋 추가 작업 메뉴")
         print("=" * 70)
@@ -160,12 +157,18 @@ def check_failures_queue(failures_db_path: str):
 
 
 def run_retry_worker():
+    print("\n🚀 retry_worker 실행 중...")
     script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    subprocess.run(
+    result = subprocess.run(
         [sys.executable, "scripts/retry_worker.py", "--limit", "100"],
         cwd=script_dir,
         env={**os.environ, "PYTHONPATH": script_dir}
     )
+    print("-" * 70)
+    if result.returncode == 0:
+        print("✅ retry_worker 정상 종료")
+    else:
+        print(f"⚠️  retry_worker 종료 코드: {result.returncode}")
 
 
 def check_db_size(school_db_path: str, failures_db_path: str):
@@ -178,7 +181,7 @@ def check_db_size(school_db_path: str, failures_db_path: str):
             print(f"  {label}: 없음")
 
 
-def main():
+if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="누락 학교를 실패 큐에 등록")
     parser.add_argument("--school-db", default="data/master/school_info.db")
@@ -193,8 +196,4 @@ def main():
         show_menu(args.school_db, args.failures_db)
 
     sys.exit(0 if result['success'] else 1)
-
-
-if __name__ == "__main__":
-    main()
     

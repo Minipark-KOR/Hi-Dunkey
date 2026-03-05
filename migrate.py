@@ -33,7 +33,8 @@ def migrate(db_path: str) -> bool:
             ("number_end", "INTEGER"),
             ("number_bit", "INTEGER"),
             ("address_hash", "TEXT"),
-            ("kakao_address", "TEXT"),   # ✅ Kakao 공식 주소 저장용
+            ("kakao_address", "TEXT"),
+            ("jibun_address", "TEXT"),   # ✅ 지번 주소 저장용
         ]
 
         added = 0

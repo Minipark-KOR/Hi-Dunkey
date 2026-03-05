@@ -201,8 +201,31 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
     cleaned = AddressFilter.clean(original_address, level=level)
 
     gc = get_geo_collector()
+
+    # jibun_address 조회
+    jibun = None
+    with sqlite3.connect(_SCHOOL_DB) as conn:
+        cur = conn.execute("SELECT jibun_address FROM schools WHERE sc_code=?", (sc_code,))
+        row = cur.fetchone()
+        if row:
+            jibun = row[0]
+
     final_status = 0
     error_messages = []
+
+    # 0차: 지번 주소로 PARCEL 우선 시도 (jibun이 있을 경우)
+    if jibun:
+        coords, status = _geocode_vworld(gc, jibun, "PARCEL")
+        if coords:
+            lon, lat = coords
+            addr_components = gc.meta_vocab.save_address(jibun)
+            update_school_coords(sc_code, lon, lat, jibun, addr_components)
+            log_address_mapping(original_address, jibun, sc_code, "vworld_jibun")
+            logger.info(f"✅ 지번 우선 성공: {sc_code} - {jibun[:50]}...")
+            return (True, False)
+        if status:
+            final_status = status
+            error_messages.append(f"JIBUN_PARCEL:{status}")
 
     # 1차: VWorld road
     coords, status = _geocode_vworld(gc, cleaned, "ROAD")
@@ -328,6 +351,7 @@ def main():
     parser = argparse.ArgumentParser(description="재시도 워커")
     parser.add_argument("--limit", type=int, default=50, help="한 번에 처리할 작업 수")
     parser.add_argument("--force", action="store_true", help="next_attempt 무시")
+    parser.add_argument("--dry-run", action="store_true", help="실제 API 호출 없이 로그만 출력")
     parser.add_argument("--menu", action="store_true", help="실행 후 메뉴 표시")
     args = parser.parse_args()
 
@@ -343,7 +367,7 @@ def main():
     )
 
     print(f"\n🚀 retry_worker 시작 (한국시간: {now})")
-    print(f"   ├─ force={args.force}, limit={args.limit}")
+    print(f"   ├─ force={args.force}, limit={args.limit}, dry-run={args.dry_run}")
     print(f"   ├─ 데드라인: {deadline}")
     print("=" * 70)
 
@@ -354,6 +378,23 @@ def main():
 
     if not failures:
         print("ℹ️  재시도할 작업 없음")
+        return
+
+    if args.dry_run:
+        logger.info("🚧 DRY RUN MODE - API 호출 없음")
+        for i, f in enumerate(failures, 1):
+            sc_code = f["sc_code"]
+            jibun = None
+            with sqlite3.connect(_SCHOOL_DB) as conn:
+                cur = conn.execute("SELECT jibun_address FROM schools WHERE sc_code=?", (sc_code,))
+                row = cur.fetchone()
+                if row:
+                    jibun = row[0]
+            if jibun:
+                logger.info(f"[DRY RUN] {sc_code} has jibun: {jibun[:50]}...")
+            else:
+                logger.info(f"[DRY RUN] {sc_code} has no jibun")
+        print_summary(0, 0, len(failures), time.time(), 0)
         return
 
     print(f"📋 총 {len(failures)}개 작업 재시도\n")
@@ -369,12 +410,10 @@ def main():
         task_type = f["task_type"]
         failure_id = f["id"]
 
-        # ✅ 작업 시작 시 에러 메시지 초기화
         global _LAST_ERROR_MSG
         _LAST_ERROR_MSG = None
 
         handler = TASK_HANDLERS.get((domain, task_type))
-        
         if not handler:
             msg = f"handler not found: {domain}/{task_type}"
             logger.warning(f"{msg} id={failure_id}")
@@ -398,7 +437,6 @@ def main():
             rm.mark_resolved(failure_id, status="SUCCESS")
             success_count += 1
         else:
-            # ✅ 전역 변수에 저장된 상세 에러 사용
             still_alive = rm.schedule_retry_by_id(
                 failure_id=failure_id,
                 error=_LAST_ERROR_MSG or "재시도 실패",
@@ -408,7 +446,6 @@ def main():
                 retry_count += 1
             else:
                 orphan_count += 1
-
 
         if time.time() - last_update >= 0.2:
             print_progress(i, len(failures), success_count, retry_count, orphan_count, start_time)
@@ -421,7 +458,7 @@ def main():
     print_summary(success_count, retry_count, orphan_count, start_time, remaining)
 
     if args.menu:
-        # 간단한 메뉴 구현 (생략 가능)
+        # 간단한 메뉴 구현 생략
         pass
 
 
@@ -432,3 +469,4 @@ if __name__ == "__main__":
         if _GEO_COLLECTOR is not None:
             _GEO_COLLECTOR.flush()
             _GEO_COLLECTOR.meta_vocab.flush()
+            

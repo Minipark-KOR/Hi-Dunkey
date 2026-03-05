@@ -13,7 +13,6 @@ class TextFilter:
         s = str(text)
         s = unicodedata.normalize("NFKC", s)
         s = s.replace("\u00A0", " ").replace("\u200b", "").replace("\ufeff", "")
-        # ✅ 수정: literal newline → \n
         s = re.sub(r"[\r\n\t]+", " ", s)
         s = re.sub(r"\s+", " ", s).strip()
         return s
@@ -29,6 +28,10 @@ class TextFilter:
 
 
 class AddressFilter:
+    # 도로명 주소 판별용 토큰 (더 포괄적인 버전)
+    _ROAD_TOKEN = re.compile(r"[가-힣0-9]+(?:대로|로|길)\b")
+    _JIBUN_TOKEN = re.compile(r"(?:[가-힣][가-힣0-9]*동|[가-힣][가-힣0-9]*리|[가-힣][가-힣0-9]*읍|[가-힣][가-힣0-9]*면|[가-힣0-9]+가)\s*\d")
+
     REGION_SHORTEN_PREFIX = [
         (r"^서울특별시\s*", "서울 "),
         (r"^부산광역시\s*", "부산 "),
@@ -49,9 +52,6 @@ class AddressFilter:
         (r"^제주특별자치도\s*", "제주 "),
     ]
 
-    _ROAD_TOKEN = re.compile(r"[가-힣0-9]+(?:대로|로|길)\b")
-    _JIBUN_TOKEN = re.compile(r"(?:[가-힣][가-힣0-9]*동|[가-힣][가-힣0-9]*리|[가-힣][가-힣0-9]*읍|[가-힣][가-힣0-9]*면|[가-힣0-9]+가)\s*\d")
-
     ADMIN_DISTRICT_MAP = {
         "일광면": "일광읍",
         "산동면": "산동읍",
@@ -59,13 +59,7 @@ class AddressFilter:
         "퇴계원면": "퇴계원읍",
         "이동면": "이동읍",
         "비봉면": "비봉읍",
-        # ✅ learn_address_map.py 분석 결과 새로 추가할 매핑
-        "홍북면": "홍북읍",
-        "정관면": "정관읍",
-        "삼남면": "삼남읍",
-        "양지면": "양지읍",
-        "능서면": "세종대왕면",
-        # "안중읍": "현덕면",  # 이 패턴은 특이 케이스라 우선 주석 처리
+        # 자동 학습 결과 추가 가능
     }
 
     REMOVE_DISTRICT = ["오포읍", "남면"]
@@ -133,4 +127,32 @@ class AddressFilter:
         if not address:
             return ""
         return hashlib.sha256(address.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def extract_jibun(address: str) -> Optional[str]:
+        """
+        주소에서 지번 주소 추출 (VWorld API에 최적화)
+        - 시/도 + 시/군/구 + 읍/면/동 + 번지(숫자/가산) 형태
+        - 도로명 주소는 제외하고 지번만 반환
+        """
+        if not address:
+            return None
+        a = TextFilter.normalize(address)
+        # 도로명 주소 패턴이 보이면 지번 추출 스킵
+        if AddressFilter._ROAD_TOKEN.search(a):
+            return None
+        # 지번 패턴 (전체 매칭 문자열 그대로 반환)
+        patterns = [
+            # 1. 시도/시군구 포함 풀 패턴
+            r'[가-힣]+(?:시|도)\s+[가-힣]+(?:시|군|구)\s*[가-힣]+(?:읍|면|동|리)\s+(?:[가-힣0-9]+(?:가)?\s*\d+(?:-\d+)?(?:번지)?)',
+            # 2. 읍면동 + 번지 (시/군/구 생략)
+            r'[가-힣]+(?:읍|면|동|리)\s+(?:[가-힣0-9]+(?:가)?\s*\d+(?:-\d+)?(?:번지)?)',
+            # 3. 산(山) 패턴
+            r'[가-힣]+(?:읍|면|동|리)\s+(?:산\s*\d+(?:-\d+)?(?:번지)?)'
+        ]
+        for pat in patterns:
+            m = re.search(pat, a)
+            if m:
+                return m.group(0).strip()
+        return None
         
