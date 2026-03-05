@@ -221,7 +221,6 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
             addr_components = gc.meta_vocab.save_address(jibun)
             update_school_coords(sc_code, lon, lat, jibun, addr_components)
             log_address_mapping(original_address, jibun, sc_code, "vworld_jibun")
-            logger.info(f"✅ 지번 우선 성공: {sc_code} - {jibun[:50]}...")
             return (True, False)
         if status:
             final_status = status
@@ -352,6 +351,7 @@ def main():
     parser.add_argument("--limit", type=int, default=50, help="한 번에 처리할 작업 수")
     parser.add_argument("--force", action="store_true", help="next_attempt 무시")
     parser.add_argument("--dry-run", action="store_true", help="실제 API 호출 없이 로그만 출력")
+    parser.add_argument("--verbose", action="store_true", help="각 작업 결과를 실시간으로 출력")
     parser.add_argument("--menu", action="store_true", help="실행 후 메뉴 표시")
     args = parser.parse_args()
 
@@ -367,7 +367,7 @@ def main():
     )
 
     print(f"\n🚀 retry_worker 시작 (한국시간: {now})")
-    print(f"   ├─ force={args.force}, limit={args.limit}, dry-run={args.dry_run}")
+    print(f"   ├─ force={args.force}, limit={args.limit}, dry-run={args.dry_run}, verbose={args.verbose}")
     print(f"   ├─ 데드라인: {deadline}")
     print("=" * 70)
 
@@ -409,6 +409,7 @@ def main():
         domain = f["domain"]
         task_type = f["task_type"]
         failure_id = f["id"]
+        sc_code = f.get("sc_code", "unknown")
 
         global _LAST_ERROR_MSG
         _LAST_ERROR_MSG = None
@@ -419,7 +420,9 @@ def main():
             logger.warning(f"{msg} id={failure_id}")
             rm.mark_orphan(failure_id, error=msg)
             orphan_count += 1
-            if time.time() - last_update >= 0.2:
+            if args.verbose:
+                print(f"❌ [{i}/{len(failures)}] {sc_code} 핸들러 없음")
+            if not args.verbose and time.time() - last_update >= 0.2:
                 print_progress(i, len(failures), success_count, retry_count, orphan_count, start_time)
                 last_update = time.time()
             continue
@@ -433,9 +436,13 @@ def main():
         if (not success) and is_permanent:
             rm.mark_orphan(failure_id, error=f"permanent failure: {domain}/{task_type}")
             orphan_count += 1
+            if args.verbose:
+                print(f"❌ [{i}/{len(failures)}] {sc_code} 영구 실패 (ORPHAN)")
         elif success:
             rm.mark_resolved(failure_id, status="SUCCESS")
             success_count += 1
+            if args.verbose:
+                print(f"✅ [{i}/{len(failures)}] {sc_code} 성공")
         else:
             still_alive = rm.schedule_retry_by_id(
                 failure_id=failure_id,
@@ -444,15 +451,21 @@ def main():
             )
             if still_alive:
                 retry_count += 1
+                if args.verbose:
+                    print(f"⏳ [{i}/{len(failures)}] {sc_code} 재시도 예약")
             else:
                 orphan_count += 1
+                if args.verbose:
+                    print(f"❌ [{i}/{len(failures)}] {sc_code} 재시도 불가 (포기)")
 
-        if time.time() - last_update >= 0.2:
-            print_progress(i, len(failures), success_count, retry_count, orphan_count, start_time)
-            last_update = time.time()
+        if not args.verbose:
+            if time.time() - last_update >= 0.2:
+                print_progress(i, len(failures), success_count, retry_count, orphan_count, start_time)
+                last_update = time.time()
 
-    print_progress(len(failures), len(failures), success_count, retry_count, orphan_count, start_time)
-    print()
+    if not args.verbose:
+        print_progress(len(failures), len(failures), success_count, retry_count, orphan_count, start_time)
+        print()
 
     remaining = len(rm.get_all_pending_retries(limit=10000)) if args.force else len(rm.get_pending_retries(limit=10000, deadline=deadline))
     print_summary(success_count, retry_count, orphan_count, start_time, remaining)
