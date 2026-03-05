@@ -7,8 +7,10 @@ import sqlite3
 import re
 import json
 import time
+import subprocess
 from datetime import datetime, time as dt_time
 from typing import Dict, Any, Callable, Tuple, Optional
+
 import requests
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -30,7 +32,7 @@ _GEO_COLLECTOR: Optional[GeoCollector] = None
 _SCHOOL_DB = "data/master/school_info.db"
 _FAILURES_DB = "data/failures.db"
 
-# ✅ 추가: 에러 메시지 저장용 전역 변수
+# ✅ 에러 메시지 저장용 전역 변수
 _LAST_ERROR_MSG: Optional[str] = None
 
 GREEN, RED, YELLOW, RESET = "\033[92m", "\033[91m", "\033[93m", "\033[0m"
@@ -84,29 +86,22 @@ def _geocode_vworld(gc: GeoCollector, address: str, addr_type: str = "ROAD") -> 
         return None, 500
 
 
-def _get_kakao_key() -> str:
-    """Kakao API 키 로드"""
-    key = os.getenv("KAKAO_API_KEY", "").strip()
-    if key:
-        return key
-    try:
-        from constants.codes import KAKAO_API_KEY
-        return (KAKAO_API_KEY or "").strip()
-    except:
-        return ""
-
-
 def geocode_kakao(address: str) -> Tuple[Optional[Tuple[float, float]], Optional[int], Optional[str]]:
     """Kakao API 지오코딩 (폴백용)"""
-    kakao_key = _get_kakao_key()
+    kakao_key = os.getenv("KAKAO_API_KEY", "").strip()
+    if not kakao_key:
+        try:
+            from constants.codes import KAKAO_API_KEY
+            kakao_key = (KAKAO_API_KEY or "").strip()
+        except:
+            pass
     if not kakao_key:
         return None, None, None
-    
-    # ✅ 수정: URL trailing space 제거
+
     url = "https://dapi.kakao.com/v2/local/search/address.json"
     headers = {"Authorization": f"KakaoAK {kakao_key}"}
     params = {"query": address, "analyze_type": "exact"}
-    
+
     try:
         resp = requests.get(url, headers=headers, params=params, timeout=5)
         if resp.status_code == 200:
@@ -118,8 +113,8 @@ def geocode_kakao(address: str) -> Tuple[Optional[Tuple[float, float]], Optional
                 official = doc.get('road_address', {}).get('address_name') or doc.get('address', {}).get('address_name')
                 return (x, y), 200, official
             else:
-                # documents가 없으면 404로 간주
-                return None, 404, None   # ✅ 404 반환
+                # documents가 없으면 404로 처리 (좌표 없음)
+                return None, 404, None
         return None, resp.status_code, None
     except Exception as e:
         logger.error(f"Kakao geocode error: {e}")
@@ -209,7 +204,7 @@ def get_consecutive_404(sc_code: str) -> int:
 def handle_school_geocode(failure: dict) -> HandlerResult:
     global _LAST_ERROR_MSG
     _LAST_ERROR_MSG = None
-    
+
     sc_code = failure.get("sc_code")
     original_address = failure.get("address")
     retries = failure.get("retries") or 0
@@ -224,7 +219,7 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
     final_status = 0
     error_messages = []
 
-    # 1 차: VWorld road
+    # 1차: VWorld road
     coords, status = _geocode_vworld(gc, cleaned, "ROAD")
     if coords:
         lon, lat = coords
@@ -236,7 +231,7 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
         final_status = status
         error_messages.append(f"ROAD:{status}")
 
-    # 2 차: VWorld parcel
+    # 2차: VWorld parcel
     coords, status = _geocode_vworld(gc, cleaned, "PARCEL")
     if coords:
         lon, lat = coords
@@ -250,7 +245,7 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
 
     simplified = re.sub(r'\s*[-,.+()].*$', '', cleaned).strip()
 
-    # 3 차: simplified road
+    # 3차: simplified road
     if simplified != cleaned:
         coords, status = _geocode_vworld(gc, simplified, "ROAD")
         if coords:
@@ -263,7 +258,7 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
             final_status = status
             error_messages.append(f"SIMPLIFIED_ROAD:{status}")
 
-    # 4 차: simplified parcel
+    # 4차: simplified parcel
     if simplified != cleaned:
         coords, status = _geocode_vworld(gc, simplified, "PARCEL")
         if coords:
@@ -276,11 +271,8 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
             final_status = status
             error_messages.append(f"SIMPLIFIED_PARCEL:{status}")
 
-    # 5 차: Kakao API (최종 폴백)
+    # 5차: Kakao API (최종 폴백)
     coords, status, official_address = geocode_kakao(cleaned)
-    if final_status == 0:
-        final_status = 404  # 기본값 설정
-
     if coords:
         lon, lat = coords
         logger.info(f"Kakao API success for {cleaned[:30]}")
@@ -297,7 +289,6 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
         update_school_coords(sc_code, lon, lat, cleaned, addr_components, kakao_address=official_address)
         return (True, False)
 
-    # Kakao 실패 시 에러 메시지 추가
     if status:
         final_status = status
         error_messages.append(f"KAKAO:{status}")
@@ -349,9 +340,128 @@ def print_summary(success, retry, orphan, start_time, remaining):
     print("=" * 70)
 
 
+# ========================================================
+# 메뉴 기능 (seed_failures.py 스타일)
+# ========================================================
+
+def check_missing_count(school_db: str):
+    if not os.path.exists(school_db):
+        print("❌ DB 파일 없음")
+        return
+    with sqlite3.connect(school_db) as conn:
+        cur = conn.execute("SELECT COUNT(*) FROM schools WHERE latitude IS NULL OR longitude IS NULL")
+        missing = cur.fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) FROM schools").fetchone()[0]
+        print(f"\n📍 지오코딩 상태: {missing}/{total} ({missing/total*100:.1f}% 누락)")
+
+
+def check_failures_queue(failures_db: str):
+    if not os.path.exists(failures_db):
+        print("❌ DB 파일 없음")
+        return
+    with sqlite3.connect(failures_db) as conn:
+        cur = conn.execute("SELECT status, COUNT(*) FROM failures GROUP BY status")
+        rows = cur.fetchall()
+        print("\n📊 failures 큐 상태")
+        for s, c in rows:
+            print(f"  - {s}: {c}개")
+
+
+def check_db_size(school_db: str, failures_db: str):
+    print("\n💾 DB 파일 크기:")
+    for label, path in [("학교 DB", school_db), ("Failures DB", failures_db)]:
+        if os.path.exists(path):
+            size = os.path.getsize(path) / (1024*1024)
+            print(f"  {label}: {size:.2f} MB")
+        else:
+            print(f"  {label}: 없음")
+
+
+def run_retry_worker():
+    """retry_worker를 다시 실행 (현재 스크립트 재호출)"""
+    print("\n🚀 retry_worker 다시 실행 중...")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    subprocess.run(
+        [sys.executable, __file__, "--limit", "50", "--force"],
+        cwd=script_dir,
+        env={**os.environ, "PYTHONPATH": os.path.dirname(script_dir)}
+    )
+
+
+def list_failed_schools(school_db: str, failures_db: str):
+    """실패한 학교 목록 출력 (학교명, 도로명 주소, 지번 주소)"""
+    print("\n📋 실패한 학교 목록 (status='FAILED')")
+    print("=" * 90)
+    try:
+        with sqlite3.connect(school_db) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.execute("""
+                SELECT s.sc_code, s.sc_name, s.address, s.jibun_address,
+                       f.error_msg, f.retries
+                FROM schools s
+                JOIN failures f ON s.sc_code = f.sc_code
+                WHERE f.status = 'FAILED'
+                ORDER BY s.sc_name
+                LIMIT 50
+            """)
+            rows = cur.fetchall()
+            if not rows:
+                print("ℹ️  현재 FAILED 상태인 학교가 없습니다.")
+                return
+
+            print(f"총 {len(rows)}개 (최대 50개 표시)")
+            print("-" * 90)
+            for row in rows:
+                print(f"학교명: {row['sc_name']}")
+                print(f"주소: {row['address']}")
+                print(f"지번: {row['jibun_address'] or '없음'}")
+                print(f"에러: {row['error_msg'] or '없음'}")
+                print(f"재시도: {row['retries']}")
+                print("-" * 90)
+    except Exception as e:
+        print(f"❌ 조회 실패: {e}")
+
+
+def show_menu(rm: RetryManager, school_db: str, failures_db: str):
+    """추가 작업 메뉴 표시"""
+    while True:
+        print("\n" + "=" * 70)
+        print("📋 추가 작업 메뉴")
+        print("=" * 70)
+        print("  1. 누락 학교 개수 확인")
+        print("  2. failures 큐 상태 확인")
+        print("  3. DB 파일 크기 확인")
+        print("  4. retry_worker 즉시 실행")
+        print("  5. 실패한 학교 목록 확인")
+        print("  0. 종료")
+        print("=" * 70)
+
+        choice = input("번호를 선택하세요 (0-5): ").strip()
+
+        if choice == '1':
+            check_missing_count(school_db)
+        elif choice == '2':
+            check_failures_queue(failures_db)
+        elif choice == '3':
+            check_db_size(school_db, failures_db)
+        elif choice == '4':
+            run_retry_worker()
+        elif choice == '5':
+            list_failed_schools(school_db, failures_db)
+        elif choice == '0':
+            print("👋 종료합니다.")
+            break
+        else:
+            print("❌ 잘못된 입력입니다.")
+
+
+# ========================================================
+# 메인
+# ========================================================
+
 def main():
     global _LAST_ERROR_MSG
-    
+
     parser = argparse.ArgumentParser(description="재시도 워커")
     parser.add_argument("--limit", type=int, default=50, help="한 번에 처리할 작업 수")
     parser.add_argument("--force", action="store_true", help="next_attempt 무시")
@@ -381,6 +491,8 @@ def main():
 
     if not failures:
         print("ℹ️  재시도할 작업 없음")
+        if args.menu:
+            show_menu(rm, _SCHOOL_DB, _FAILURES_DB)
         return
 
     print(f"📋 총 {len(failures)}개 작업 재시도\n")
@@ -395,7 +507,7 @@ def main():
         domain = f["domain"]
         task_type = f["task_type"]
         failure_id = f["id"]
-        
+
         _LAST_ERROR_MSG = None
 
         handler = TASK_HANDLERS.get((domain, task_type))
@@ -443,7 +555,7 @@ def main():
     print_summary(success_count, retry_count, orphan_count, start_time, remaining)
 
     if args.menu:
-        pass
+        show_menu(rm, _SCHOOL_DB, _FAILURES_DB)
 
 
 if __name__ == "__main__":
@@ -453,3 +565,4 @@ if __name__ == "__main__":
         if _GEO_COLLECTOR is not None:
             _GEO_COLLECTOR.flush()
             _GEO_COLLECTOR.meta_vocab.flush()
+            
