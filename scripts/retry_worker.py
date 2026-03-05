@@ -382,7 +382,7 @@ def run_retry_worker(force: bool = False, limit: int = 100):
     mode = "force" if force else "normal"
     print(f"\n🚀 retry_worker 다시 실행 중... (mode: {mode}, limit: {limit})")
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    cmd = [sys.executable, __file__, "--limit", str(limit)]
+    cmd = [sys.executable, __file__, "--limit", str(limit), "--no-menu"]  # 메뉴 없이 실행
     if force:
         cmd.append("--force")
     subprocess.run(
@@ -461,7 +461,7 @@ def show_menu(rm: RetryManager, school_db: str, failures_db: str):
         print("  3. DB 파일 크기 확인")
         print("  4. 실패한 학교 목록 확인")
         print("  5. ORPHAN 초기화 및 지번 정제 실행")
-        print("  6. retry_worker 즉시 실행 (force) - limit 입력 가능")
+        print("  6. retry_worker limit mode (작업 수 입력, force 실행)")
         print("  0. 종료")
         print("=" * 70)
 
@@ -479,7 +479,7 @@ def show_menu(rm: RetryManager, school_db: str, failures_db: str):
             reset_orphan_and_cleanse(failures_db, school_db)
         elif choice == '6':
             # limit 입력 받기
-            limit_input = input("처리할 작업 수를 입력하세요 [기본: 100] (엔터시 100): ").strip()
+            limit_input = input("처리할 작업 수를 입력하세요 (기본: 100): ").strip()
             if limit_input == "":
                 limit = 100
             else:
@@ -498,7 +498,6 @@ def show_menu(rm: RetryManager, school_db: str, failures_db: str):
         else:
             print("❌ 잘못된 입력입니다.")
 
-
 # ========================================================
 # 메인
 # ========================================================
@@ -509,7 +508,8 @@ def main():
     parser = argparse.ArgumentParser(description="재시도 워커")
     parser.add_argument("--limit", type=int, default=50, help="한 번에 처리할 작업 수")
     parser.add_argument("--force", action="store_true", help="next_attempt 무시")
-    parser.add_argument("--menu", action="store_true", help="실행 후 메뉴 표시")
+    parser.add_argument("--menu", action="store_true", default=True, help="실행 후 메뉴 표시 (기본값)")
+    parser.add_argument("--no-menu", action="store_false", dest="menu", help="메뉴 없이 종료")
     args = parser.parse_args()
 
     now = kst_naive(now_kst())
@@ -609,4 +609,3 @@ if __name__ == "__main__":
         if _GEO_COLLECTOR is not None:
             _GEO_COLLECTOR.flush()
             _GEO_COLLECTOR.meta_vocab.flush()
-            
