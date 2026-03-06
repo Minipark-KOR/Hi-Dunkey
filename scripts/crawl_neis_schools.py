@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 NEIS 학교 정보 크롤러 - 샤드 DB 생성
+- 진행 상황 그래프 출력
 - odd/even 샤드로 분할 저장
 - 병합 스크립트와 연동 가능
 """
@@ -24,6 +25,20 @@ REGIONS = [
 
 # API 키 (환경 변수에서 가져오기 권장)
 API_KEY = os.getenv("NEIS_API_KEY", "917818905d7b46e4b0eb71d2a15d9187")
+
+def print_progress_bar(current, total, current_region="", schools_collected=0, bar_length=40):
+    """진행 상황 그래프 출력 (덮어쓰기 방식)"""
+    percent = float(current) / total if total > 0 else 0
+    filled = int(bar_length * percent)
+    bar = "█" * filled + "░" * (bar_length - filled)
+    
+    # 한 줄로 출력 (덮어쓰기)
+    sys.stdout.write(f"\r🕷️  [{bar}] {current}/{total} | {current_region}")
+    sys.stdout.write(f"\n   📊 수집: {schools_collected:,}개 학교")
+    sys.stdout.flush()
+    
+    if current == total:
+        print()  # 완료 시 줄바꿈
 
 def create_shard_db(db_path: str):
     """샤드 DB 스키마 생성"""
@@ -91,7 +106,7 @@ def fetch_schools(region_code: str) -> list:
                     'sc_kind': row.get('SCHUL_KND_SC_NM', ''),
                     'atpt_code': row.get('ATPT_OFCDC_SC_CODE', ''),
                     'address': row.get('LCTN_ADDR', ''),
-                    'address_hash': '',  # 필요시 해시 생성
+                    'address_hash': '',
                     'tel': row.get('TELNO', ''),
                     'homepage': row.get('HMPG_ADDR', ''),
                     'status': 'active',
@@ -105,15 +120,14 @@ def fetch_schools(region_code: str) -> list:
                     'number_bit': 0
                 })
             
-            # 더 이상 데이터가 없으면 종료
             if len(rows) < page_size:
                 break
             
             page += 1
-            time.sleep(0.3)  # API 부하 방지
+            time.sleep(0.3)
             
         except Exception as e:
-            print(f"⚠️ {region_code} 페이지 {page} 오류: {e}")
+            print(f"\n⚠️ {region_code} 페이지 {page} 오류: {e}")
             break
     
     return schools
@@ -126,7 +140,7 @@ def crawl_all_regions():
     odd_db = os.path.join(MASTER_DIR, "neis_info_odd.db")
     even_db = os.path.join(MASTER_DIR, "neis_info_even.db")
     
-    # 기존 샤드 삭제 (새로 수집)
+    # 기존 샤드 삭제
     for db_path in [odd_db, even_db]:
         if os.path.exists(db_path):
             os.remove(db_path)
@@ -135,18 +149,28 @@ def crawl_all_regions():
     odd_conn = create_shard_db(odd_db)
     even_conn = create_shard_db(even_db)
     
+    total_regions = len(REGIONS)
     total_schools = 0
     odd_count = 0
     even_count = 0
     
-    print("🕷️  NEIS 학교 정보 크롤링 시작...\n")
+    print("=" * 70)
+    print("🕷️  NEIS 학교 정보 크롤링 시작")
+    print("=" * 70)
+    print(f"📂 저장 경로: {MASTER_DIR}")
+    print(f" 대상: {total_regions}개 교육청")
+    print("-" * 70)
     
     for i, region in enumerate(REGIONS, 1):
-        print(f"[{i}/{len(REGIONS)}] {region} 교육청 조회 중...")
+        # 진행 상황 출력
+        region_name = get_region_name(region)
+        print(f"\n[{i}/{total_regions}] {region} ({region_name}) 조회 중...")
+        
+        # 학교 정보 수집
         schools = fetch_schools(region)
         
+        # 샤드에 저장
         for school in schools:
-            # 홀수/짝수 샤드 분할 (sc_code 해시 기반)
             code_hash = hash(school['sc_code'])
             
             if code_hash % 2 == 0:
@@ -163,7 +187,16 @@ def crawl_all_regions():
                 odd_count += 1
         
         total_schools += len(schools)
-        print(f"  ✅ {region}: {len(schools)}개 학교 (누적 {total_schools}개)")
+        
+        # 진행 바 업데이트
+        print_progress_bar(
+            current=i,
+            total=total_regions,
+            current_region=f"{region} ({region_name})",
+            schools_collected=total_schools,
+            bar_length=50
+        )
+        
         time.sleep(0.5)
     
     # 커밋 및 닫기
@@ -172,15 +205,28 @@ def crawl_all_regions():
     odd_conn.close()
     even_conn.close()
     
-    # 결과 출력
-    print("\n" + "=" * 60)
+    # 최종 결과
+    print("\n" + "=" * 70)
     print("✅ 크롤링 완료")
-    print("=" * 60)
+    print("=" * 70)
     print(f"📊 총 학교 수: {total_schools:,}개")
-    print(f"📦 odd 샤드: {odd_count:,}개")
+    print(f"📦 odd 샤드:  {odd_count:,}개")
     print(f"📦 even 샤드: {even_count:,}개")
-    print(f"💾 저장 경로: {MASTER_DIR}")
-    print("\n🔜 다음 단계: python3 scripts/merge_neis_info_dbs.py")
+    print(f"💾 저장 위치: {MASTER_DIR}")
+    print("\n🔜 다음 단계:")
+    print("   python3 scripts/merge_neis_info_dbs.py")
+    print("=" * 70)
+
+def get_region_name(code: str) -> str:
+    """교육청 코드 → 이름 변환"""
+    region_map = {
+        "B10": "서울", "C10": "부산", "D10": "인천", "E10": "광주",
+        "F10": "대전", "G10": "울산", "H10": "세종", "I10": "경기",
+        "J10": "강원", "K10": "충북", "L10": "충남", "M10": "전북",
+        "N10": "전남", "O10": "경북", "P10": "경남", "Q10": "제주",
+        "R10": "국가", "S10": "해외", "T10": "기타"
+    }
+    return region_map.get(code, "Unknown")
 
 if __name__ == "__main__":
     crawl_all_regions()
