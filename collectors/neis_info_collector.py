@@ -53,7 +53,8 @@ class NeisInfoCollector(BaseCollector):
         quiet_mode: bool = False
     ):
         # ✅ 수정: name을 "neis_info"로, base_dir을 MASTER_DIR로 설정
-        super().__init__("neis_info", str(MASTER_DIR), shard, school_range)
+        self.db_path = str(MASTER_DB)  # constants.paths 의 MASTER_DB_PATH 사용
+        super().__init__("neis_info", str(MASTER_DIR), "none", school_range)
         self.api_context = 'school'
         self.incremental = incremental
         self.full = full
