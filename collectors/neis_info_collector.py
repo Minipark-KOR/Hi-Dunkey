@@ -32,7 +32,7 @@ from collectors.geo_collector import GeoCollector
 
 BASE_DIR = str(MASTER_DIR)
 GLOBAL_VOCAB_PATH = str(MASTER_DIR.parent / "active" / "global_vocab.db")
-SCHOOL_URL = SCHOOL_ENDPOINTS['school']
+NEIS_URL = NEIS_ENDPOINTS['school']
 
 # ✅ ANSI 색상 코드
 GREEN, RED, YELLOW, RESET = "\033[92m", "\033[91m", "\033[93m", "\033[0m"
