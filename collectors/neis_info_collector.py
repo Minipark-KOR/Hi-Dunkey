@@ -38,7 +38,7 @@ NEIS_URL = NEIS_ENDPOINTS['school']
 GREEN, RED, YELLOW, RESET = "\033[92m", "\033[91m", "\033[93m", "\033[0m"
 
 
-class SchoolInfoCollector(BaseCollector):
+class NeisInfoCollector(BaseCollector):
     LEVEL_GEOCODING = 3
     LEVEL_FINAL = 4
 
@@ -80,8 +80,8 @@ class SchoolInfoCollector(BaseCollector):
         self.total_skipped = 0
 
         if not quiet_mode:
-            print("🏫 SchoolInfoCollector 초기화 완료")
-        self.logger.info("🏫 SchoolInfoCollector 초기화 완료")
+            print("🏫 NeisInfoCollector 초기화 완료")
+        self.logger.info("🏫 NeisInfoCollector 초기화 완료")
 
     def _init_db(self):
         with get_db_connection(self.db_path) as conn:
@@ -371,7 +371,7 @@ if __name__ == "__main__":
     if is_github_actions and not args.quiet:
         args.quiet = True
 
-    collector = SchoolInfoCollector(
+    collector = NeisInfoCollector(
         shard="none",
         debug_mode=args.debug,
         quiet_mode=args.quiet

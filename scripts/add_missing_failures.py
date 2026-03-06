@@ -10,7 +10,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.retry import RetryManager
 
 rm = RetryManager()
-conn = sqlite3.connect("data/master/school_info.db")
+conn = sqlite3.connect("data/master/neis_info.db")
 conn.row_factory = sqlite3.Row
 
 cur = conn.execute("SELECT sc_code, address, atpt_code FROM schools WHERE latitude IS NULL")

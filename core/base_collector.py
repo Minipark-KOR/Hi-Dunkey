@@ -1,344 +1,406 @@
 #!/usr/bin/env python3
 """
-수집기 베이스 클래스 - 공통 기능 통합
+학교 기본정보 수집기 (Diff 기반 좌표 갱신)
+- GeoCollector 통합으로 캐시 및 API 사용량 추적
+- 기본 모드에서도 지역별 좌표 현황 출력
+- 전체 수집 완료 후 누적 통계 표시 (성공률 포함)
+- GitHub Actions 환경에서는 자동으로 quiet 모드
+- 진행률에 [LIMIT:xx] 표시 추가
+- 지번 주소 (jibun_address) 추출 및 저장
 """
 import os
-import sqlite3
-import queue
-import threading
-import time
-import glob
-import re
-import random
 import sys
-from abc import ABC, abstractmethod
-from datetime import datetime, timedelta
+import time
+import sqlite3
+import argparse
+from typing import List, Dict, Tuple, Optional
+from datetime import timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union, Callable
 
-from .database import get_db_connection, init_checkpoint_table
-from .logger import build_logger
-from .network import build_session, safe_json_request
-from .shard import should_include_school
-from .kst_time import now_kst
-from .data_guard import DataGuard, DataDropException
-from .collect_log import CollectLog
-from constants.codes import NEIS_API_KEY
-from constants.paths import MASTER_DB_PATH as MASTER_DB
-from core.retry import RetryManager
+sys.path.append(str(Path(__file__).parent.parent))
+
+from core.base_collector import BaseCollector
+from core.database import get_db_connection, get_db_reader
+from core.school_id import create_school_id
+from core.meta_vocab import MetaVocabManager
+from core.filters import AddressFilter
+from core.kst_time import now_kst
+from constants.codes import NEIS_ENDPOINTS, ALL_REGIONS, REGION_NAMES
+from constants.paths import MASTER_DB_PATH as MASTER_DB, MASTER_DIR
+from collectors.geo_collector import GeoCollector
+
+BASE_DIR = str(MASTER_DIR)
+GLOBAL_VOCAB_PATH = str(MASTER_DIR.parent / "active" / "global_vocab.db")
+NEIS_URL = NEIS_ENDPOINTS['school']
+
+# ✅ ANSI 색상 코드
+GREEN, RED, YELLOW, RESET = "\033[92m", "\033[91m", "\033[93m", "\033[0m"
 
 
-class BaseCollector(ABC):
+class NeisInfoCollector(BaseCollector):
+    LEVEL_GEOCODING = 3
+    LEVEL_FINAL = 4
 
     def __init__(
         self,
-        name: str,
-        base_dir: str,
         shard: str = "none",
-        school_range: Optional[str] = None
+        school_range=None,
+        incremental: bool = False,
+        full: bool = False,
+        compare: bool = False,
+        debug_mode: bool = False,
+        quiet_mode: bool = False
     ):
-        VALID_SHARDS = {"odd", "even", "none"}
-        if shard not in VALID_SHARDS:
-            print(f"❌ 잘못된 shard 값: {shard} (collector: {name})", file=sys.stderr)
-            sys.exit(1)
+        # ✅ 수정: collector name을 "neis_info"로, base_dir을 MASTER_DIR로 변경
+        super().__init__("neis_info", str(MASTER_DIR), shard, school_range)
+        self.db_path = str(MASTER_DB)          # 통합 DB 경로는 그대로 유지
+        self.api_context = 'school'
+        self.incremental = incremental
+        self.full = full
+        self.compare = compare
+        self.debug_mode = debug_mode
+        self.quiet_mode = quiet_mode
+        self.run_date = now_kst().strftime("%Y%m%d")
 
-        self.name = name
-        self.base_dir = Path(base_dir)
-        self.shard = shard
-        self.school_range = school_range
-        self.api_context = 'common'
-
-        if shard == "none":
-            self.db_path = str(self.base_dir / f"{name}.db")
-        else:
-            range_suffix = f"_{school_range}" if school_range else ""
-            self.db_path = str(self.base_dir / f"{name}_{shard}{range_suffix}.db")
-
-        self.total_db_path = str(self.base_dir / f"{name}_total.db")
-        self.logger = build_logger(name, str(self.base_dir / f"{name}.log"))
-        self.session = build_session()
-
-        self.q = queue.Queue()
-        self.writer_thread = threading.Thread(
-            target=self._writer_loop, daemon=True, name=f"{name}_writer"
+        self.meta_vocab = self.register_resource(
+            MetaVocabManager(GLOBAL_VOCAB_PATH, debug_mode)
         )
-        self.writer_thread.start()
-
-        self.school_cache: Dict[str, Any] = {}
-        self.school_by_id: Dict[str, Any] = {}
-        self._load_school_cache()
-
-        self._closeable_resources = []
-        self.data_guard = DataGuard()
-        self.collect_log = CollectLog()
-        self.retry_mgr = RetryManager(db_path="data/failures.db")
-
-        self._init_db()
-        self.completed_items: set = set()
-        self._load_checkpoints()
-
-        self.logger.info(
-            f"🔥 {name} 초기화 완료 "
-            f"(샤드: {shard}, 범위: {school_range}, 캐시: {len(self.school_cache)}개)"
+        self.geo_collector = self.register_resource(
+            GeoCollector(
+                global_db_path=GLOBAL_VOCAB_PATH,
+                school_db_path=self.db_path,
+                failures_db_path="data/failures.db",
+                debug_mode=debug_mode,
+            )
         )
 
-    def record_collect_failure(
-        self, region: str, year: Optional[int] = None, error: str = ""
-    ):
-        """NEIS API 수집 실패 기록"""
-        self.retry_mgr.record_failure(
-            domain='collect',
-            task_type='fetch_region',
-            region=region,
-            year=year or now_kst().year,
-            error=error
-        )
-        self.logger.warning(f"수집 실패 기록: region={region}, year={year}")
+        # ✅ 누적 통계를 위한 변수
+        self.total_new = 0
+        self.total_failed = 0
+        self.total_skipped = 0
 
-    def register_resource(self, resource):
-        """종료 시 자동 close()가 호출될 리소스 등록"""
-        self._closeable_resources.append(resource)
-        return resource
+        if not quiet_mode:
+            print("🏫 NeisInfoCollector 초기화 완료")
+        self.logger.info("🏫 NeisInfoCollector 초기화 완료")
 
-    def _load_school_cache(self):
-        if not os.path.exists(MASTER_DB):
-            self.logger.warning("school_info.db 없음. 캐시 없이 동작")
-            return
-        try:
-            with sqlite3.connect(MASTER_DB) as conn:
-                cur = conn.execute("""
-                    SELECT sc_code, atpt_code, school_id, sc_name, sc_kind,
-                           CASE WHEN sc_kind LIKE '%초등%' THEN '초'
-                                WHEN sc_kind LIKE '%중%'  THEN '중'
-                                WHEN sc_kind LIKE '%고%'  THEN '고'
-                                WHEN sc_kind LIKE '%특수%' THEN '특'
-                                ELSE '기타' END as school_level,
-                           CASE WHEN sc_kind LIKE '%특수%' THEN 1 ELSE 0 END as is_special,
-                           status
-                    FROM schools WHERE status = '운영'
-                """)
-                for row in cur:
-                    sc_code, atpt_code, school_id, sc_name, sc_kind, \
-                        level, is_special, status = row
-                    self.school_cache[sc_code] = {
-                        'atpt_code':  atpt_code,
-                        'school_id':  school_id,
-                        'name':       sc_name,
-                        'kind':       sc_kind,
-                        'level':      level,
-                        'is_special': is_special,
-                        'status':     status,
-                    }
-                    self.school_by_id[school_id] = self.school_cache[sc_code]
-        except Exception as e:
-            self.logger.error(f"학교 캐시 로드 실패: {e}")
-
-    def _get_field(self, raw_item: dict, field: str, default=None):
-        from constants.api_mappings import get_api_field
-        return get_api_field(raw_item, field, context=self.api_context, default=default)
-
-    def _include_school(self, school_code: str) -> bool:
-        if not school_code:
-            return False
-        return should_include_school(self.shard, self.school_range, school_code)
-
-    def _fetch_paginated(
-        self,
-        url: str,
-        base_params: dict,
-        response_key: str,
-        page_size: int = 100,
-        max_page: int = 500,
-        region: Optional[str] = None,
-        year: Optional[int] = None
-    ) -> List[dict]:
-        """페이지네이션 수집. 최대 재시도 초과 시 RetryManager에 실패 기록."""
-        all_items = []
-        page = 1
-        retry_count = 0
-        max_retries = 3
-
-        while page <= max_page:
-            params = {"pIndex": page, "pSize": page_size, **base_params}
-            try:
-                res = safe_json_request(self.session, url, params, self.logger)
-                if not res or response_key not in res:
-                    break
-                rows = res[response_key][1].get("row", [])
-                if not rows:
-                    break
-                all_items.extend(rows)
-
-                head = res[response_key][0].get("head", [{}])
-                total_count = int(head[0].get("list_total_count", 0))
-                if len(all_items) >= total_count:
-                    break
-
-                page += 1
-                retry_count = 0
-                time.sleep(random.uniform(0.1, 0.3))
-
-            except Exception as e:
-                retry_count += 1
-                self.logger.error(
-                    f"페이지 {page} 에러 ({retry_count}/{max_retries}): {e}"
-                )
-                if retry_count >= max_retries:
-                    if region:
-                        self.record_collect_failure(region, year, str(e))
-                    break
-                time.sleep(2 ** retry_count)
-
-        return all_items
-
-    def iterate_schools_by_month(
-        self,
-        region: str,
-        year: int,
-        month_range: List[tuple],
-        per_school_month_func: Callable[[str, int, int], None]
-    ):
-        raise NotImplementedError
-
-    def iterate_schools(
-        self, region: str, per_school_func: Callable[[str, str], None]
-    ):
-        raise NotImplementedError
-
-    def _writer_loop(self):
-        while True:
-            item = self.q.get()
-            if item is None:
-                self.q.task_done()
-                break
-
-            items_processed = 1
-            batch = self._flatten(item)
-
-            while len(batch) < 500:
-                try:
-                    nxt = self.q.get_nowait()
-                    if nxt is None:
-                        # 종료 신호를 다시 넣고 현재 배치만 처리 후 다음 루프에서 종료
-                        self.q.task_done()
-                        self.q.put(None)
-                        break
-                    items_processed += 1
-                    batch.extend(self._flatten(nxt))
-                except queue.Empty:
-                    break
-
-            try:
-                if batch:
-                    self._save_batch(batch)
-            except DataDropException as e:
-                self.logger.error(f"🚨 데이터 급감 감지: {e}")
-            except Exception as e:
-                self.logger.error(f"배치 저장 실패: {e}", exc_info=True)
-            finally:
-                for _ in range(items_processed):
-                    self.q.task_done()
-
-    def _flatten(self, data) -> List:
-        if data is None:
-            return []
-        if isinstance(data, list):
-            result = []
-            for item in data:                # ← data 추가
-                if isinstance(item, list):
-                    result.extend(item)
-                else:
-                    result.append(item)
-            return result
-        return [data]
-
-    def enqueue(self, data: Union[dict, List[dict]]):
-        self.q.put(data)
-
-    def create_dated_backup(self):
-        if not os.path.exists(self.db_path):
-            return
-        today = now_kst().strftime("%Y%m%d")
-        backup_path = self.db_path.replace('.db', f'_{today}.db')
-        if not os.path.exists(backup_path):
-            with sqlite3.connect(self.db_path) as conn:
-                conn.execute(f"VACUUM INTO '{backup_path}'")
-            self.logger.info(f"📅 날짜 백업 생성: {backup_path}")
-
-        base = self.db_path.replace('.db', '')
-        date_pattern = re.compile(rf"^{re.escape(base)}_(\d{{8}})\.db$")
-        from .kst_time import KST
-        for f in glob.glob(f"{base}_????????.db"):
-            match = date_pattern.match(f)
-            if not match:
-                continue
-            try:
-                fdate = datetime.strptime(match.group(1), '%Y%m%d')
-                fdate = KST.localize(fdate)
-                if (now_kst() - fdate) > timedelta(days=30):
-                    os.remove(f)
-                    self.logger.info(f"🗑️ 오래된 백업 삭제: {f}")
-            except ValueError:
-                continue
-
-    @abstractmethod
     def _init_db(self):
-        pass
-
-    def _init_db_common(self, conn):
-        init_checkpoint_table(conn)
-
-    @abstractmethod
-    def _get_target_key(self) -> str:
-        pass
-
-    @abstractmethod
-    def _process_item(self, raw_item: dict) -> Union[dict, List[dict]]:
-        pass
-
-    @abstractmethod
-    def _do_save_batch(self, conn: sqlite3.Connection, batch: List[dict]) -> None:
-        pass
-
-    def _save_batch(self, batch: List[dict]):
-        # get_db_connection이 commit()을 담당 → 여기서 중복 호출 없음
         with get_db_connection(self.db_path) as conn:
-            self._do_save_batch(conn, batch)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS schools (
+                    sc_code TEXT PRIMARY KEY,
+                    school_id INTEGER,
+                    sc_name TEXT,
+                    eng_name TEXT,
+                    sc_kind TEXT,
+                    atpt_code TEXT,
+                    address TEXT,
+                    cleaned_address TEXT,
+                    address_hash TEXT,
+                    tel TEXT,
+                    homepage TEXT,
+                    status TEXT DEFAULT '운영',
+                    last_seen INTEGER,
+                    load_dt TEXT,
+                    latitude REAL,
+                    longitude REAL,
+                    geocode_attempts INTEGER DEFAULT 0,
+                    last_error TEXT,
+                    city_id INTEGER,
+                    district_id INTEGER,
+                    street_id INTEGER,
+                    number_type TEXT,
+                    number_value INTEGER,
+                    number_start INTEGER,
+                    number_end INTEGER,
+                    number_bit INTEGER,
+                    kakao_address TEXT,
+                    jibun_address TEXT
+                )
+            """)
+            for idx in ["idx_address_hash","idx_status","idx_city","idx_district","idx_street",
+                        "idx_schools_missing","idx_schools_region","idx_schools_coords"]:
+                conn.execute(f"CREATE INDEX IF NOT EXISTS {idx} ON schools({idx.split('_',2)[-1] if idx!='idx_schools_missing' else 'latitude'})")
+            self._init_db_common(conn)
 
-    def _load_checkpoints(self):
-        pass
+    def _get_target_key(self) -> str:
+        return self.run_date
 
-    def save_checkpoint(
-        self, region: str, school: str, sub_key: str, page: int, total: int
-    ):
-        pass
+    def fetch_region(self, region_code: str, limit: Optional[int] = None, **kwargs):
+        region_name = REGION_NAMES.get(region_code, region_code)
+        if self.debug_mode and not self.quiet_mode:
+            print(f"\n📡 [{region_name}({region_code})] 데이터 수집 시작...")
+        base_params = {"ATPT_OFCDC_SC_CODE": region_code}
+        rows = self._fetch_paginated(
+            NEIS_URL, base_params, 'NeisInfo',
+            page_size=100,
+            region=region_code,
+            year=int(self.run_date[:4])
+        )
+        if not rows:
+            self.logger.error(f"[{region_name}] 수집된 데이터 없음")
+            if self.debug_mode and not self.quiet_mode:
+                print(f"❌ [{region_name}] 수집된 데이터 없음")
+            return
+        self.logger.info(f"[{region_name}] 전체 {len(rows)}건 수집")
+        if self.debug_mode and not self.quiet_mode:
+            print(f"📋 [{region_name}] 전체 {len(rows)}건 수집")
+        new, failed, skipped = self._update_schools_with_diff(rows, region_code, limit=limit)
 
-    def close(self, timeout: float = 60.0):
-        """
-        안전한 종료 순서:
-        1. q.join()  — 큐에 남은 모든 아이템 처리 완료 대기
-        2. q.put(None) — writer 스레드에 종료 신호 전송
-        3. writer_thread.join() — writer 스레드 완전 종료 대기
-        4. 리소스 정리 — writer 종료 후 MetaVocabManager 등 close()
-        """
-        self.logger.info(f"🔒 {self.name} 종료 시작...")
+        # ✅ 누적 통계 업데이트
+        self.total_new += new
+        self.total_failed += failed
+        self.total_skipped += skipped
 
-        # 1. 남은 큐 아이템 모두 처리 대기
-        self.q.join()
+        # ✅ 지역별 결과 출력 (quiet 모드가 아니면 항상 표시)
+        if not self.quiet_mode:
+            print(f"  📊 [{region_name}] 신규성공={new}, 실패={failed}, 스킵={skipped}")
 
-        # 2. writer 스레드 종료 신호
-        self.q.put(None)
+        if self.debug_mode and not self.quiet_mode:
+            print(f"✅ [{region_name}] 처리 완료")
 
-        # 3. writer 스레드 종료 대기
-        self.writer_thread.join(timeout=timeout)
-        if self.writer_thread.is_alive():
-            self.logger.warning("⚠️ writer_thread가 정상 종료되지 않았습니다.")
-
-        # 4. writer 완전 종료 후 리소스 정리 (MetaVocabManager 등)
-        for res in self._closeable_resources:
+    def _update_schools_with_diff(self, new_rows: List[dict], region_code: str, limit: Optional[int] = None) -> Tuple[int, int, int]:
+        existing = {}
+        if os.path.exists(self.db_path):
             try:
-                res.close()
+                with get_db_reader(self.db_path) as conn:
+                    cur = conn.execute(
+                        "SELECT sc_code, address_hash, latitude, longitude, geocode_attempts, last_error FROM schools"
+                    )
+                    existing = {
+                        row[0]: {"hash": row[1], "lat": row[2], "lon": row[3], "attempts": row[4], "last_error": row[5]}
+                        for row in cur
+                    }
+            except sqlite3.OperationalError as e:
+                self.logger.error(f"DB 읽기 실패: {e}")
+                return 0, 0, 0
             except Exception as e:
-                self.logger.warning(f"리소스 close 실패: {e}")
+                self.logger.error(f"기존 데이터 조회 실패: {e}")
+                return 0, 0, 0
 
-        self.logger.info(f"✅ {self.name} 종료 완료")
+        row_meta = {}
+        for row in new_rows:
+            sc_code = row.get("SD_SCHUL_CODE")
+            if not sc_code or not self._include_school(sc_code):
+                continue
+            full_address = row.get("ORG_RDNMA", "")
+            new_hash = AddressFilter.hash(full_address) if full_address else ""
+            row_meta[sc_code] = {
+                "row": row,
+                "full_address": full_address,
+                "new_hash": new_hash,
+                "old": existing.get(sc_code, {}),
+            }
+
+        new_coords: Dict[str, Tuple[float, float]] = {}
+        failed_count = 0
+        skipped_count = 0
+        start_time = time.time()
+        last_update = start_time
+        processed_count = 0
+
+        # ✅ limit 상태 표시를 위한 변수
+        limit_active = limit is not None
+
+        def _print_progress(current, total, success, failed, skipped, start_t, quiet):
+            if quiet:
+                return
+            elapsed = time.time() - start_t
+            avg = current / elapsed if elapsed > 0 else 0
+            bar_len = 40
+            filled = int(bar_len * current / total) if total > 0 else 0
+            bar = '█' * filled + '░' * (bar_len - filled)
+            status = f"{GREEN}✅{RESET}{success:3d} {RED}❌{RESET}{failed:3d} {YELLOW}⏭️{RESET}{skipped:3d}"
+            suffix = f" [LIMIT:{limit}]" if limit_active and current >= limit else ""
+            print(f"\r[{bar}] {current}/{total}{suffix} {status} {avg:6.1f} 개/초", end="", flush=True)
+
+        total_items = len(row_meta)
+        for i, (sc_code, meta) in enumerate(row_meta.items(), 1):
+            if limit and processed_count >= limit:
+                if not self.quiet_mode:
+                    print(f"\n⚠️  제한 ({limit} 개) 도달, 수집 중단")
+                return len(new_coords), failed_count, skipped_count
+
+            if meta["old"].get("hash") != meta["new_hash"] and meta["full_address"]:
+                cleaned = AddressFilter.clean(meta["full_address"], level=self.LEVEL_GEOCODING)
+                
+                # ✅ 지번 주소 추출
+                jibun = AddressFilter.extract_jibun(meta["full_address"])
+                meta["jibun_address"] = jibun
+                
+                try:
+                    coords = self.geo_collector._geocode(cleaned)
+                except Exception as e:
+                    if not self.quiet_mode:
+                        print(f"\n  ⚠️ [{sc_code}] 예외: {type(e).__name__}")
+                    self.logger.warning(f"지오코딩 예외 {sc_code}: {e}")
+                    coords = None
+
+                if coords:
+                    new_coords[sc_code] = coords
+                else:
+                    failed_count += 1
+                    if self.shard != "none":
+                        now_naive = now_kst().replace(tzinfo=None)
+                        deadline = now_naive.replace(hour=15, minute=0, second=0, microsecond=0)
+                        if now_naive > deadline:
+                            deadline += timedelta(days=1)
+                        self.retry_mgr.record_failure(
+                            domain='school', task_type='geocode',
+                            shard=self.shard, sc_code=sc_code,
+                            region=region_code, address=meta["full_address"],
+                            jibun_address=jibun,
+                            error="Geocoding failed", deadline=deadline,
+                        )
+            else:
+                skipped_count += 1
+
+            processed_count += 1
+            if not self.quiet_mode and (time.time() - last_update >= 0.2 or i == total_items):
+                _print_progress(i, total_items, len(new_coords), failed_count, skipped_count, start_time, self.quiet_mode)
+                last_update = time.time()
+
+        if not self.quiet_mode:
+            print()
+
+        # ✅ 저장할 데이터 구성 및 enqueue
+        for sc_code, meta in row_meta.items():
+            row = meta["row"]
+            atpt_code = row.get("ATPT_OFCDC_SC_CODE") or ""
+            old = meta["old"]
+
+            if sc_code in new_coords:
+                lon, lat = new_coords[sc_code]
+                attempts, last_error = 0, None
+            else:
+                lat, lon = old.get("lat"), old.get("lon")
+                attempts = old.get("attempts", 0) + 1
+                last_error = old.get("last_error") or "Geocoding failed"
+
+            cleaned = AddressFilter.clean(meta["full_address"], level=self.LEVEL_FINAL) if meta["full_address"] else ""
+            addr_ids = {}
+            if cleaned:
+                try:
+                    addr_ids = self.meta_vocab.save_address(cleaned)
+                except Exception as e:
+                    self.logger.error(f"주소 변환 실패 {sc_code}: {e}")
+
+            self.enqueue([{
+                "sc_code": sc_code,
+                "school_id": create_school_id(atpt_code, sc_code),
+                "sc_name": row.get("SCHUL_NM", ""),
+                "eng_name": row.get("ENG_SCHUL_NM", ""),
+                "sc_kind": row.get("SCHUL_KND_SC_NM", ""),
+                "atpt_code": atpt_code,
+                "address": meta["full_address"],
+                "cleaned_address": cleaned,
+                "address_hash": meta["new_hash"],
+                "tel": row.get("ORG_TELNO", ""),
+                "homepage": row.get("HMPG_ADRES", ""),
+                "status": "운영",
+                "last_seen": int(self.run_date),
+                "load_dt": now_kst().isoformat(),
+                "latitude": lat,
+                "longitude": lon,
+                "geocode_attempts": attempts,
+                "last_error": last_error,
+                "city_id": addr_ids.get("city_id", 0),
+                "district_id": addr_ids.get("district_id", 0),
+                "street_id": addr_ids.get("street_id", 0),
+                "number_type": addr_ids.get("number_type"),
+                "number_value": addr_ids.get("number"),
+                "number_start": addr_ids.get("number_start"),
+                "number_end": addr_ids.get("number_end"),
+                "number_bit": addr_ids.get("number_bit", 0),
+                "jibun_address": meta.get("jibun_address"),
+                "kakao_address": None,
+            }])
+
+        region_name = REGION_NAMES.get(region_code, region_code)
+        self.logger.info(f"[{region_name}] 좌표 갱신: {len(new_coords)}개 / 완료")
+
+        return len(new_coords), failed_count, skipped_count
+
+    def _process_item(self, raw_item: dict) -> List[dict]:
+        return []
+
+    def _do_save_batch(self, conn: sqlite3.Connection, batch: List[dict]):
+        try:
+            conn.executemany("""
+                INSERT OR REPLACE INTO schools
+                (sc_code, school_id, sc_name, eng_name, sc_kind, atpt_code,
+                 address, cleaned_address, address_hash, tel, homepage, status,
+                 last_seen, load_dt, latitude, longitude, geocode_attempts, last_error,
+                 city_id, district_id, street_id, number_type, number_value,
+                 number_start, number_end, number_bit, jibun_address, kakao_address)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, [
+                (it['sc_code'], it['school_id'], it['sc_name'], it['eng_name'],
+                 it['sc_kind'], it['atpt_code'], it['address'], it['cleaned_address'],
+                 it['address_hash'], it['tel'], it['homepage'], it['status'],
+                 it['last_seen'], it['load_dt'], it['latitude'], it['longitude'],
+                 it['geocode_attempts'], it['last_error'], it['city_id'],
+                 it['district_id'], it['street_id'], it['number_type'],
+                 it['number_value'], it['number_start'], it['number_end'],
+                 it['number_bit'], it.get('jibun_address'), it.get('kakao_address'))
+                for it in batch
+            ])
+            if self.debug_mode and not self.quiet_mode:
+                print(f"💾 배치 저장 완료: {len(batch)}개")
+        except Exception as e:
+            self.logger.error(f"배치 저장 실패: {e}")
+            raise
+
+
+if __name__ == "__main__":
+    # ✅ GitHub Actions 환경 감지
+    is_github_actions = os.getenv('GITHUB_ACTIONS') == 'true'
+
+    parser = argparse.ArgumentParser(description="학교 기본정보 수집기")
+    parser.add_argument("--regions", default="ALL", help="수집할 지역 (ALL 또는 쉼표 구분, 예: B10,C10)")
+    parser.add_argument("--debug", action="store_true", help="상세 출력 모드")
+    parser.add_argument("--quiet", action="store_true", help="출력 최소화 (GitHub Actions 등)")
+    parser.add_argument("--limit", type=int, default=None, help="수집할 학교 수 제한 (테스트용)")
+    args = parser.parse_args()
+
+    # ✅ GitHub Actions 환경에서는 자동으로 quiet 모드 활성화
+    if is_github_actions and not args.quiet:
+        args.quiet = True
+
+    collector = NeisInfoCollector(
+        shard="none",
+        debug_mode=args.debug,
+        quiet_mode=args.quiet
+    )
+
+    if args.regions == "ALL":
+        regions = ALL_REGIONS
+    else:
+        regions = [r.strip() for r in args.regions.split(",") if r.strip()]
+
+    if not args.quiet:
+        print(f"\n🚀 학교 정보 수집 시작 (지역: {len(regions)}개, limit: {args.limit or '전체'})")
+        print("=" * 70)
+
+    for region in regions:
+        collector.fetch_region(region, limit=args.limit)
+        if args.limit:
+            break
+
+    collector.close()
+
+    # ✅ 전체 통계 출력 (quiet 모드가 아니면)
+    if not args.quiet:
+        total = collector.total_new + collector.total_failed + collector.total_skipped
+        success_rate = (collector.total_new / total * 100) if total > 0 else 0
+
+        print("=" * 70)
+        print(f"📊 전체 통계")
+        print(f"   신규 성공: {collector.total_new}개 ({success_rate:.1f}%)")
+        print(f"   실패:      {collector.total_failed}개")
+        print(f"   스킵:      {collector.total_skipped}개")
+        print(f"   총 처리:   {total}개")
+        print("=" * 70)
+        print("✅ 수집 완료")
+    else:
+        collector.logger.info("수집 완료")
+        

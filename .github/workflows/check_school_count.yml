@@ -2,9 +2,13 @@ name: Daily Collection Pipeline
 
 on:
   schedule:
-    # 매일 UTC 21:10 = 한국시간 06:10 (다음 날)
-    - cron: '10 21 * * *'
+    - cron: '10 21 * * *'   # KST 06:10
   workflow_dispatch:
+    inputs:
+      year:
+        description: '수집할 학년도 (YYYY). 비우면 자동 계산'
+        required: false
+        type: string
 
 jobs:
   daily-pipeline:
@@ -17,20 +21,41 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # 1️⃣ 학교 기본정보 수집 (가장 먼저 실행)
-      - name: Run school info collector
+      # 학년도 결정
+      - name: Determine school year
+        id: year
+        env:
+          INPUT_YEAR: ${{ inputs.year }}
+        run: |
+          if [ -n "$INPUT_YEAR" ]; then
+            if [[ "$INPUT_YEAR" =~ ^[0-9]{4}$ ]]; then
+              SCHOOL_YEAR="$INPUT_YEAR"
+            else
+              echo "❌ 잘못된 year 형식: $INPUT_YEAR"
+              exit 1
+            fi
+          else
+            SCHOOL_YEAR=$(python3 -c "
+          from datetime import datetime
+          n = datetime.now()
+          print(n.year if n.month >= 3 else n.year - 1)
+          ")
+          fi
+          echo "value=$SCHOOL_YEAR" >> "$GITHUB_OUTPUT"
+          echo "📅 수집 학년도: $SCHOOL_YEAR"
+
+      # 1️⃣ 학교 기본정보 수집
+      - name: Run neis info collector
         env:
           NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
           NEIS_KEYS_JSON: ${{ secrets.NEIS_KEYS_JSON }}
           VWORLD_API_KEY: ${{ secrets.VWORLD_API_KEY }}
-        run: |
-          cd ${{ github.workspace }}
-          python scripts/run_pipeline.py school_info_collector --regions ALL
+        run: python scripts/run_pipeline.py neis_info_collector --regions ALL
 
-      # 2️⃣ 학교 수 검증 (최소 12,000개 이상)
+      # 2️⃣ 학교 수 검증
       - name: Verify school count
         run: |
-          COUNT=$(sqlite3 data/master/school_info.db "SELECT COUNT(*) FROM schools;")
+          COUNT=$(sqlite3 data/master/neis_info.db "SELECT COUNT(*) FROM schools;")
           echo "📊 현재 학교 수: $COUNT"
           if [ $COUNT -lt 12000 ]; then
             echo "❌ 학교 수가 너무 적습니다. 파이프라인을 중단합니다."
@@ -38,29 +63,30 @@ jobs:
           fi
           echo "✅ 학교 수 정상"
 
-      # 3️⃣ 급식 수집 (2025학년도)
+      # 3️⃣ 급식 수집
       - name: Run meal collector
         if: success()
-        run: python scripts/run_pipeline.py meal_collector --year 2025 --regions ALL
+        run: python scripts/run_pipeline.py meal_collector --year ${{ steps.year.outputs.value }} --regions ALL
 
       # 4️⃣ 학사일정 수집
       - name: Run schedule collector
         if: success()
-        run: python scripts/run_pipeline.py schedule_collector --year 2025 --regions ALL
+        run: python scripts/run_pipeline.py schedule_collector --year ${{ steps.year.outputs.value }} --regions ALL
 
       # 5️⃣ 시간표 수집 (1,2학기)
       - name: Run timetable collector (semester 1)
         if: success()
-        run: python scripts/run_pipeline.py timetable_collector --year 2025 --semester 1 --regions ALL
+        run: python scripts/run_pipeline.py timetable_collector --year ${{ steps.year.outputs.value }} --semester 1 --regions ALL
       - name: Run timetable collector (semester 2)
         if: success()
-        run: python scripts/run_pipeline.py timetable_collector --year 2025 --semester 2 --regions ALL
+        run: python scripts/run_pipeline.py timetable_collector --year ${{ steps.year.outputs.value }} --semester 2 --regions ALL
 
-      # 6️⃣ 로그 업로드 (항상)
+      # 6️⃣ 로그 업로드
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: daily-logs-${{ github.run_id }}
           path: logs/
+          if-no-files-found: warn
           

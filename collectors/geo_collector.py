@@ -57,7 +57,7 @@ class GeoCollector:
     def __init__(
         self,
         global_db_path: str = "data/global_vocab.db",
-        school_db_path: str = "data/master/school_info.db",
+        school_db_path: str = "data/master/neis_info.db",
         failures_db_path: str = "data/failures.db",
         debug_mode: bool = False,
         api_limit: Optional[int] = None,

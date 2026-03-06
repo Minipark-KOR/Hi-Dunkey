@@ -14,4 +14,4 @@ ARCHIVE_DIR = PROJECT_ROOT / "data" / "archive"
 
 GLOBAL_VOCAB_PATH = str(ACTIVE_DIR / "global_vocab.db")
 UNKNOWN_DB_PATH = str(ACTIVE_DIR / "unknown_patterns.db")
-MASTER_DB_PATH = str(MASTER_DIR / "school_info.db")   # ✅ 변경
+MASTER_DB_PATH = str(MASTER_DIR / "neis_info.db")   # ✅ 변경

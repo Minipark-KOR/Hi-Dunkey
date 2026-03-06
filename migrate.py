@@ -70,7 +70,7 @@ def migrate(db_path: str) -> bool:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("사용법: python migrate.py <school_info.db 경로>")
+        print("사용법: python migrate.py <nies_info.db 경로>")
         sys.exit(1)
     
     db_path = sys.argv[1]

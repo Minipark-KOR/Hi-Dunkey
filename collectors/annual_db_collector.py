@@ -10,7 +10,7 @@ from core.kst_time import now_kst
 from core.school_year import get_current_school_year
 from core.collector_cli import parse_regions
 
-from collectors.school_info_collector import SchoolInfoCollector
+from collectors.neis_info_collector import NeisInfoCollector
 from collectors.annual_meal_collector import AnnualMealCollector
 from collectors.timetable_collector import AnnualFullTimetableCollector
 from collectors.schedule_collector import AnnualFullScheduleCollector

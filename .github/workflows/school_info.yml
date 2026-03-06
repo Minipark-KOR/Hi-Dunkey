@@ -1,12 +1,9 @@
-name: School Info Monthly Update
+name: Neis Info Monthly Update
 
 on:
   schedule:
     - cron: "0 2 1 * *"
   workflow_dispatch:
-
-env:
-  YYYYMM: ${{ github.run_id }}
 
 jobs:
   collect:
@@ -55,34 +52,34 @@ jobs:
         run: pip install -r requirements.txt
       - name: Set current year-month
         run: echo "YYYYMM=$(date +%Y%m)" >> $GITHUB_ENV
-      - name: Restore school_info.db from cache
+      - name: Restore neis_info.db from cache
         id: cache-master
         uses: actions/cache/restore@v4
         with:
-          path: data/master/school_info.db
-          key: school-info-${{ env.YYYYMM }}
-          restore-keys: school-info-
+          path: data/master/neis_info.db
+          key: neis-info-${{ env.YYYYMM }}
+          restore-keys: neis-info-
       - name: Create directories
         run: mkdir -p data/master data/active
-      - name: Run School Info Collector
+      - name: Run Neis Info Collector
         env:
           NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
           NEIS_KEYS_JSON: ${{ secrets.NEIS_KEYS_JSON }}
         run: |
-          CMD="python collectors/school_info_collector.py --regions ${{ matrix.region }} --shard ${{ matrix.shard }}"
+          CMD="python collectors/neis_info_collector.py --regions ${{ matrix.region }} --shard ${{ matrix.shard }}"
           [ "${{ matrix.range }}" != "none" ] && CMD="${CMD} --school_range ${{ matrix.range }}"
           eval ${CMD}
       - name: Upload shard DB
         uses: actions/upload-artifact@v4
         with:
-          name: school-info-shard-${{ matrix.name }}
-          path: data/master/school_info_*.db
+          name: neis-info-shard-${{ matrix.name }}
+          path: data/master/neis_info_*.db
           retention-days: 7
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: school-info-${{ matrix.name }}-logs
+          name: neis-info-${{ matrix.name }}-logs
           path: data/master/*.log
 
   finalize:
@@ -90,8 +87,8 @@ jobs:
     if: always()
     uses: ./.github/workflows/_collector_base.yml
     with:
-      collector-name: "school"
-      merge-script: "merge_school_info_dbs.py"
+      collector-name: "neis_info"
+      merge-script: "merge_neis_info_dbs.py"
       consolidate-vocab: false
     secrets:
       NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
@@ -106,17 +103,16 @@ jobs:
       - name: Download merged DB
         uses: actions/download-artifact@v4
         with:
-          name: school-info-total-db
+          name: neis_info-total-db
           path: data/master/
-      - name: Save school_info.db to cache
+      - name: Save neis_info.db to cache
         uses: actions/cache/save@v4
         with:
-          path: data/master/school_info.db
-          key: school-info-${{ env.YYYYMM }}
+          path: data/master/neis_info.db
+          key: neis-info-${{ env.YYYYMM }}
       - name: Upload to GitHub Release (fallback)
         run: |
           gh release upload latest-master \
-            data/master/school_info.db --clobber
+            data/master/neis_info.db --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          

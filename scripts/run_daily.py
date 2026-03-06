@@ -129,17 +129,17 @@ def run_master():
     if now_kst().day == 1:
         logger.info("🏫 학교정보 월간 수집")
         run_collector(
-            "collectors/school_info_collector.py",
+            "collectors/neis_info_collector.py",
             ["--regions", "ALL", "--shard", "odd", "--incremental", "--compare"],
             "학교정보 odd (incremental+compare)"
         )
         run_collector(
-            "collectors/school_info_collector.py",
+            "collectors/neis_info_collector.py",
             ["--regions", "ALL", "--shard", "even", "--incremental", "--compare"],
             "학교정보 even (incremental+compare)"
         )
         run_collector(
-            "scripts/merge_school_info_dbs.py",
+            "scripts/merge_neis_info_dbs.py",
             [],
             "학교정보 병합"
         )

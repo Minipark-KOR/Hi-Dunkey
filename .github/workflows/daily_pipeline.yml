@@ -76,28 +76,28 @@ jobs:
         id: date
         run: echo "date=$(date +'%Y%m%d')" >> "$GITHUB_OUTPUT"
 
-      - name: Restore school DB cache
+      - name: Restore neis DB cache
         uses: actions/cache@v4
         with:
           path: data/master/
-          key: school-db-${{ github.ref_name }}-${{ steps.year.outputs.value }}-${{ steps.date.outputs.date }}
+          key: neis-db-${{ github.ref_name }}-${{ steps.year.outputs.value }}-${{ steps.date.outputs.date }}
           restore-keys: |
-            school-db-${{ github.ref_name }}-${{ steps.year.outputs.value }}-
-            school-db-${{ github.ref_name }}-
+            neis-db-${{ github.ref_name }}-${{ steps.year.outputs.value }}-
+            neis-db-${{ github.ref_name }}-
 
-      - name: Run school info collector
-        id: school_info
+      - name: Run neis info collector
+        id: neis_info
         env:
           NEIS_KEYS_JSON: ${{ secrets.NEIS_KEYS_JSON }}
           VWORLD_API_KEY: ${{ secrets.VWORLD_API_KEY }}
-        run: python scripts/run_pipeline.py school_info_collector --regions ALL
+        run: python scripts/run_pipeline.py neis_info_collector --regions ALL
 
       - name: Verify school count
         id: verify
         run: |
           python3 - <<'PY'
           import os, sqlite3, sys
-          db_path = "data/master/school_info.db"
+          db_path = "data/master/neis_info.db"
           if not os.path.exists(db_path):
               print("❌ DB 파일 없음:", db_path)
               sys.exit(1)
@@ -203,10 +203,10 @@ jobs:
             const schedule = "${{ steps.schedule.outcome || 'skipped' }}";
             const timetable = "${{ steps.timetable.outcome || 'skipped' }}";
             const verify = "${{ steps.verify.conclusion }}";
-            const schoolInfo = "${{ steps.school_info.conclusion }}";
+            const NeisInfo = "${{ steps.neis_info.conclusion }}";
 
             const failed = [meal, schedule, timetable].filter(x => x === "failure");
-            const criticalFailed = (verify !== "success") || (schoolInfo !== "success");
+            const criticalFailed = (verify !== "success") || (NeisInfo !== "success");
 
             if (!criticalFailed && failed.length === 0) {
               core.info("No collector failures detected. Skip issue creation.");
@@ -217,7 +217,7 @@ jobs:
             const body = [
               "## 상태 요약",
               `- 실행 링크: ${context.serverUrl}/${owner}/${repo}/actions/runs/${runId}`,
-              `- school_info: ${schoolInfo}`,
+              `- neis_info: ${NeisInfo}`,
               `- verify: ${verify}`,
               `- meal(outcome): ${meal}`,
               `- schedule(outcome): ${schedule}`,

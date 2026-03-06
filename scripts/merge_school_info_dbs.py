@@ -15,10 +15,10 @@ MASTER_DIR = os.path.join(BASE_DIR, "data", "master")
 
 def merge_databases():
     start_time = time.time()
-    total_db_path = os.path.join(MASTER_DIR, "school_info.db")
+    total_db_path = os.path.join(MASTER_DIR, "Neis_info.db")
 
-    # 샤드 파일 목록 (school_odd.db, school_even.db)
-    shard_files = ["school_odd.db", "school_even.db"]
+    # 샤드 파일 목록 (neis_info_odd.db, neis_info_even.db)
+    shard_files = ["neis_info_odd.db", "neis_info_even.db"]
     shard_dbs = []
     for fname in shard_files:
         full_path = os.path.join(MASTER_DIR, fname)

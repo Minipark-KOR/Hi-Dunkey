@@ -29,7 +29,7 @@ HandlerResult = Tuple[bool, bool]
 TASK_HANDLERS: Dict[tuple, Callable[[Dict[str, Any]], HandlerResult]] = {}
 
 _GEO_COLLECTOR: Optional[GeoCollector] = None
-_SCHOOL_DB = "data/master/school_info.db"
+_NEIS_INFO_DB = "data/master/neis_info.db"
 _FAILURES_DB = "data/failures.db"
 
 # 에러 메시지 저장용 전역 변수
@@ -58,7 +58,7 @@ def get_geo_collector() -> GeoCollector:
     if _GEO_COLLECTOR is None:
         _GEO_COLLECTOR = GeoCollector(
             global_db_path="data/global_vocab.db",
-            school_db_path=_SCHOOL_DB,
+            neis_info_db_path=_NEIS_INFO_DB,
             failures_db_path=_FAILURES_DB,
             debug_mode=False,
         )
@@ -129,7 +129,7 @@ def update_school_coords(
     addr_components: Dict[str, Any],
     kakao_address: Optional[str] = None
 ):
-    with sqlite3.connect(_SCHOOL_DB, timeout=30) as conn:
+    with sqlite3.connect(_NEIS_INFO_DB, timeout=30) as conn:
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA busy_timeout=30000;")
         try:
@@ -357,11 +357,10 @@ def print_summary(success, retry, orphan, start_time, remaining):
 # 메뉴 기능
 # ========================================================
 
-def check_missing_count(school_db: str):
-    if not os.path.exists(school_db):
+    if not os.path.exists(neis_info_db):
         print("❌ DB 파일 없음")
         return
-    with sqlite3.connect(school_db) as conn:
+    with sqlite3.connect(neis_info_db) as conn:
         cur = conn.execute("SELECT COUNT(*) FROM schools WHERE latitude IS NULL OR longitude IS NULL")
         missing = cur.fetchone()[0]
         total = conn.execute("SELECT COUNT(*) FROM schools").fetchone()[0]
@@ -380,9 +379,9 @@ def check_failures_queue(failures_db: str):
             print(f"  - {s}: {c}개")
 
 
-def check_db_size(school_db: str, failures_db: str):
+def check_db_size(neis_info_db: str, failures_db: str):
     print("\n💾 DB 파일 크기:")
-    for label, path in [("학교 DB", school_db), ("Failures DB", failures_db)]:
+    for label, path in [("학교 DB", neis_info_db), ("Failures DB", failures_db)]:
         if os.path.exists(path):
             size = os.path.getsize(path) / (1024*1024)
             print(f"  {label}: {size:.2f} MB")
@@ -390,7 +389,7 @@ def check_db_size(school_db: str, failures_db: str):
             print(f"  {label}: 없음")
 
 
-def list_failed_schools(school_db: str, failures_db: str):
+def list_failed_schools(neis_info_db: str, failures_db: str):
     """실패한 학교 목록 출력 (학교명, 도로명 주소, 지번 주소) - 3줄 표시"""
     print("\n📋 실패한 학교 목록 (status='FAILED')")
     print("=" * 90)
@@ -405,8 +404,8 @@ def list_failed_schools(school_db: str, failures_db: str):
             print("ℹ️  현재 FAILED 상태인 학교가 없습니다.")
             return
 
-        # 2. schools DB에서 해당 학교 정보 조회
-        with sqlite3.connect(school_db) as conn_s:
+        # 2. neis info DB에서 해당 학교 정보 조회
+        with sqlite3.connect(neis_info_db) as conn_s:
             conn_s.row_factory = sqlite3.Row
             placeholders = ','.join(['?'] * len(failed_rows))
             cur_s = conn_s.execute(f"""
@@ -532,7 +531,7 @@ def clear_logs():
         print("취소되었습니다.")
 
 
-def show_menu(rm: RetryManager, school_db: str, failures_db: str):
+def show_menu(rm: RetryManager, neis_info_db: str, failures_db: str):
     while True:
         print("\n" + "=" * 70)
         print("📋 추가 작업 메뉴")
@@ -553,15 +552,15 @@ def show_menu(rm: RetryManager, school_db: str, failures_db: str):
         choice = input("번호를 선택하세요 (0-10): ").strip()
 
         if choice == '1':
-            check_missing_count(school_db)
+            check_missing_count(neis_info_db)
         elif choice == '2':
             check_failures_queue(failures_db)
         elif choice == '3':
             show_last_result()
         elif choice == '4':
-            check_db_size(school_db, failures_db)
+            check_db_size(neis_info_db, failures_db)
         elif choice == '5':
-            list_failed_schools(school_db, failures_db)
+            list_failed_schools(neis_info_db, failures_db)
         elif choice == '6':
             reset_orphan_only(failures_db)
         elif choice == '7':
@@ -629,7 +628,7 @@ def main():
     if not failures:
         print("ℹ️  재시도할 작업 없음")
         if args.menu:
-            show_menu(rm, _SCHOOL_DB, _FAILURES_DB)
+            show_menu(rm, _NEIS_INFO_DB, _FAILURES_DB)
         return
 
     print(f"📋 총 {len(failures)}개 작업 재시도\n")
@@ -692,7 +691,7 @@ def main():
     print_summary(success_count, retry_count, orphan_count, start_time, remaining)
 
     if args.menu:
-        show_menu(rm, _SCHOOL_DB, _FAILURES_DB)
+        show_menu(rm, _NEIS_INFO_DB, _FAILURES_DB)
 
 
 if __name__ == "__main__":

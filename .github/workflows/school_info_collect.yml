@@ -1,4 +1,4 @@
-name: School Master Monthly Update
+name: Neis Info Monthly Update
 
 on:
   schedule:
@@ -56,11 +56,11 @@ jobs:
       - name: Create directories
         run: mkdir -p data/master data/active/backups
 
-      - name: Run School Master Collector (${{ matrix.name }})
+      - name: Run Neis Info Collector (${{ matrix.name }})
         env:
           NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}
         run: |
-          CMD="python collectors/school_info_collector.py \      # ✅ 수정
+          CMD="python collectors/neis_info_collector.py \      # ✅ 수정
             --regions ${{ matrix.region }} \
             --shard ${{ matrix.shard }}"
 
@@ -75,7 +75,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: school-shard-${{ matrix.name }}
-          path: data/master/school_info_*.db                     # ✅ 수정: school_info_*.db
+          path: data/master/neis_info_*.db                     # ✅ 수정: neis_info_*.db
 
       - name: Upload logs on failure
         if: failure()
@@ -89,8 +89,8 @@ jobs:
     if: always()
     uses: ./.github/workflows/_collector_base.yml                 # ✅ 수정: _collector_base.yml
     with:
-      collector-name: "school"
-      merge-script: "merge_school_info_dbs.py"
+      collector-name: "neis_info"
+      merge-script: "merge_neis_info_dbs.py"
       consolidate-vocab: false
     secrets:
       NEIS_API_KEY: ${{ secrets.NEIS_API_KEY }}

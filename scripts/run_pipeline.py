@@ -4,9 +4,9 @@
 사용법:
     python scripts/run_merge_parallel.py <collector_name> [--year YYYY] [--timeout 초] [추가 인자...]
 예:
-    python scripts/run_merge_parallel.py school_info --regions ALL
-    python scripts/run_merge_parallel.py school_info --year 2025 --regions ALL
-    python scripts/run_merge_parallel.py school_info --year 2025 --regions ALL --debug
+    python scripts/run_merge_parallel.py neis_info --regions ALL
+    python scripts/run_merge_parallel.py neis_info --year 2025 --regions ALL
+    python scripts/run_merge_parallel.py neis_info --year 2025 --regions ALL --debug
 """
 import sys
 import subprocess
@@ -21,8 +21,8 @@ from typing import Optional
 
 # 도메인별 병합 스크립트 매핑
 MERGE_SCRIPT_MAP = {
-    "school_info": "merge_school_info_dbs.py",
-    "school_info_collector": "merge_school_info_dbs.py",   # ✅ 추가
+    "neis_info": "merge_neis_info_dbs.py",
+    "neis_info_collector": "merge_neis_info_dbs.py",   # ✅ 추가
     "meal": "merge_meal_dbs.py",
     "meal_collector": "merge_meal_dbs.py",                 # 필요시 추가
     "schedule": "merge_schedule_dbs.py",
@@ -213,7 +213,7 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
 
     parser = argparse.ArgumentParser(description="병렬 샤드 실행기 + 자동 병합")
-    parser.add_argument("collector", help="콜렉터 이름 (school_info, meal, timetable, schedule 등)")
+    parser.add_argument("collector", help="콜렉터 이름 (neis_info, meal, timetable, schedule 등)")
     parser.add_argument("--year", type=int, help="학년도 (미지정 시 프롬프트)")
     parser.add_argument("--timeout", type=int, default=None, help="각 샤드/병합의 최대 실행 시간(초)")
     args, remaining = parser.parse_known_args()

@@ -19,7 +19,7 @@ logger = build_logger("seed_failures", "logs/seed_failures.log")
 
 
 def seed_missing_schools(
-    school_db_path: str = "data/master/school_info.db",
+    neis_info_db_path: str = "data/master/neis_info.db",
     failures_db_path: str = "data/failures.db",
     verbose: bool = True
 ) -> dict:
@@ -31,19 +31,19 @@ def seed_missing_schools(
         'errors': []
     }
 
-    if not os.path.exists(school_db_path):
-        print(f"❌ School DB 없음: {school_db_path}")
-        result['errors'].append("School DB 가 존재하지 않음")
+    if not os.path.exists(neis_info_db_path):
+        print(f"❌ NEIS INFO DB 없음: {neis_info_db_path}")
+        result['errors'].append("NEIS INFO DB 가 존재하지 않음")
         return result
 
     rm = RetryManager(db_path=failures_db_path, max_retries=None)
 
     # ✅ 수정: literal newline → \n
-    print(f"\n🔍 누락 학교 검색 시작: {school_db_path}")
+    print(f"\n🔍 누락 학교 검색 시작: {neis_info_db_path}")
     print("=" * 70)
 
     try:
-        with sqlite3.connect(school_db_path) as conn:
+        with sqlite3.connect(neis_info_db_path) as conn:
             cur = conn.execute("""
                 SELECT sc_code, sc_name, address 
                 FROM schools
@@ -103,7 +103,7 @@ def seed_missing_schools(
     return result
 
 
-def show_menu(school_db_path: str, failures_db_path: str):
+def show_menu(neis_info_db_path: str, failures_db_path: str):
     while True:
         # ✅ 수정: literal newline → \n
         print("\n" + "=" * 70)
@@ -120,15 +120,15 @@ def show_menu(school_db_path: str, failures_db_path: str):
         choice = input("번호를 선택하세요 (0-5): ").strip()
 
         if choice == '1':
-            check_missing_count(school_db_path)
+            check_missing_count(neis_info_db_path)
         elif choice == '2':
             check_failures_queue(failures_db_path)
         elif choice == '3':
-            check_db_size(school_db_path, failures_db_path)
+            check_db_size(neis_info_db_path, failures_db_path)
         elif choice == '4':
             run_retry_worker()
         elif choice == '5':
-            seed_missing_schools(school_db_path, failures_db_path, verbose=True)
+            seed_missing_schools(neis_info_db_path, failures_db_path, verbose=True)
         elif choice == '0':
             print("👋 종료합니다.")
             break
@@ -136,11 +136,11 @@ def show_menu(school_db_path: str, failures_db_path: str):
             print("❌ 잘못된 입력입니다.")
 
 
-def check_missing_count(school_db_path: str):
-    if not os.path.exists(school_db_path):
+def check_missing_count(neis_info_db_path: str):
+    if not os.path.exists(neis_info_db_path):
         print("❌ DB 파일 없음")
         return
-    with sqlite3.connect(school_db_path) as conn:
+    with sqlite3.connect(neis_info_db_path) as conn:
         cur = conn.execute("SELECT COUNT(*) FROM schools WHERE latitude IS NULL OR longitude IS NULL")
         missing = cur.fetchone()[0]
         total = conn.execute("SELECT COUNT(*) FROM schools").fetchone()[0]
@@ -168,9 +168,9 @@ def run_retry_worker():
     )
 
 
-def check_db_size(school_db_path: str, failures_db_path: str):
+def check_db_size(neis_info_db_path: str, failures_db_path: str):
     print("\n💾 DB 파일 크기:")
-    for label, path in [("학교 DB", school_db_path), ("Failures DB", failures_db_path)]:
+    for label, path in [("학교 DB", neis_info_db_path), ("Failures DB", failures_db_path)]:
         if os.path.exists(path):
             size = os.path.getsize(path) / (1024*1024)
             print(f"  {label}: {size:.2f} MB")
@@ -181,16 +181,16 @@ def check_db_size(school_db_path: str, failures_db_path: str):
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="누락 학교를 실패 큐에 등록")
-    parser.add_argument("--school-db", default="data/master/school_info.db")
+    parser.add_argument("--neis-info-db", default="data/master/neis_info.db")
     parser.add_argument("--failures-db", default="data/failures.db")
     parser.add_argument("-q", "--quiet", action="store_true")
     parser.add_argument("-m", "--menu", action="store_true")
     args = parser.parse_args()
 
-    result = seed_missing_schools(args.school_db, args.failures_db, verbose=not args.quiet)
+    result = seed_missing_schools(args.neis_info_db, args.failures_db, verbose=not args.quiet)
 
     if args.menu or not result['success'] or result['found'] > 0:
-        show_menu(args.school_db, args.failures_db)
+        show_menu(args.neis_info_db, args.failures_db)
 
     sys.exit(0 if result['success'] else 1)
 

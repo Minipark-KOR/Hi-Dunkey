@@ -15,7 +15,7 @@ from core.logger import build_logger
 logger = build_logger("cleanse_failures", "logs/cleanse_failures.log")
 
 DB_PATH = "data/failures.db"
-SCHOOL_DB = "data/master/school_info.db"
+NEIS_DB = "data/master/NEIS_info.db"
 
 
 def cleanse_failures():
@@ -49,7 +49,7 @@ def cleanse_failures():
     skipped_same = 0
 
     # 학교 DB 연결 (지번 저장용)
-    with sqlite3.connect(SCHOOL_DB) as conn_s:
+    with sqlite3.connect(NEIS_DB) as conn_s:
         conn_s.execute("PRAGMA journal_mode=WAL")
 
         for row in rows:
@@ -112,7 +112,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="실패 주소 정제 및 재등록")
     parser.add_argument("--failures-db", default=DB_PATH)
-    parser.add_argument("--school-db", default=SCHOOL_DB)
+    parser.add_argument("--neis-db", default=NEIS_DB)
     parser.add_argument("--quiet", action="store_true", help="상세 출력 없이 요약만 표시")
     args = parser.parse_args()
 

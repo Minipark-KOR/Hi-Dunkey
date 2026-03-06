@@ -54,7 +54,7 @@ class LightSchoolSearch:
     """초경량 학교 검색 with 성능 통계 & health check"""
     
     def __init__(self, index_path: str = "data/school_light.json", 
-                 detail_db: str = "data/master/school_master.db"):
+                 detail_db: str = "data/master/neis_info.db"):
         """
         Args:
             index_path: 인덱스 파일 경로

@@ -5,10 +5,10 @@
 DOMAIN_CONFIG = {
     "school": {
         "description":  "학교 기본정보",
-        "db_path":      "data/master/school_info.db",          # ✅ 변경
+        "db_path":      "data/master/neis_info.db",          # ✅ 변경
         "table":        "schools",
         "enabled":      True,
-        "merge_script": "merge_school_info_dbs.py",            # ✅ 변경
+        "merge_script": "merge_neis_info_dbs.py",            # ✅ 변경
         "fetch_args":   lambda region, year: {"region": region},
     },
     "meal": {
