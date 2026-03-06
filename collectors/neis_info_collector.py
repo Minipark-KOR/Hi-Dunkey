@@ -162,6 +162,9 @@ class NeisInfoCollector(BaseCollector):
             print(f"✅ [{region_name}] 처리 완료")
 
     def _update_schools_with_diff(self, new_rows: List[dict], region_code: str, limit: Optional[int] = None) -> Tuple[int, int, int]:
+        print(f"🔍 _update_schools_with_diff: new_rows length = {len(new_rows)}")
+        if new_rows:
+            print(f"🔍 sample keys: {list(new_rows[0].keys())}")
         existing = {}
         if os.path.exists(self.db_path):
             try:
