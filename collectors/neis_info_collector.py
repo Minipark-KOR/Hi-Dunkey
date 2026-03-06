@@ -34,7 +34,7 @@ BASE_DIR = str(MASTER_DIR)
 GLOBAL_VOCAB_PATH = str(MASTER_DIR.parent / "active" / "global_vocab.db")
 NEIS_URL = NEIS_ENDPOINTS['school']
 
-# ✅ ANSI 색상 코드
+# ANSI 색상 코드
 GREEN, RED, YELLOW, RESET = "\033[92m", "\033[91m", "\033[93m", "\033[0m"
 
 
@@ -54,7 +54,6 @@ class NeisInfoCollector(BaseCollector):
     ):
         # ✅ 수정: name을 "neis_info"로, base_dir을 MASTER_DIR로 설정
         super().__init__("neis_info", str(MASTER_DIR), shard, school_range)
-        # self.db_path = str(MASTER_DB)  # 이 줄을 제거 (BaseCollector가 올바른 경로를 생성함)
         self.api_context = 'school'
         self.incremental = incremental
         self.full = full
@@ -69,13 +68,13 @@ class NeisInfoCollector(BaseCollector):
         self.geo_collector = self.register_resource(
             GeoCollector(
                 global_db_path=GLOBAL_VOCAB_PATH,
-                school_db_path=self.db_path,  # BaseCollector의 self.db_path 사용
+                school_db_path=self.db_path,   # BaseCollector가 생성한 경로 사용
                 failures_db_path="data/failures.db",
                 debug_mode=debug_mode,
             )
         )
 
-        # 누적 통계 변수
+        # 누적 통계를 위한 변수
         self.total_new = 0
         self.total_failed = 0
         self.total_skipped = 0
@@ -118,9 +117,15 @@ class NeisInfoCollector(BaseCollector):
                     jibun_address TEXT
                 )
             """)
-            for idx in ["idx_address_hash","idx_status","idx_city","idx_district","idx_street",
-                        "idx_schools_missing","idx_schools_region","idx_schools_coords"]:
-                conn.execute(f"CREATE INDEX IF NOT EXISTS {idx} ON schools({idx.split('_',2)[-1] if idx!='idx_schools_missing' else 'latitude'})")
+            # 인덱스 생성 (명시적으로 작성)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_address_hash ON schools(address_hash)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON schools(status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_city ON schools(city_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_district ON schools(district_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_street ON schools(street_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_schools_missing ON schools(latitude) WHERE latitude IS NULL")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_schools_region ON schools(atpt_code)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_schools_coords ON schools(latitude, longitude)")
             self._init_db_common(conn)
 
     def _get_target_key(self) -> str:
@@ -137,8 +142,8 @@ class NeisInfoCollector(BaseCollector):
             region=region_code,
             year=int(self.run_date[:4])
         )
-        print(f"🔍 {region_code} rows length: {len(rows)}")  # 추가
-
+        if self.debug_mode:
+            print(f"🔍 {region_code} rows length: {len(rows)}")
 
         if not rows:
             self.logger.error(f"[{region_name}] 수집된 데이터 없음")
@@ -150,12 +155,10 @@ class NeisInfoCollector(BaseCollector):
             print(f"📋 [{region_name}] 전체 {len(rows)}건 수집")
         new, failed, skipped = self._update_schools_with_diff(rows, region_code, limit=limit)
 
-        # ✅ 누적 통계 업데이트
         self.total_new += new
         self.total_failed += failed
         self.total_skipped += skipped
 
-        # ✅ 지역별 결과 출력 (quiet 모드가 아니면 항상 표시)
         if not self.quiet_mode:
             print(f"  📊 [{region_name}] 신규성공={new}, 실패={failed}, 스킵={skipped}")
 
@@ -163,9 +166,11 @@ class NeisInfoCollector(BaseCollector):
             print(f"✅ [{region_name}] 처리 완료")
 
     def _update_schools_with_diff(self, new_rows: List[dict], region_code: str, limit: Optional[int] = None) -> Tuple[int, int, int]:
-        print(f"🔍 _update_schools_with_diff: new_rows length = {len(new_rows)}")
-        if new_rows:
-            print(f"🔍 sample keys: {list(new_rows[0].keys())}")
+        if self.debug_mode:
+            print(f"🔍 _update_schools_with_diff: new_rows length = {len(new_rows)}")
+            if new_rows:
+                print(f"🔍 sample keys: {list(new_rows[0].keys())}")
+
         existing = {}
         if os.path.exists(self.db_path):
             try:
@@ -177,12 +182,9 @@ class NeisInfoCollector(BaseCollector):
                         row[0]: {"hash": row[1], "lat": row[2], "lon": row[3], "attempts": row[4], "last_error": row[5]}
                         for row in cur
                     }
-            except sqlite3.OperationalError as e:
-                self.logger.error(f"DB 읽기 실패: {e}")
-                return 0, 0, 0  # ✅ 반드시 튜플 반환
             except Exception as e:
                 self.logger.error(f"기존 데이터 조회 실패: {e}")
-                return 0, 0, 0  # ✅ 반드시 튜플 반환
+                return 0, 0, 0
 
         row_meta = {}
         for row in new_rows:
@@ -204,11 +206,9 @@ class NeisInfoCollector(BaseCollector):
         start_time = time.time()
         last_update = start_time
         processed_count = 0
-
-        # ✅ limit 상태 표시를 위한 변수
         limit_active = limit is not None
+        total_items = len(row_meta)
 
-        # ✅ 수정: 중첩 함수로 올바르게 정의 (quiet 인자 사용)
         def _print_progress(current, total, success, failed, skipped, start_t, quiet):
             if quiet:
                 return
@@ -218,24 +218,20 @@ class NeisInfoCollector(BaseCollector):
             filled = int(bar_len * current / total) if total > 0 else 0
             bar = '█' * filled + '░' * (bar_len - filled)
             status = f"{GREEN}✅{RESET}{success:3d} {RED}❌{RESET}{failed:3d} {YELLOW}⏭️{RESET}{skipped:3d}"
-            # ✅ 개선: limit 이 걸려있으면 표시
             suffix = f" [LIMIT:{limit}]" if limit_active and current >= limit else ""
             print(f"\r[{bar}] {current}/{total}{suffix} {status} {avg:6.1f} 개/초", end="", flush=True)
 
-        total_items = len(row_meta)
         for i, (sc_code, meta) in enumerate(row_meta.items(), 1):
             if limit and processed_count >= limit:
                 if not self.quiet_mode:
-                    print(f"\n⚠️  제한 ({limit} 개) 도달, 수집 중단")
-                return len(new_coords), failed_count, skipped_count  # ✅ 명시적 return
+                    print(f"\n⚠️ 제한 ({limit} 개) 도달, 수집 중단")
+                return len(new_coords), failed_count, skipped_count
 
             if meta["old"].get("hash") != meta["new_hash"] and meta["full_address"]:
                 cleaned = AddressFilter.clean(meta["full_address"], level=self.LEVEL_GEOCODING)
-                
-                # ✅ 지번 주소 추출 (AddressFilter 통합)
                 jibun = AddressFilter.extract_jibun(meta["full_address"])
                 meta["jibun_address"] = jibun
-                
+
                 try:
                     coords = self.geo_collector._geocode(cleaned)
                 except Exception as e:
@@ -249,7 +245,6 @@ class NeisInfoCollector(BaseCollector):
                 else:
                     failed_count += 1
                     if self.shard != "none":
-                        # ✅ 타임존 문제 해결 (naive 로 변환 후 계산)
                         now_naive = now_kst().replace(tzinfo=None)
                         deadline = now_naive.replace(hour=15, minute=0, second=0, microsecond=0)
                         if now_naive > deadline:
@@ -258,7 +253,7 @@ class NeisInfoCollector(BaseCollector):
                             domain='school', task_type='geocode',
                             shard=self.shard, sc_code=sc_code,
                             region=region_code, address=meta["full_address"],
-                            jibun_address=jibun,  # ✅ 실패 큐에 지번 저장
+                            jibun_address=jibun,
                             error="Geocoding failed", deadline=deadline,
                         )
             else:
@@ -266,14 +261,12 @@ class NeisInfoCollector(BaseCollector):
 
             processed_count += 1
             if not self.quiet_mode and (time.time() - last_update >= 0.2 or i == total_items):
-                # ✅ 수정: quiet_mode 를 인자로 전달
                 _print_progress(i, total_items, len(new_coords), failed_count, skipped_count, start_time, self.quiet_mode)
                 last_update = time.time()
 
         if not self.quiet_mode:
             print()
 
-        # ✅ 저장할 데이터 구성 및 enqueue (jibun_address 포함)
         for sc_code, meta in row_meta.items():
             row = meta["row"]
             atpt_code = row.get("ATPT_OFCDC_SC_CODE") or ""
@@ -322,21 +315,19 @@ class NeisInfoCollector(BaseCollector):
                 "number_start": addr_ids.get("number_start"),
                 "number_end": addr_ids.get("number_end"),
                 "number_bit": addr_ids.get("number_bit", 0),
-                "jibun_address": meta.get("jibun_address"),  # ✅ 지번 주소 포함
-                "kakao_address": None,  # ✅ retry_worker 가 업데이트
+                "jibun_address": meta.get("jibun_address"),
+                "kakao_address": None,
             }])
 
         region_name = REGION_NAMES.get(region_code, region_code)
         self.logger.info(f"[{region_name}] 좌표 갱신: {len(new_coords)}개 / 완료")
-
-        return len(new_coords), failed_count, skipped_count  # ✅ 함수 끝에서도 항상 튜플 반환
+        return len(new_coords), failed_count, skipped_count
 
     def _process_item(self, raw_item: dict) -> List[dict]:
         return []
 
     def _do_save_batch(self, conn: sqlite3.Connection, batch: List[dict]):
         try:
-            # ✅ jibun_address, kakao_address 컬럼 포함
             conn.executemany("""
                 INSERT OR REPLACE INTO schools
                 (sc_code, school_id, sc_name, eng_name, sc_kind, atpt_code,
@@ -364,7 +355,6 @@ class NeisInfoCollector(BaseCollector):
 
 
 if __name__ == "__main__":
-    # ✅ GitHub Actions 환경 감지
     is_github_actions = os.getenv('GITHUB_ACTIONS') == 'true'
 
     parser = argparse.ArgumentParser(description="학교 기본정보 수집기")
@@ -374,7 +364,6 @@ if __name__ == "__main__":
     parser.add_argument("--limit", type=int, default=None, help="수집할 학교 수 제한 (테스트용)")
     args = parser.parse_args()
 
-    # ✅ GitHub Actions 환경에서는 자동으로 quiet 모드 활성화
     if is_github_actions and not args.quiet:
         args.quiet = True
 
@@ -400,7 +389,6 @@ if __name__ == "__main__":
 
     collector.close()
 
-    # ✅ 전체 통계 출력 (quiet 모드가 아니면)
     if not args.quiet:
         total = collector.total_new + collector.total_failed + collector.total_skipped
         success_rate = (collector.total_new / total * 100) if total > 0 else 0
