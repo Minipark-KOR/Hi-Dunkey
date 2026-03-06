@@ -136,6 +136,9 @@ class NeisInfoCollector(BaseCollector):
             region=region_code,
             year=int(self.run_date[:4])
         )
+        print(f"🔍 {region_code} rows length: {len(rows)}")  # 추가
+
+
         if not rows:
             self.logger.error(f"[{region_name}] 수집된 데이터 없음")
             if self.debug_mode and not self.quiet_mode:
