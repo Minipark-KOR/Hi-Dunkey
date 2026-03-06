@@ -139,6 +139,14 @@ class GeoCollector:
             with sqlite3.connect(self.school_db_path, timeout=30) as conn:
                 conn.execute("PRAGMA journal_mode=WAL;")
                 conn.execute("PRAGMA busy_timeout=30000;")
+                
+                # schools 테이블 존재 여부 확인
+                cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schools'")
+                if not cur.fetchone():
+                    # 테이블이 없으면 초기화 작업 건너뜀
+                    if self.debug_mode:
+                        print("[GeoCollector] schools 테이블 없음, 초기화 지연")
+                    return
                 cur = conn.execute("PRAGMA table_info(schools)")
                 existing = [row[1] for row in cur.fetchall()]
 
