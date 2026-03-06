@@ -26,7 +26,7 @@ from core.school_id import create_school_id
 from core.meta_vocab import MetaVocabManager
 from core.filters import AddressFilter
 from core.kst_time import now_kst
-from constants.codes import SCHOOL_ENDPOINTS, ALL_REGIONS, REGION_NAMES
+from constants.codes import NEIS_ENDPOINTS, ALL_REGIONS, REGION_NAMES
 from constants.paths import MASTER_DB_PATH as MASTER_DB, MASTER_DIR
 from collectors.geo_collector import GeoCollector
 
@@ -131,7 +131,7 @@ class NeisInfoCollector(BaseCollector):
             print(f"\n📡 [{region_name}({region_code})] 데이터 수집 시작...")
         base_params = {"ATPT_OFCDC_SC_CODE": region_code}
         rows = self._fetch_paginated(
-            SCHOOL_URL, base_params, 'schoolInfo',
+            NEIS_URL, base_params, 'schoolInfo',
             page_size=100,
             region=region_code,
             year=int(self.run_date[:4])
