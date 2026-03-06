@@ -43,46 +43,46 @@ class NeisInfoCollector(BaseCollector):
     LEVEL_FINAL = 4
 
     def __init__(
-    self,
-    shard: str = "none",
-    school_range=None,
-    incremental: bool = False,
-    full: bool = False,
-    compare: bool = False,
-    debug_mode: bool = False,
-    quiet_mode: bool = False
-):
-    # ✅ 수정: name을 "neis_info"로, base_dir을 MASTER_DIR로 설정
-    super().__init__("neis_info", str(MASTER_DIR), shard, school_range)
-    # self.db_path = str(MASTER_DB)  # 이 줄을 제거 (BaseCollector가 올바른 경로를 생성함)
-    self.api_context = 'school'
-    self.incremental = incremental
-    self.full = full
-    self.compare = compare
-    self.debug_mode = debug_mode
-    self.quiet_mode = quiet_mode
-    self.run_date = now_kst().strftime("%Y%m%d")
+        self,
+        shard: str = "none",
+        school_range=None,
+        incremental: bool = False,
+        full: bool = False,
+        compare: bool = False,
+        debug_mode: bool = False,
+        quiet_mode: bool = False
+    ):
+        # ✅ 수정: name을 "neis_info"로, base_dir을 MASTER_DIR로 설정
+        super().__init__("neis_info", str(MASTER_DIR), shard, school_range)
+        # self.db_path = str(MASTER_DB)  # 이 줄을 제거 (BaseCollector가 올바른 경로를 생성함)
+        self.api_context = 'school'
+        self.incremental = incremental
+        self.full = full
+        self.compare = compare
+        self.debug_mode = debug_mode
+        self.quiet_mode = quiet_mode
+        self.run_date = now_kst().strftime("%Y%m%d")
 
-    self.meta_vocab = self.register_resource(
-        MetaVocabManager(GLOBAL_VOCAB_PATH, debug_mode)
-    )
-    self.geo_collector = self.register_resource(
-        GeoCollector(
-            global_db_path=GLOBAL_VOCAB_PATH,
-            school_db_path=self.db_path,  # BaseCollector의 self.db_path 사용
-            failures_db_path="data/failures.db",
-            debug_mode=debug_mode,
+        self.meta_vocab = self.register_resource(
+            MetaVocabManager(GLOBAL_VOCAB_PATH, debug_mode)
         )
-    )
+        self.geo_collector = self.register_resource(
+            GeoCollector(
+                global_db_path=GLOBAL_VOCAB_PATH,
+                school_db_path=self.db_path,  # BaseCollector의 self.db_path 사용
+                failures_db_path="data/failures.db",
+                debug_mode=debug_mode,
+            )
+        )
 
-    # 누적 통계 변수
-    self.total_new = 0
-    self.total_failed = 0
-    self.total_skipped = 0
+        # 누적 통계 변수
+        self.total_new = 0
+        self.total_failed = 0
+        self.total_skipped = 0
 
-    if not quiet_mode:
-        print("🏫 NeisInfoCollector 초기화 완료")
-    self.logger.info("🏫 NeisInfoCollector 초기화 완료")
+        if not quiet_mode:
+            print("🏫 NeisInfoCollector 초기화 완료")
+        self.logger.info("🏫 NeisInfoCollector 초기화 완료")
 
     def _init_db(self):
         with get_db_connection(self.db_path) as conn:
