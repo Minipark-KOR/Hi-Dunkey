@@ -357,43 +357,57 @@ class NeisInfoCollector(BaseCollector):
 
 if __name__ == "__main__":
     is_github_actions = os.getenv('GITHUB_ACTIONS') == 'true'
-
     parser = argparse.ArgumentParser(description="학교 기본정보 수집기")
     parser.add_argument("--regions", default="ALL", help="수집할 지역 (ALL 또는 쉼표 구분, 예: B10,C10)")
     parser.add_argument("--debug", action="store_true", help="상세 출력 모드")
     parser.add_argument("--quiet", action="store_true", help="출력 최소화 (GitHub Actions 등)")
     parser.add_argument("--limit", type=int, default=None, help="수집할 학교 수 제한 (테스트용)")
     args = parser.parse_args()
-
+    
     if is_github_actions and not args.quiet:
         args.quiet = True
-
+    
     collector = NeisInfoCollector(
         shard="none",
         debug_mode=args.debug,
         quiet_mode=args.quiet
     )
-
+    
+    # ✅ DB 경로 출력로 디버깅
+    print(f"📂 실제 DB 경로: {collector.db_path}")
+    
     if args.regions == "ALL":
         regions = ALL_REGIONS
     else:
         regions = [r.strip() for r in args.regions.split(",") if r.strip()]
-
+    
     if not args.quiet:
         print(f"\n🚀 학교 정보 수집 시작 (지역: {len(regions)}개, limit: {args.limit or '전체'})")
         print("=" * 70)
-
+    
     for region in regions:
         collector.fetch_region(region, limit=args.limit)
         if args.limit:
             break
-
+    
+    # ✅ 큐에 남은 데이터 모두 처리 (중요!)
+    if not args.quiet:
+        print("\n⏳ 남은 데이터 처리 중...")
+    
+    collector.flush()  # BaseCollector 에 flush 메서드가 있는지 확인
+    time.sleep(2)      # 쓰기 스레드 완료 대기
     collector.close()
-
+    
+    # ✅ 실제 DB 레코드 수 확인
+    if os.path.exists(collector.db_path):
+        count = sqlite3.connect(collector.db_path).execute("SELECT COUNT(*) FROM schools;").fetchone()[0]
+        print(f"📊 DB 저장 완료: {count}건")
+    else:
+        print(f"❌ DB 파일 없음: {collector.db_path}")
+    
     if not args.quiet:
         total = collector.total_new + collector.total_failed + collector.total_skipped
         success_rate = (collector.total_new / total * 100) if total > 0 else 0
-
         print("=" * 70)
         print(f"📊 전체 통계")
         print(f"   신규 성공: {collector.total_new}개 ({success_rate:.1f}%)")
