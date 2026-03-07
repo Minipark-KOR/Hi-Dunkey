@@ -327,7 +327,7 @@ class NeisInfoCollector(BaseCollector):
         return []
 
     def _do_save_batch(self, conn: sqlite3.Connection, batch: List[dict]):
-        # 컬럼 순서와 VALUES 개수를 28개로 맞춤 (jibun_address, kakao_address 포함)
+        print(f"🔍 [_do_save_batch] 실행, 배치 크기: {len(batch)}")   # 디버그
         sql = """
             INSERT OR REPLACE INTO schools
             (sc_code, school_id, sc_name, eng_name, sc_kind, atpt_code,
@@ -351,9 +351,12 @@ class NeisInfoCollector(BaseCollector):
             ))
         try:
             conn.executemany(sql, rows)
+            print(f"✅ [_do_save_batch] executemany 성공, 영향받은 행: {conn.total_changes}")  # 디버그
             if self.debug_mode and not self.quiet_mode:
                 print(f"💾 배치 저장 완료: {len(batch)}개")
         except Exception as e:
+            print(f"❌ [_do_save_batch] 예외: {e}")                  # 디버그
+            print(f"   첫 번째 레코드 샘플: {batch[0] if batch else '없음'}")  # 디버그
             self.logger.error(f"배치 저장 실패: {e}")
             raise
 
