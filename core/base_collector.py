@@ -56,7 +56,6 @@ class BaseCollector(ABC):
 
         self.total_db_path = str(self.base_dir / f"{name}_total.db")
         self.logger = build_logger(name, str(self.base_dir / f"{name}.log"))
-        # 로그 파일 경로 출력 (초기화 시 한 번)
         print(f"📝 로그 파일: {self.base_dir / f'{name}.log'}")
 
         self.session = build_session()
@@ -66,6 +65,7 @@ class BaseCollector(ABC):
             target=self._writer_loop, daemon=True, name=f"{name}_writer"
         )
         self.writer_thread.start()
+        print(f"🔁 writer_thread 시작: {self.writer_thread.name}")  # 추가
 
         self.school_cache: Dict[str, Any] = {}
         self.school_by_id: Dict[str, Any] = {}
@@ -88,7 +88,6 @@ class BaseCollector(ABC):
     def record_collect_failure(
         self, region: str, year: Optional[int] = None, error: str = ""
     ):
-        """NEIS API 수집 실패 기록"""
         self.retry_mgr.record_failure(
             domain='collect',
             task_type='fetch_region',
@@ -99,7 +98,6 @@ class BaseCollector(ABC):
         self.logger.warning(f"수집 실패 기록: region={region}, year={year}")
 
     def register_resource(self, resource):
-        """종료 시 자동 close()가 호출될 리소스 등록"""
         self._closeable_resources.append(resource)
         return resource
 
@@ -155,7 +153,6 @@ class BaseCollector(ABC):
         region: Optional[str] = None,
         year: Optional[int] = None
     ) -> List[dict]:
-        """페이지네이션 수집. 최대 재시도 초과 시 RetryManager에 실패 기록."""
         all_items = []
         page = 1
         retry_count = 0
@@ -222,7 +219,6 @@ class BaseCollector(ABC):
                 try:
                     nxt = self.q.get_nowait()
                     if nxt is None:
-                        # 종료 신호를 다시 넣고 현재 배치만 처리 후 다음 루프에서 종료
                         self.q.task_done()
                         self.q.put(None)
                         break
@@ -231,15 +227,16 @@ class BaseCollector(ABC):
                 except queue.Empty:
                     break
 
+            print(f"🔍 [writer_loop] 배치 수집 완료: {len(batch)}개")  # 디버그
+
             try:
                 if batch:
-                    # 디버그용 저장 시도 메시지 제거 (너무 잦음)
                     self._save_batch(batch)
             except DataDropException as e:
-                print(f"🚨 데이터 급감: {e}")  # 예외는 출력 유지
+                print(f"🚨 데이터 급감: {e}")
                 self.logger.error(f"🚨 데이터 급감 감지: {e}")
             except Exception as e:
-                print(f"❌ 배치 저장 예외: {e}")  # 예외는 출력 유지
+                print(f"❌ 배치 저장 예외: {e}")
                 self.logger.error(f"배치 저장 실패: {e}", exc_info=True)
             finally:
                 for _ in range(items_processed):
@@ -307,8 +304,10 @@ class BaseCollector(ABC):
         pass
 
     def _save_batch(self, batch: List[dict]):
+        print(f"🔍 [_save_batch] 저장 시도: {len(batch)}개, DB 경로: {self.db_path}")  # 디버그
         with get_db_connection(self.db_path) as conn:
             self._do_save_batch(conn, batch)
+        print(f"✅ [_save_batch] 저장 완료")  # 디버그
 
     def _load_checkpoints(self):
         pass
@@ -319,38 +318,21 @@ class BaseCollector(ABC):
         pass
 
     def close(self, timeout: float = 60.0):
-        """
-        안전한 종료 순서:
-        1. q.join()  — 큐에 남은 모든 아이템 처리 완료 대기
-        2. q.put(None) — writer 스레드에 종료 신호 전송
-        3. writer_thread.join() — writer 스레드 완전 종료 대기
-        4. 리소스 정리 — writer 종료 후 MetaVocabManager 등 close()
-        """
         self.logger.info(f"🔒 {self.name} 종료 시작...")
-
-        # 1. 남은 큐 아이템 모두 처리 대기
         self.q.join()
-
-        # 2. writer 스레드 종료 신호
         self.q.put(None)
-
-        # 3. writer 스레드 종료 대기
         self.writer_thread.join(timeout=timeout)
         if self.writer_thread.is_alive():
             self.logger.warning("⚠️ writer_thread가 정상 종료되지 않았습니다.")
-
-        # 4. writer 완전 종료 후 리소스 정리 (MetaVocabManager 등)
         for res in self._closeable_resources:
             try:
                 res.close()
             except Exception as e:
                 self.logger.warning(f"리소스 close 실패: {e}")
-
         self.logger.info(f"✅ {self.name} 종료 완료")
 
     def flush(self, timeout: float = 60.0):
-        """큐의 모든 데이터를 즉시 처리하고 완료될 때까지 대기"""
         self.logger.info(f"🔄 {self.name} flush 시작...")
-        self.q.join()  # 현재 큐의 모든 항목이 처리될 때까지 대기
+        self.q.join()
         self.logger.info(f"✅ {self.name} flush 완료")
         
