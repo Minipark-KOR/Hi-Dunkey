@@ -328,26 +328,30 @@ class NeisInfoCollector(BaseCollector):
         return []
 
     def _do_save_batch(self, conn: sqlite3.Connection, batch: List[dict]):
+        # 컬럼 순서와 VALUES 개수를 28개로 맞춤 (jibun_address, kakao_address 포함)
+        sql = """
+            INSERT OR REPLACE INTO schools
+            (sc_code, school_id, sc_name, eng_name, sc_kind, atpt_code,
+             address, cleaned_address, address_hash, tel, homepage, status,
+             last_seen, load_dt, latitude, longitude, geocode_attempts, last_error,
+             city_id, district_id, street_id, number_type, number_value,
+             number_start, number_end, number_bit, jibun_address, kakao_address)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """
+        rows = []
+        for it in batch:
+            rows.append((
+                it['sc_code'], it['school_id'], it['sc_name'], it['eng_name'],
+                it['sc_kind'], it['atpt_code'], it['address'], it['cleaned_address'],
+                it['address_hash'], it['tel'], it['homepage'], it['status'],
+                it['last_seen'], it['load_dt'], it['latitude'], it['longitude'],
+                it['geocode_attempts'], it['last_error'], it['city_id'],
+                it['district_id'], it['street_id'], it['number_type'],
+                it['number_value'], it['number_start'], it['number_end'],
+                it['number_bit'], it.get('jibun_address'), it.get('kakao_address')
+            ))
         try:
-            conn.executemany("""
-                INSERT OR REPLACE INTO schools
-                (sc_code, school_id, sc_name, eng_name, sc_kind, atpt_code,
-                 address, cleaned_address, address_hash, tel, homepage, status,
-                 last_seen, load_dt, latitude, longitude, geocode_attempts, last_error,
-                 city_id, district_id, street_id, number_type, number_value,
-                 number_start, number_end, number_bit, jibun_address, kakao_address)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """, [
-                (it['sc_code'], it['school_id'], it['sc_name'], it['eng_name'],
-                 it['sc_kind'], it['atpt_code'], it['address'], it['cleaned_address'],
-                 it['address_hash'], it['tel'], it['homepage'], it['status'],
-                 it['last_seen'], it['load_dt'], it['latitude'], it['longitude'],
-                 it['geocode_attempts'], it['last_error'], it['city_id'],
-                 it['district_id'], it['street_id'], it['number_type'],
-                 it['number_value'], it['number_start'], it['number_end'],
-                 it['number_bit'], it.get('jibun_address'), it.get('kakao_address'))
-                for it in batch
-            ])
+            conn.executemany(sql, rows)
             if self.debug_mode and not self.quiet_mode:
                 print(f"💾 배치 저장 완료: {len(batch)}개")
         except Exception as e:
