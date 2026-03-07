@@ -262,6 +262,7 @@ class BaseCollector(ABC):
         return [data]
 
     def enqueue(self, data: Union[dict, List[dict]]):
+        print(f"🔍 [base_enqueue] 데이터 크기: {len(data) if isinstance(data, list) else 1}")
         self.q.put(data)
 
     def create_dated_backup(self):
@@ -341,4 +342,3 @@ class BaseCollector(ABC):
         self.logger.info(f"🔄 {self.name} flush 시작...")
         self.q.join()
         self.logger.info(f"✅ {self.name} flush 완료")
-        

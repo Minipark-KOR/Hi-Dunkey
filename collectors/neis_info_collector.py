@@ -288,6 +288,7 @@ class NeisInfoCollector(BaseCollector):
                 except Exception as e:
                     self.logger.error(f"주소 변환 실패 {sc_code}: {e}")
 
+            print(f"🔍 [enqueue] {sc_code} 추가됨")
             self.enqueue([{
                 "sc_code": sc_code,
                 "school_id": create_school_id(atpt_code, sc_code),
@@ -422,4 +423,3 @@ if __name__ == "__main__":
         print("✅ 수집 완료")
     else:
         collector.logger.info("수집 완료")
-        
