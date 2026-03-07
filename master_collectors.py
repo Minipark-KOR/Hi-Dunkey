@@ -2,7 +2,7 @@
 """
 마스터 수집기 - 실행 유형과 수집 방식을 계층적으로 선택
 - 실행 후 결과 확인 메뉴 제공 (데이터 무결성, 병합, 메트릭 생성, 다른 수집기, 종료)
-- core.metrics 를 활용한 메트릭 자동 생성 (개별/일괄)
+- 개선: 지연 로딩, 설정 타입 검증, 로그 자동 정리, 드라이 런 모드, 중복 코드 제거
 """
 import os
 import sys
@@ -12,40 +12,45 @@ import logging
 import sqlite3
 import shlex
 from pathlib import Path
-from datetime import datetime
-
-# core 모듈 import
-from core.metrics import generate_and_save_metrics
-from core.database import get_db_connection
+from datetime import datetime, timedelta
+from typing import Optional, List, Dict, Any, Union
 
 # ANSI 색상
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
 BLUE = "\033[94m"
 RED = "\033[91m"
+CYAN = "\033[96m"
 RESET = "\033[0m"
 
 BASE_DIR = Path(__file__).parent
-
-# 로깅 설정
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
+
+# 로그 정리: 30일 이상된 로그 삭제
+def cleanup_old_logs(days: int = 30) -> None:
+    cutoff = datetime.now() - timedelta(days=days)
+    for f in LOG_DIR.glob("master_*.log"):
+        try:
+            mtime = datetime.fromtimestamp(f.stat().st_mtime)
+            if mtime < cutoff:
+                f.unlink()
+        except Exception:
+            pass
+
+cleanup_old_logs()
+
+# 로깅 설정 (파일 + 콘솔)
 log_filename = LOG_DIR / f"master_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-
-def setup_logging(debug_mode=False):
-    level = logging.DEBUG if debug_mode else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format='%(asctime)s [%(levelname)s] %(message)s',
-        handlers=[
-            logging.FileHandler(log_filename, encoding='utf-8'),
-            logging.StreamHandler(sys.stdout)
-        ],
-        force=True
-    )
-    return logging.getLogger(__name__)
-
-logger = setup_logging()
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler(log_filename, encoding='utf-8'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
 
 CONFIG_FILE = BASE_DIR / "collectors.json"
 
@@ -55,21 +60,44 @@ POST_RUN_EXIT = "exit"
 
 ALLOWED_TABLES = {'schools', 'meals', 'timetable', 'schedule', 'staff'}
 
-def resolve_path(path_str):
+def resolve_path(path_str: str) -> Optional[str]:
+    """상대 경로를 절대 경로로 변환"""
     if not path_str:
         return None
     p = Path(path_str)
     return str(p if p.is_absolute() else BASE_DIR / p)
 
-def validate_collector(collector, idx):
+def validate_collector(collector: Dict[str, Any], idx: int) -> bool:
+    """수집기 설정 검증 (필수 필드 + 타입 + 범위 체크)"""
     REQUIRED_KEYS = ['name', 'description', 'script', 'db_path', 'table_name']
-    missing = [key for key in REQUIRED_KEYS if key not in collector]
-    if missing:
-        logger.error(f"Collector #{idx} 필수 키 누락: {missing}")
-        return False
+    for key in REQUIRED_KEYS:
+        if key not in collector:
+            logger.error(f"Collector #{idx} 필수 키 누락: {key}")
+            return False
+    
+    # 숫자 필드 양수 체크
+    for key in ['timeout_seconds', 'parallel_timeout_seconds', 'merge_timeout_seconds']:
+        if key in collector:
+            val = collector[key]
+            if not isinstance(val, (int, float)) or val <= 0:
+                logger.error(f"Collector #{idx} {key} 는 양수여야 함")
+                return False
+    
+    # parallel_config 내부 타입 체크
+    pconf = collector.get('parallel_config', {})
+    for key, typ in [('max_workers', int), ('cpu_factor', (int, float)), 
+                     ('max_by_api', int), ('absolute_max', int)]:
+        if key in pconf:
+            if not isinstance(pconf[key], typ):
+                logger.error(f"Collector #{idx} parallel_config.{key} 타입 오류 (기대: {typ})")
+                return False
+            if key != 'cpu_factor' and pconf[key] <= 0:
+                logger.error(f"Collector #{idx} parallel_config.{key} 는 양수여야 함")
+                return False
+    
     return True
 
-def load_collectors():
+def load_collectors() -> List[Dict[str, Any]]:
     if not CONFIG_FILE.exists():
         logger.error(f"설정 파일 없음: {CONFIG_FILE}")
         print(f"{RED}❌ 설정 파일이 없습니다: {CONFIG_FILE}{RESET}")
@@ -106,13 +134,13 @@ def load_collectors():
         logger.error(f"JSON 파싱 오류: {e}")
         sys.exit(1)
 
-def print_header():
+def print_header() -> None:
     print(f"\n{BLUE}{'='*60}{RESET}")
     print(f"{BLUE}📊 마스터 수집기{RESET}")
     print(f"{BLUE}{'='*60}{RESET}")
     logger.info("마스터 수집기 시작")
 
-def select_collector(collectors):
+def select_collector(collectors: List[Dict[str, Any]]) -> Union[Dict[str, Any], str, None]:
     print(f"\n{YELLOW}실행할 수집기를 선택하세요:{RESET}")
     for i, col in enumerate(collectors, 1):
         print(f"  {i}) {col['description']}")
@@ -130,25 +158,26 @@ def select_collector(collectors):
     print(f"{RED}잘못된 선택입니다.{RESET}")
     return "retry"
 
-def select_run_type():
+def select_run_type() -> Union[str, None]:
     print(f"\n{YELLOW}실행 유형을 선택하세요:{RESET}")
     print("  1) 학교 기본정보 수집 (실제 수집, 전체)")
     print("  2) 테스트 모드 (간단 로그, 제한 수집)")
     print("  3) 디버그 모드 (상세 로그)")
     print("  4) 고급 모드(메뉴형) – 단계별 옵션 선택")
     print("  5) 고급 모드(직접 입력) – 옵션 직접 입력")
-    print("  6) 뒤로 가기")
+    print("  6) 드라이 런 (실행 명령어만 출력)")
+    print("  7) 뒤로 가기")
     choice = input("선택: ").strip()
-    if choice in ('1','2','3','4','5'):
+    if choice in ('1','2','3','4','5','6'):
         logger.info(f"실행 유형 선택: {choice}")
         return choice
-    elif choice == '6':
+    elif choice == '7':
         return None
     logger.warning(f"잘못된 실행 유형: {choice}")
     print(f"{RED}잘못된 선택입니다.{RESET}")
     return "retry"
 
-def select_mode(collector):
+def select_mode(collector: Dict[str, Any]) -> Union[str, None]:
     print(f"\n{YELLOW}수집 방식을 선택하세요 ({collector['description']}):{RESET}")
     modes = collector.get('modes', ['통합', 'odd 샤드', 'even 샤드', '병렬 실행'])
     for i, mode in enumerate(modes, 1):
@@ -166,7 +195,7 @@ def select_mode(collector):
     print(f"{RED}잘못된 선택입니다.{RESET}")
     return "retry"
 
-def get_basic_options(run_type):
+def get_basic_options(run_type: str) -> List[str]:
     base_args = []
     if run_type == '1':
         logger.info("실제 수집 모드")
@@ -199,7 +228,7 @@ def get_basic_options(run_type):
         logger.info(f"제한 개수: {limit}")
     return base_args
 
-def menu_advanced_mode():
+def menu_advanced_mode() -> tuple:
     args = []
     print(f"\n{YELLOW}[고급 모드 메뉴형] 옵션을 선택하세요.{RESET}")
     logger.info("고급 모드 메뉴형 시작")
@@ -243,7 +272,7 @@ def menu_advanced_mode():
 
     return args, is_parallel
 
-def direct_advanced_mode():
+def direct_advanced_mode() -> List[str]:
     print(f"\n{YELLOW}[고급 모드 직접 입력] 원하는 옵션을 한 줄로 입력하세요.{RESET}")
     print("예시: --shard odd --regions B10 --limit 50 --debug")
     custom = input("옵션: ").strip()
@@ -261,22 +290,34 @@ def direct_advanced_mode():
         print(f"{YELLOW}옵션이 없습니다. 기본 실행됩니다.{RESET}")
         return []
 
-def run_collector(script, args):
+def dry_run_cmd(script: str, args: List[str]) -> bool:
+    cmd = [sys.executable, script] + args
+    print(f"{CYAN}📋 드라이 런: {' '.join(cmd)}{RESET}")
+    logger.info(f"드라이 런 명령: {' '.join(cmd)}")
+    return True
+
+def run_collector(script: str, args: List[str], timeout: Optional[int] = None) -> bool:
     cmd = [sys.executable, script] + args
     logger.info(f"실행 명령: {' '.join(cmd)}")
     print(f"\n{GREEN}▶ 실행: {' '.join(cmd)}{RESET}\n")
     try:
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, timeout=timeout)
         logger.info("수집기 정상 종료")
+        return True
+    except subprocess.TimeoutExpired as e:
+        logger.error(f"수집기 타임아웃 ({timeout}초): {e}")
+        print(f"{RED}❌ 수집기 실행 타임아웃 ({timeout//60}분){RESET}")
+        return False
     except subprocess.CalledProcessError as e:
         logger.error(f"수집기 실행 오류: {e}")
         print(f"{RED}❌ 수집기 실행 중 오류 발생 (종료 코드 {e.returncode}){RESET}")
+        return False
     except KeyboardInterrupt:
         logger.warning("사용자에 의해 인터럽트 발생")
         print(f"\n{YELLOW}⚠️ 사용자 중단{RESET}")
         raise
 
-def run_parallel(parallel_script, base_args):
+def run_parallel(parallel_script: str, base_args: List[str], timeout: Optional[int] = None) -> bool:
     if not parallel_script or not os.path.exists(parallel_script):
         logger.error(f"병렬 스크립트 없음: {parallel_script}")
         print(f"{RED}❌ 병렬 실행 스크립트가 없습니다: {parallel_script}{RESET}")
@@ -285,9 +326,13 @@ def run_parallel(parallel_script, base_args):
     logger.info(f"병렬 실행 명령: {' '.join(cmd)}")
     print(f"\n{GREEN}▶ 병렬 실행: {' '.join(cmd)}{RESET}\n")
     try:
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, timeout=timeout)
         logger.info("병렬 실행 정상 종료")
         return True
+    except subprocess.TimeoutExpired as e:
+        logger.error(f"병렬 실행 타임아웃 ({timeout}초): {e}")
+        print(f"{RED}❌ 병렬 실행 타임아웃 ({timeout//60}분){RESET}")
+        return False
     except subprocess.CalledProcessError as e:
         logger.error(f"병렬 실행 오류: {e}")
         print(f"{RED}❌ 병렬 실행 중 오류 발생{RESET}")
@@ -297,23 +342,66 @@ def run_parallel(parallel_script, base_args):
         print(f"\n{YELLOW}⚠️ 사용자 중단{RESET}")
         raise
 
-def get_table_count(db_path, table_name):
+def get_table_count(db_path: str, table_name: str) -> Optional[int]:
     if table_name not in ALLOWED_TABLES:
         logger.error(f"허용되지 않은 테이블명: {table_name}")
         return None
     try:
-        conn = sqlite3.connect(db_path)
-        cur = conn.cursor()
-        cur.execute(f"SELECT COUNT(*) FROM {table_name}")
-        count = cur.fetchone()[0]
-        conn.close()
-        return count
+        with sqlite3.connect(db_path) as conn:
+            cur = conn.cursor()
+            cur.execute(f"SELECT COUNT(*) FROM `{table_name}`")
+            return cur.fetchone()[0]
     except Exception as e:
         logger.error(f"DB 조회 실패 {db_path}: {e}")
         return None
 
-def post_run_menu(collector, all_collectors):
-    """실행 후 결과 확인 및 후속 작업 메뉴"""
+def execute_collection(collector: Dict[str, Any], args: List[str], mode: str, run_type: str) -> bool:
+    """수집 실행 공통 함수 (드라이 런 포함)"""
+    is_dry_run = (run_type == '6')
+    timeout = collector.get('timeout_seconds')
+    parallel_timeout = collector.get('parallel_timeout_seconds')
+
+    if mode == "통합":
+        full_args = args + ['--shard', 'none']
+        if is_dry_run:
+            return dry_run_cmd(collector['script'], full_args)
+        else:
+            return run_collector(collector['script'], full_args, timeout)
+    elif "odd" in mode:
+        full_args = args + ['--shard', 'odd']
+        if is_dry_run:
+            return dry_run_cmd(collector['script'], full_args)
+        else:
+            return run_collector(collector['script'], full_args, timeout)
+    elif "even" in mode:
+        full_args = args + ['--shard', 'even']
+        if is_dry_run:
+            return dry_run_cmd(collector['script'], full_args)
+        else:
+            return run_collector(collector['script'], full_args, timeout)
+    elif "병렬" in mode:
+        parallel_script = collector.get('parallel_script')
+        if is_dry_run:
+            if parallel_script:
+                dry_run_cmd(parallel_script, args)
+            else:
+                print(f"{YELLOW}⚠️ 병렬 스크립트 없음, 순차 실행:{RESET}")
+                dry_run_cmd(collector['script'], args + ['--shard', 'odd'])
+                dry_run_cmd(collector['script'], args + ['--shard', 'even'])
+            return True
+        else:
+            if parallel_script and os.path.exists(parallel_script):
+                return run_parallel(parallel_script, args, parallel_timeout)
+            else:
+                print(f"{YELLOW}⚠️ 병렬 스크립트 없음, 순차 실행합니다.{RESET}")
+                success_odd = run_collector(collector['script'], args + ['--shard', 'odd'], timeout)
+                success_even = run_collector(collector['script'], args + ['--shard', 'even'], timeout)
+                return success_odd and success_even
+    else:
+        logger.error(f"알 수 없는 모드: {mode}")
+        return False
+
+def post_run_menu(collector: Dict[str, Any], all_collectors: List[Dict[str, Any]]) -> str:
     while True:
         print(f"\n{YELLOW}후속 작업을 선택하세요.{RESET}")
         print("  1) 데이터 무결성 확인 (레코드 수, 샤드 합계 등)")
@@ -365,10 +453,15 @@ def post_run_menu(collector, all_collectors):
             logger.info("병합 실행 선택")
             merge_script = collector.get('merge_script')
             if merge_script and os.path.exists(merge_script):
+                merge_timeout = collector.get('merge_timeout_seconds', 1800)
                 print(f"\n{GREEN}🔗 병합 스크립트 실행{RESET}")
                 try:
-                    subprocess.run([sys.executable, merge_script], check=True)
+                    subprocess.run([sys.executable, merge_script], check=True, timeout=merge_timeout)
                     logger.info("병합 스크립트 정상 종료")
+                    print(f"{GREEN}✅ 병합 완료{RESET}")
+                except subprocess.TimeoutExpired:
+                    logger.error(f"병합 스크립트 타임아웃 ({merge_timeout}초)")
+                    print(f"{RED}❌ 병합 스크립트 타임아웃 ({merge_timeout//60}분){RESET}")
                 except subprocess.CalledProcessError as e:
                     logger.error(f"병합 스크립트 오류: {e}")
                     print(f"{RED}❌ 병합 스크립트 실행 오류{RESET}")
@@ -393,17 +486,27 @@ def post_run_menu(collector, all_collectors):
                     "enabled": True
                 }
             }
-            generate_and_save_metrics(
-                backup_date=backup_date,
-                base_dir=str(BASE_DIR),
-                metrics_dir=str(metrics_dir),
-                domain_config=domain_config,
-                global_dbs=[],  # 필요시 설정
-                include_geo=collector.get('metrics_config', {}).get('collect_geo', False),
-                include_global_tables=collector.get('metrics_config', {}).get('collect_global', False),
-                print_to_stdout=True
-            )
-            print(f"{GREEN}✅ {collector['name']} 메트릭 생성 완료{RESET}")
+            try:
+                from core.metrics import generate_and_save_metrics
+                result = generate_and_save_metrics(
+                    backup_date=backup_date,
+                    base_dir=str(BASE_DIR),
+                    metrics_dir=str(metrics_dir),
+                    domain_config=domain_config,
+                    global_dbs=[],
+                    include_geo=collector.get('metrics_config', {}).get('collect_geo', False),
+                    include_global_tables=collector.get('metrics_config', {}).get('collect_global', False),
+                    print_to_stdout=True
+                )
+                print(f"{GREEN}✅ {collector['name']} 메트릭 생성 완료{RESET}")
+                if result.get('summary_path'):
+                    logger.info(f"메트릭 요약 파일: {result['summary_path']}")
+            except ImportError as e:
+                logger.warning(f"metrics 모듈 로드 실패: {e}")
+                print(f"{YELLOW}⚠️ 메트릭 모듈을 찾을 수 없습니다. 기능을 건너뜁니다.{RESET}")
+            except Exception as e:
+                logger.error(f"메트릭 생성 중 예외: {e}", exc_info=True)
+                print(f"{RED}❌ 메트릭 생성 실패: {e}{RESET}")
 
         elif choice == '4':
             logger.info("모든 수집기 메트릭 일괄 생성 선택")
@@ -420,24 +523,34 @@ def post_run_menu(collector, all_collectors):
                 }
             backup_date = datetime.now().strftime("%Y%m%d_%H%M")
             metrics_dir = BASE_DIR / "metrics"
-            # include_geo, include_global_tables는 전체 중 하나라도 true면 활성화 (단순화)
             include_geo = any(c.get('metrics_config', {}).get('collect_geo', False) for c in enabled_collectors)
             include_global = any(c.get('metrics_config', {}).get('collect_global', False) for c in enabled_collectors)
-            generate_and_save_metrics(
-                backup_date=backup_date,
-                base_dir=str(BASE_DIR),
-                metrics_dir=str(metrics_dir),
-                domain_config=domain_config,
-                global_dbs=[],
-                include_geo=include_geo,
-                include_global_tables=include_global,
-                print_to_stdout=True
-            )
-            print(f"{GREEN}✅ 전체 메트릭 생성 완료 (활성 수집기: {len(enabled_collectors)}개){RESET}")
+            try:
+                from core.metrics import generate_and_save_metrics
+                result = generate_and_save_metrics(
+                    backup_date=backup_date,
+                    base_dir=str(BASE_DIR),
+                    metrics_dir=str(metrics_dir),
+                    domain_config=domain_config,
+                    global_dbs=[],
+                    include_geo=include_geo,
+                    include_global_tables=include_global,
+                    print_to_stdout=True
+                )
+                print(f"{GREEN}✅ 전체 메트릭 생성 완료 (활성 수집기: {len(enabled_collectors)}개){RESET}")
+                if result.get('summary_path'):
+                    logger.info(f"메트릭 요약 파일: {result['summary_path']}")
+            except ImportError as e:
+                logger.warning(f"metrics 모듈 로드 실패: {e}")
+                print(f"{YELLOW}⚠️ 메트릭 모듈을 찾을 수 없습니다. 기능을 건너뜁니다.{RESET}")
+            except Exception as e:
+                logger.error(f"전체 메트릭 생성 중 예외: {e}", exc_info=True)
+                print(f"{RED}❌ 전체 메트릭 생성 실패: {e}{RESET}")
 
         elif choice == '5':
             logger.info("다른 수집기 실행 선택")
             print(f"{YELLOW}메인 메뉴로 돌아갑니다.{RESET}")
+            logger.info("--- 수집기 전환 ---")
             return POST_RUN_CONTINUE
 
         elif choice == '6':
@@ -450,7 +563,6 @@ def post_run_menu(collector, all_collectors):
             print(f"{RED}잘못된 선택입니다.{RESET}")
 
 def main():
-    global logger
     try:
         collectors = load_collectors()
         while True:
@@ -468,34 +580,60 @@ def main():
                 if run_type == "retry":
                     continue
 
+                # 디버그 모드 선택 시 로깅 레벨 전환
                 if run_type == '3':
-                    logger = setup_logging(debug_mode=True)
+                    logging.getLogger().setLevel(logging.DEBUG)
+                    logger.info("디버그 모드로 전환")
                 else:
-                    logger = setup_logging(debug_mode=False)
+                    logging.getLogger().setLevel(logging.INFO)
+                    logger.info("일반 모드로 전환")
 
-                if run_type == '4':
+                # 드라이 런 모드 처리
+                is_dry_run = (run_type == '6')
+                if is_dry_run:
+                    print(f"{CYAN}📋 드라이 런 모드입니다. 실제 실행하지 않습니다.{RESET}")
+
+                if run_type == '4':  # 고급 모드(메뉴형)
                     args, is_parallel = menu_advanced_mode()
                     if is_parallel:
-                        run_parallel(collector.get('parallel_script'), args)
+                        mode = "병렬"
                     else:
-                        run_collector(collector['script'], args)
+                        # args 에 이미 --shard 가 포함되어 있음
+                        if '--shard' in args:
+                            idx = args.index('--shard')
+                            shard_val = args[idx+1] if idx+1 < len(args) else 'none'
+                            mode = f"{shard_val} 샤드"
+                        else:
+                            mode = "통합"
+                    success = execute_collection(collector, args, mode, run_type)
+                    if not success and not is_dry_run:
+                        logger.warning("수집 실패 또는 부분 실패")
                     result = post_run_menu(collector, collectors)
                     if result == POST_RUN_EXIT:
                         sys.exit(0)
                     elif result == POST_RUN_CONTINUE:
                         break
 
-                elif run_type == '5':
+                elif run_type == '5':  # 고급 모드(직접 입력)
                     args = direct_advanced_mode()
                     if args:
-                        run_collector(collector['script'], args)
+                        # 모드 추론 (간단히)
+                        if '--shard' in args:
+                            idx = args.index('--shard')
+                            shard_val = args[idx+1] if idx+1 < len(args) else 'none'
+                            mode = f"{shard_val} 샤드"
+                        else:
+                            mode = "통합"
+                        success = execute_collection(collector, args, mode, run_type)
+                        if not success and not is_dry_run:
+                            logger.warning("수집 실패")
                         result = post_run_menu(collector, collectors)
                         if result == POST_RUN_EXIT:
                             sys.exit(0)
                         elif result == POST_RUN_CONTINUE:
                             break
 
-                else:
+                else:  # 기본 유형 (1,2,3,6)
                     base_args = get_basic_options(run_type)
                     while True:
                         mode = select_mode(collector)
@@ -503,28 +641,9 @@ def main():
                             break
                         if mode == "retry":
                             continue
-                        args = base_args.copy()
-                        if mode == "통합":
-                            args.extend(['--shard', 'none'])
-                            run_collector(collector['script'], args)
-                        elif "odd" in mode:
-                            args.extend(['--shard', 'odd'])
-                            run_collector(collector['script'], args)
-                        elif "even" in mode:
-                            args.extend(['--shard', 'even'])
-                            run_collector(collector['script'], args)
-                        elif "병렬" in mode:
-                            parallel_script = collector.get('parallel_script')
-                            if parallel_script and os.path.exists(parallel_script):
-                                run_parallel(parallel_script, args)
-                            else:
-                                print(f"{YELLOW}⚠️ 병렬 스크립트 없음, 순차 실행합니다.{RESET}")
-                                run_collector(collector['script'], args + ['--shard', 'odd'])
-                                run_collector(collector['script'], args + ['--shard', 'even'])
-                        else:
-                            logger.error(f"알 수 없는 모드: {mode}")
-                            continue
-
+                        success = execute_collection(collector, base_args, mode, run_type)
+                        if not success and not is_dry_run:
+                            logger.warning("수집 실패 또는 부분 실패")
                         result = post_run_menu(collector, collectors)
                         if result == POST_RUN_EXIT:
                             sys.exit(0)
