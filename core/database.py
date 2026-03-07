@@ -29,6 +29,7 @@ def get_db_connection(
             conn.row_factory = row_factory
         yield conn
         conn.commit()
+        print(f"💾 DB commit 완료: {db_path}")  # ← 디버깅 출력 추가
     except Exception:
         conn.rollback()
         raise
@@ -81,3 +82,4 @@ def init_checkpoint_table(conn: sqlite3.Connection) -> None:
             PRIMARY KEY (collector_type, target_key, region_code, school_code, sub_key)
         )
     """)
+    
