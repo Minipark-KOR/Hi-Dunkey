@@ -200,13 +200,17 @@ class NeisInfoCollector(BaseCollector):
                 "old": existing.get(sc_code, {}),
             }
 
+        # 🔥 limit 처리: row_meta를 미리 제한 (중간 리턴 제거)
+        if limit and len(row_meta) > limit:
+            row_meta = dict(list(row_meta.items())[:limit])
+            if self.debug_mode:
+                print(f"🔍 limit 적용: {len(row_meta)}개만 처리")
+
         new_coords: Dict[str, Tuple[float, float]] = {}
         failed_count = 0
         skipped_count = 0
         start_time = time.time()
         last_update = start_time
-        processed_count = 0
-        limit_active = limit is not None
         total_items = len(row_meta)
 
         def _print_progress(current, total, success, failed, skipped, start_t, quiet):
@@ -218,15 +222,12 @@ class NeisInfoCollector(BaseCollector):
             filled = int(bar_len * current / total) if total > 0 else 0
             bar = '█' * filled + '░' * (bar_len - filled)
             status = f"{GREEN}✅{RESET}{success:3d} {RED}❌{RESET}{failed:3d} {YELLOW}⏭️{RESET}{skipped:3d}"
-            suffix = f" [LIMIT:{limit}]" if limit_active and current >= limit else ""
+            suffix = f" [LIMIT:{limit}]" if limit else ""
             print(f"\r[{bar}] {current}/{total}{suffix} {status} {avg:6.1f} 개/초", end="", flush=True)
 
+        # 🔥 하나의 루프에서 좌표 처리 + enqueue 동시 수행
         for i, (sc_code, meta) in enumerate(row_meta.items(), 1):
-            if limit and processed_count >= limit:
-                if not self.quiet_mode:
-                    print(f"\n⚠️ 제한 ({limit} 개) 도달, 수집 중단")
-                return len(new_coords), failed_count, skipped_count
-
+            # 좌표 처리
             if meta["old"].get("hash") != meta["new_hash"] and meta["full_address"]:
                 cleaned = AddressFilter.clean(meta["full_address"], level=self.LEVEL_GEOCODING)
                 jibun = AddressFilter.extract_jibun(meta["full_address"])
@@ -259,15 +260,7 @@ class NeisInfoCollector(BaseCollector):
             else:
                 skipped_count += 1
 
-            processed_count += 1
-            if not self.quiet_mode and (time.time() - last_update >= 0.2 or i == total_items):
-                _print_progress(i, total_items, len(new_coords), failed_count, skipped_count, start_time, self.quiet_mode)
-                last_update = time.time()
-
-        if not self.quiet_mode:
-            print()
-
-        for sc_code, meta in row_meta.items():
+            # 🔥 모든 항목에 대해 enqueue 실행 (limit과 무관)
             row = meta["row"]
             atpt_code = row.get("ATPT_OFCDC_SC_CODE") or ""
             old = meta["old"]
@@ -288,7 +281,8 @@ class NeisInfoCollector(BaseCollector):
                 except Exception as e:
                     self.logger.error(f"주소 변환 실패 {sc_code}: {e}")
 
-            print(f"🔍 [enqueue] {sc_code} 추가됨")
+            # 디버그: enqueue 호출 확인
+            print(f"🔁 enqueue 호출: {sc_code}")
             self.enqueue([{
                 "sc_code": sc_code,
                 "school_id": create_school_id(atpt_code, sc_code),
@@ -319,6 +313,14 @@ class NeisInfoCollector(BaseCollector):
                 "jibun_address": meta.get("jibun_address"),
                 "kakao_address": None,
             }])
+
+            # 진행률 출력
+            if not self.quiet_mode and (time.time() - last_update >= 0.2 or i == total_items):
+                _print_progress(i, total_items, len(new_coords), failed_count, skipped_count, start_time, self.quiet_mode)
+                last_update = time.time()
+
+        if not self.quiet_mode:
+            print()
 
         region_name = REGION_NAMES.get(region_code, region_code)
         self.logger.info(f"[{region_name}] 좌표 갱신: {len(new_coords)}개 / 완료")
