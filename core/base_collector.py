@@ -20,7 +20,6 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from core.base_collector import BaseCollector
 from core.database import get_db_connection, get_db_reader
 from core.school_id import create_school_id
 from core.meta_vocab import MetaVocabManager
@@ -426,4 +425,3 @@ if __name__ == "__main__":
         print("✅ 수집 완료")
     else:
         collector.logger.info("수집 완료")
-        
