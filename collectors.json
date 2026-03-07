@@ -1,39 +1,13 @@
 [
     {
         "name": "neis_info",
-        "description": "NEIS 학교 기본 정보",
+        "description": "학교 기본정보 (NEIS)",
         "script": "collectors/neis_info_collector.py",
         "parallel_script": "collectors/neis_info_shard_collector.py",
         "merge_script": "scripts/merge_neis_info_dbs.py",
         "db_path": "data/master/neis_info.db",
         "shard_odd": "data/master/neis_info_odd.db",
         "shard_even": "data/master/neis_info_even.db",
-        "table_name": "schools",
-        "modes": ["통합", "odd 샤드", "even 샤드", "병렬 실행"],
-        "timeout_seconds": 3600,
-        "parallel_timeout_seconds": 7200,
-        "merge_timeout_seconds": 3600,
-        "metrics_config": {
-            "enabled": true, 
-            "collect_geo": true,
-            "collect_global": true
-        },
-        "parallel_config": {
-            "max_workers": 4,
-            "cpu_factor": 1.0,
-            "max_by_api": 10,
-            "absolute_max": 16
-        }
-    },
-    {
-        "name": "school_info",
-        "description": "학교 기본정보 (학교알리미)",
-        "script": "collectors/school_info_collector.py",
-        "parallel_script": "collectors/school_info_shard_collector.py",
-        "merge_script": "scripts/merge_school_info_dbs.py",
-        "db_path": "data/master/school_info.db",
-        "shard_odd": "data/master/school_info_odd.db",
-        "shard_even": "data/master/school_info_even.db",
         "table_name": "schools",
         "modes": ["통합", "odd 샤드", "even 샤드", "병렬 실행"],
         "timeout_seconds": 3600,
@@ -53,7 +27,7 @@
     },
     {
         "name": "meal",
-        "description": "NEIS 급식 정보",
+        "description": "급식 정보 (NEIS)",
         "script": "collectors/meal_collector.py",
         "db_path": "data/meal/meal.db",
         "table_name": "meals",
@@ -69,6 +43,41 @@
             "cpu_factor": 0.8,
             "max_by_api": 5,
             "absolute_max": 8
+        }
+    },
+    {
+        "name": "school_info",
+        "description": "학교 기본정보 (학교알리미)",
+        "script": "collectors/school_info_collector.py",
+        "parallel_script": "collectors/school_info_shard_collector.py",
+        "merge_script": "scripts/merge_school_info_dbs.py",
+        "db_path": "data/master/school_info.db",
+        "shard_odd": "data/master/school_info_odd.db",
+        "shard_even": "data/master/school_info_even.db",
+        "table_name": "schools",
+        "modes": ["통합", "odd 샤드", "even 샤드", "병렬 실행"],
+        "timeout_seconds": 3600,
+        "parallel_timeout_seconds": 7200,
+        "merge_timeout_seconds": 3600,
+        "metrics_config": {
+            "enabled": true,
+            "collect_geo": true,
+            "collect_global": true,
+            "custom_metrics": ["region_distribution", "school_type_stats"]
+        },
+        "parallel_config": {
+            "max_workers": 4,
+            "cpu_factor": 1.0,
+            "max_by_api": 10,
+            "absolute_max": 16,
+            "min_workers": 1,
+            "memory_per_worker_mb": 256
+        },
+        "api_config": {
+            "rate_limit": 10,
+            "retry_max": 3,
+            "retry_delay": 1.0,
+            "timeout": 30
         }
     }
 ]
