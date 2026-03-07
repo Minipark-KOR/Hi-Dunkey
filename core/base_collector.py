@@ -11,6 +11,7 @@ import glob
 import re
 import random
 import sys
+import traceback
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -65,7 +66,7 @@ class BaseCollector(ABC):
             target=self._writer_loop, daemon=True, name=f"{name}_writer"
         )
         self.writer_thread.start()
-        print(f"🔁 writer_thread 시작: {self.writer_thread.name}")  # 추가
+        print(f"🔁 writer_thread 시작: {self.writer_thread.name}")
 
         self.school_cache: Dict[str, Any] = {}
         self.school_by_id: Dict[str, Any] = {}
@@ -206,41 +207,47 @@ class BaseCollector(ABC):
         raise NotImplementedError
 
     def _writer_loop(self):
-        while True:
-            item = self.q.get()
-            if item is None:
-                self.q.task_done()
-                break
-
-            items_processed = 1
-            batch = self._flatten(item)
-
-            while len(batch) < 500:
-                try:
-                    nxt = self.q.get_nowait()
-                    if nxt is None:
-                        self.q.task_done()
-                        self.q.put(None)
-                        break
-                    items_processed += 1
-                    batch.extend(self._flatten(nxt))
-                except queue.Empty:
+        print("🔁 [writer_loop] started")  # 추가
+        try:
+            while True:
+                item = self.q.get()
+                if item is None:
+                    self.q.task_done()
                     break
 
-            print(f"🔍 [writer_loop] 배치 수집 완료: {len(batch)}개")  # 디버그
+                items_processed = 1
+                batch = self._flatten(item)
 
-            try:
-                if batch:
-                    self._save_batch(batch)
-            except DataDropException as e:
-                print(f"🚨 데이터 급감: {e}")
-                self.logger.error(f"🚨 데이터 급감 감지: {e}")
-            except Exception as e:
-                print(f"❌ 배치 저장 예외: {e}")
-                self.logger.error(f"배치 저장 실패: {e}", exc_info=True)
-            finally:
-                for _ in range(items_processed):
-                    self.q.task_done()
+                while len(batch) < 500:
+                    try:
+                        nxt = self.q.get_nowait()
+                        if nxt is None:
+                            self.q.task_done()
+                            self.q.put(None)
+                            break
+                        items_processed += 1
+                        batch.extend(self._flatten(nxt))
+                    except queue.Empty:
+                        break
+
+                print(f"🔍 [writer_loop] 배치 수집 완료: {len(batch)}개")
+
+                try:
+                    if batch:
+                        self._save_batch(batch)
+                except DataDropException as e:
+                    print(f"🚨 데이터 급감: {e}")
+                    self.logger.error(f"🚨 데이터 급감 감지: {e}")
+                except Exception as e:
+                    print(f"❌ 배치 저장 예외: {e}")
+                    self.logger.error(f"배치 저장 실패: {e}", exc_info=True)
+                finally:
+                    for _ in range(items_processed):
+                        self.q.task_done()
+        except Exception as e:
+            print(f"💥 writer_loop 치명적 예외: {e}")
+            traceback.print_exc()
+            raise
 
     def _flatten(self, data) -> List:
         if data is None:
@@ -304,10 +311,10 @@ class BaseCollector(ABC):
         pass
 
     def _save_batch(self, batch: List[dict]):
-        print(f"🔍 [_save_batch] 저장 시도: {len(batch)}개, DB 경로: {self.db_path}")  # 디버그
+        print(f"🔍 [_save_batch] 저장 시도: {len(batch)}개, DB 경로: {self.db_path}")
         with get_db_connection(self.db_path) as conn:
             self._do_save_batch(conn, batch)
-        print(f"✅ [_save_batch] 저장 완료")  # 디버그
+        print(f"✅ [_save_batch] 저장 완료")
 
     def _load_checkpoints(self):
         pass
