@@ -29,7 +29,7 @@ def get_db_connection(
             conn.row_factory = row_factory
         yield conn
         conn.commit()
-        print(f"💾 DB commit 완료: {db_path}")  # ← 디버깅 출력 추가
+        # 디버그 출력 제거 (logger 사용 권장)
     except Exception:
         conn.rollback()
         raise

@@ -56,7 +56,8 @@ class BaseCollector(ABC):
 
         self.total_db_path = str(self.base_dir / f"{name}_total.db")
         self.logger = build_logger(name, str(self.base_dir / f"{name}.log"))
-        print(f"📝 로그 파일: {self.base_dir / f'{name}.log'}")  # 로그 경로 출력 추가
+        # 로그 파일 경로 출력 (초기화 시 한 번)
+        print(f"📝 로그 파일: {self.base_dir / f'{name}.log'}")
 
         self.session = build_session()
 
@@ -232,13 +233,13 @@ class BaseCollector(ABC):
 
             try:
                 if batch:
-                    print(f"💾 저장 시도: {len(batch)}개")  # 디버깅 출력
+                    # 디버그용 저장 시도 메시지 제거 (너무 잦음)
                     self._save_batch(batch)
             except DataDropException as e:
-                print(f"🚨 데이터 급감: {e}")  # 디버깅 출력
+                print(f"🚨 데이터 급감: {e}")  # 예외는 출력 유지
                 self.logger.error(f"🚨 데이터 급감 감지: {e}")
             except Exception as e:
-                print(f"❌ 배치 저장 예외: {e}")  # 디버깅 출력
+                print(f"❌ 배치 저장 예외: {e}")  # 예외는 출력 유지
                 self.logger.error(f"배치 저장 실패: {e}", exc_info=True)
             finally:
                 for _ in range(items_processed):

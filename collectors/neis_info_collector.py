@@ -52,9 +52,8 @@ class NeisInfoCollector(BaseCollector):
         debug_mode: bool = False,
         quiet_mode: bool = False
     ):
-        # ✅ 수정: name을 "neis_info"로, base_dir을 MASTER_DIR로 설정
-        self.db_path = str(MASTER_DB)  # constants.paths 의 MASTER_DB_PATH 사용
-        super().__init__("neis_info", str(MASTER_DIR), "none", school_range)
+        # ✅ BaseCollector에 shard 전달 (DB 경로 자동 결정)
+        super().__init__("neis_info", str(MASTER_DIR), shard, school_range)
         self.api_context = 'school'
         self.incremental = incremental
         self.full = full
@@ -81,8 +80,8 @@ class NeisInfoCollector(BaseCollector):
         self.total_skipped = 0
 
         if not quiet_mode:
-            print("🏫 NeisInfoCollector 초기화 완료")
-        self.logger.info("🏫 NeisInfoCollector 초기화 완료")
+            print(f"🏫 NeisInfoCollector 초기화 완료 (샤드: {shard})")
+        self.logger.info(f"🏫 NeisInfoCollector 초기화 완료 (샤드: {shard})")
 
     def _init_db(self):
         with get_db_connection(self.db_path) as conn:
@@ -363,6 +362,7 @@ if __name__ == "__main__":
     is_github_actions = os.getenv('GITHUB_ACTIONS') == 'true'
     parser = argparse.ArgumentParser(description="학교 기본정보 수집기")
     parser.add_argument("--regions", default="ALL", help="수집할 지역 (ALL 또는 쉼표 구분, 예: B10,C10)")
+    parser.add_argument("--shard", choices=["none", "odd", "even"], default="none", help="샤드 모드 (none=통합, odd/even=분할)")
     parser.add_argument("--debug", action="store_true", help="상세 출력 모드")
     parser.add_argument("--quiet", action="store_true", help="출력 최소화 (GitHub Actions 등)")
     parser.add_argument("--limit", type=int, default=None, help="수집할 학교 수 제한 (테스트용)")
@@ -372,13 +372,12 @@ if __name__ == "__main__":
         args.quiet = True
     
     collector = NeisInfoCollector(
-        shard="none",
+        shard=args.shard,
         debug_mode=args.debug,
         quiet_mode=args.quiet
     )
     
-    # ✅ DB 경로 출력로 디버깅
-    print(f"📂 실제 DB 경로: {collector.db_path}")
+    print(f"📂 DB 경로: {collector.db_path}")
     
     if args.regions == "ALL":
         regions = ALL_REGIONS
@@ -386,7 +385,7 @@ if __name__ == "__main__":
         regions = [r.strip() for r in args.regions.split(",") if r.strip()]
     
     if not args.quiet:
-        print(f"\n🚀 학교 정보 수집 시작 (지역: {len(regions)}개, limit: {args.limit or '전체'})")
+        print(f"\n🚀 학교 정보 수집 시작 (샤드: {args.shard}, 지역: {len(regions)}개, limit: {args.limit or '전체'})")
         print("=" * 70)
     
     for region in regions:
@@ -394,18 +393,16 @@ if __name__ == "__main__":
         if args.limit:
             break
     
-    # ✅ 큐에 남은 데이터 모두 처리 (중요!)
     if not args.quiet:
         print("\n⏳ 남은 데이터 처리 중...")
     
-    collector.flush()  # BaseCollector 에 flush 메서드가 있는지 확인
-    time.sleep(2)      # 쓰기 스레드 완료 대기
+    collector.flush()
+    time.sleep(2)
     collector.close()
     
-    # ✅ 실제 DB 레코드 수 확인
     if os.path.exists(collector.db_path):
         count = sqlite3.connect(collector.db_path).execute("SELECT COUNT(*) FROM schools;").fetchone()[0]
-        print(f"📊 DB 저장 완료: {count}건")
+        print(f"📊 DB 저장 완료: {count}건 (파일: {collector.db_path})")
     else:
         print(f"❌ DB 파일 없음: {collector.db_path}")
     
@@ -413,7 +410,7 @@ if __name__ == "__main__":
         total = collector.total_new + collector.total_failed + collector.total_skipped
         success_rate = (collector.total_new / total * 100) if total > 0 else 0
         print("=" * 70)
-        print(f"📊 전체 통계")
+        print(f"📊 전체 통계 (샤드: {args.shard})")
         print(f"   신규 성공: {collector.total_new}개 ({success_rate:.1f}%)")
         print(f"   실패:      {collector.total_failed}개")
         print(f"   스킵:      {collector.total_skipped}개")
