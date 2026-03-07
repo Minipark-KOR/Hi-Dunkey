@@ -207,11 +207,13 @@ class BaseCollector(ABC):
         raise NotImplementedError
 
     def _writer_loop(self):
-        print("🔁 [writer_loop] started")  # 추가
+        # 강제 출력 및 flush
+        print("🔁 [writer_loop] started", flush=True)
         try:
             while True:
                 item = self.q.get()
                 if item is None:
+                    print("🔁 [writer_loop] received None, exiting", flush=True)
                     self.q.task_done()
                     break
 
@@ -222,6 +224,7 @@ class BaseCollector(ABC):
                     try:
                         nxt = self.q.get_nowait()
                         if nxt is None:
+                            print("🔁 [writer_loop] received None in batch", flush=True)
                             self.q.task_done()
                             self.q.put(None)
                             break
@@ -230,22 +233,25 @@ class BaseCollector(ABC):
                     except queue.Empty:
                         break
 
-                print(f"🔍 [writer_loop] 배치 수집 완료: {len(batch)}개")
+                print(f"🔍 [writer_loop] 배치 수집 완료: {len(batch)}개", flush=True)
 
                 try:
                     if batch:
+                        print(f"🔍 [writer_loop] _save_batch 호출 전", flush=True)
                         self._save_batch(batch)
+                        print(f"✅ [writer_loop] _save_batch 정상 종료", flush=True)
                 except DataDropException as e:
-                    print(f"🚨 데이터 급감: {e}")
+                    print(f"🚨 데이터 급감: {e}", flush=True)
                     self.logger.error(f"🚨 데이터 급감 감지: {e}")
                 except Exception as e:
-                    print(f"❌ 배치 저장 예외: {e}")
+                    print(f"❌ 배치 저장 예외: {e}", flush=True)
+                    traceback.print_exc()
                     self.logger.error(f"배치 저장 실패: {e}", exc_info=True)
                 finally:
                     for _ in range(items_processed):
                         self.q.task_done()
         except Exception as e:
-            print(f"💥 writer_loop 치명적 예외: {e}")
+            print(f"💥 writer_loop 치명적 예외: {e}", flush=True)
             traceback.print_exc()
             raise
 
@@ -311,10 +317,10 @@ class BaseCollector(ABC):
         pass
 
     def _save_batch(self, batch: List[dict]):
-        print(f"🔍 [_save_batch] 저장 시도: {len(batch)}개, DB 경로: {self.db_path}")
+        print(f"🔍 [_save_batch] 저장 시도: {len(batch)}개, DB 경로: {self.db_path}", flush=True)
         with get_db_connection(self.db_path) as conn:
             self._do_save_batch(conn, batch)
-        print(f"✅ [_save_batch] 저장 완료")
+        print(f"✅ [_save_batch] 저장 완료", flush=True)
 
     def _load_checkpoints(self):
         pass
