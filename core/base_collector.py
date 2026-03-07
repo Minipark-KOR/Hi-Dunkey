@@ -341,4 +341,10 @@ class BaseCollector(ABC):
                 self.logger.warning(f"리소스 close 실패: {e}")
 
         self.logger.info(f"✅ {self.name} 종료 완료")
+
+    def flush(self, timeout: float = 60.0):
+    """큐의 모든 데이터를 즉시 처리하고 완료될 때까지 대기"""
+    self.logger.info(f"🔄 {self.name} flush 시작...")
+    self.q.join()  # 현재 큐의 모든 항목이 처리될 때까지 대기
+    self.logger.info(f"✅ {self.name} flush 완료")
         
