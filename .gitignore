@@ -36,3 +36,5 @@ ENV/
 ssh-oracle.key
 ssh-oracle.key.pub
 NEIS_KEYS_JSON.json
+*.txt
+*.csv
