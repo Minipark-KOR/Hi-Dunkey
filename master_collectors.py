@@ -12,23 +12,60 @@ import subprocess
 import logging
 import sqlite3
 import shlex
+import re
+from enum import Enum, auto
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any, Union, Tuple
 
-# ANSI 색상
-GREEN = "\033[92m"
-YELLOW = "\033[93m"
-BLUE = "\033[94m"
-RED = "\033[91m"
-CYAN = "\033[96m"
-RESET = "\033[0m"
+# ANSI 색상 (Windows 호환 처리)
+if sys.platform == "win32":
+    try:
+        import colorama
+        colorama.init()
+    except ImportError:
+        # 컬러 비활성화
+        GREEN = YELLOW = BLUE = RED = CYAN = RESET = ""
+    else:
+        GREEN = "\033[92m"
+        YELLOW = "\033[93m"
+        BLUE = "\033[94m"
+        RED = "\033[91m"
+        CYAN = "\033[96m"
+        RESET = "\033[0m"
+else:
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    RED = "\033[91m"
+    CYAN = "\033[96m"
+    RESET = "\033[0m"
 
 BASE_DIR = Path(__file__).parent
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
+# 상수 정의
+class MenuResult(Enum):
+    """메뉴 선택 결과를 명확히 표현하는 Enum"""
+    CONTINUE = auto()   # 메인 메뉴(수집기 선택)로
+    EXIT = auto()       # 프로그램 종료
+    BACK = auto()       # 이전 메뉴로
+    DEBUG = auto()      # 디버그 모드 재실행
+    RESTART = auto()    # 처음으로 (수집기 선택)
+    RETRY = auto()      # 잘못된 입력, 재시도
+
+POST_RUN_CONTINUE = MenuResult.CONTINUE
+POST_RUN_EXIT = MenuResult.EXIT
+POST_RUN_BACK = MenuResult.BACK
+POST_RUN_DEBUG = MenuResult.DEBUG
+INPUT_RETRY = "retry"
+INPUT_RESTART = "restart"
+
+ALLOWED_TABLES = {'schools', 'meals', 'timetable', 'schedule', 'staff'}
+
 def cleanup_old_logs(days: int = 30) -> None:
+    """30일 이상 된 로그 삭제"""
     cutoff = datetime.now() - timedelta(days=days)
     for f in LOG_DIR.glob("master_*.log"):
         try:
@@ -54,13 +91,6 @@ logger = logging.getLogger(__name__)
 from collector_cli import COLLECTOR_MAP
 from constants.paths import MASTER_DIR
 
-POST_RUN_CONTINUE = "continue"   # 메인 메뉴(수집기 선택)로
-POST_RUN_EXIT = "exit"           # 프로그램 종료
-POST_RUN_BACK = "back"           # 이전 메뉴(실행 유형 선택)로
-POST_RUN_DEBUG = "debug"         # 디버그 모드로 재실행
-
-ALLOWED_TABLES = {'schools', 'meals', 'timetable', 'schedule', 'staff'}
-
 def resolve_path(path_str: str) -> Optional[str]:
     if not path_str:
         return None
@@ -68,9 +98,9 @@ def resolve_path(path_str: str) -> Optional[str]:
     return str(p if p.is_absolute() else BASE_DIR / p)
 
 def load_collectors() -> List[Dict[str, Any]]:
+    """COLLECTOR_MAP에서 수집기 메타데이터 로드"""
     collectors = []
     for name, cls in COLLECTOR_MAP.items():
-        # BaseCollector에 정의된 기본값 사용
         collectors.append({
             "name": name,
             "description": getattr(cls, "description", name),
@@ -83,7 +113,7 @@ def load_collectors() -> List[Dict[str, Any]]:
             "merge_timeout_seconds": getattr(cls, "merge_timeout_seconds", 1800),
             "metrics_config": getattr(cls, "metrics_config", {"enabled": False}),
             "parallel_config": getattr(cls, "parallel_config", {}),
-            # DB 경로는 실제 collector와 동일한 규칙 사용
+            # DB 경로는 규칙에 따라 생성
             "db_path": str(MASTER_DIR / f"{name}.db"),
             "shard_odd": str(MASTER_DIR / f"{name}_odd.db"),
             "shard_even": str(MASTER_DIR / f"{name}_even.db"),
@@ -96,7 +126,8 @@ def print_header() -> None:
     print(f"{BLUE}{'='*60}{RESET}")
     logger.info("마스터 수집기 시작")
 
-def select_collector(collectors: List[Dict[str, Any]]) -> Union[Dict[str, Any], str, None]:
+def select_collector(collectors: List[Dict[str, Any]]) -> Union[Dict[str, Any], MenuResult]:
+    """수집기 선택 메뉴"""
     print(f"\n{YELLOW}실행할 수집기를 선택하세요:{RESET}")
     for i, col in enumerate(collectors, 1):
         print(f"  {i}) {col['description']}")
@@ -110,12 +141,13 @@ def select_collector(collectors: List[Dict[str, Any]]) -> Union[Dict[str, Any], 
             return collectors[val-1]
         elif val == 33:
             logger.info("종료 선택")
-            return None
+            return MenuResult.EXIT
     logger.warning(f"잘못된 선택: {choice}")
     print(f"{RED}잘못된 선택입니다.{RESET}")
-    return "retry"
+    return MenuResult.RETRY
 
-def select_run_type() -> Union[str, None]:
+def select_run_type() -> Union[str, MenuResult]:
+    """실행 유형 선택 메뉴"""
     print(f"\n{YELLOW}실행 유형을 선택하세요:{RESET}")
     print("  1) 학교 기본정보 수집 (실제 수집, 전체)")
     print("  2) 테스트 모드 (간단 로그, 제한 수집)")
@@ -134,17 +166,18 @@ def select_run_type() -> Union[str, None]:
             logger.info(f"실행 유형 선택: {choice}")
             return choice
         elif val == 11:
-            return None  # 뒤로 가기 (상위 메뉴로)
+            return MenuResult.BACK
         elif val == 22:
-            return "restart"  # 처음으로
+            return MenuResult.RESTART
         elif val == 33:
             logger.info("종료 선택")
-            return "exit"
+            return MenuResult.EXIT
     logger.warning(f"잘못된 실행 유형: {choice}")
     print(f"{RED}잘못된 선택입니다.{RESET}")
-    return "retry"
+    return MenuResult.RETRY
 
-def select_mode(collector: Dict[str, Any]) -> Union[str, None]:
+def select_mode(collector: Dict[str, Any]) -> Union[str, MenuResult]:
+    """수집 방식 선택 메뉴"""
     print(f"\n{YELLOW}수집 방식을 선택하세요 ({collector['description']}):{RESET}")
     modes = collector.get('modes', ['통합', 'odd 샤드', 'even 샤드', '병렬 실행'])
     for i, mode in enumerate(modes, 1):
@@ -160,17 +193,18 @@ def select_mode(collector: Dict[str, Any]) -> Union[str, None]:
             logger.info(f"수집 방식 선택: {modes[val-1]}")
             return modes[val-1]
         elif val == 11:
-            return None  # 뒤로 가기
+            return MenuResult.BACK
         elif val == 22:
-            return "restart"
+            return MenuResult.RESTART
         elif val == 33:
             logger.info("종료 선택")
-            return "exit"
+            return MenuResult.EXIT
     logger.warning(f"잘못된 수집 방식 선택: {choice}")
     print(f"{RED}잘못된 선택입니다.{RESET}")
-    return "retry"
+    return MenuResult.RETRY
 
 def get_basic_options(run_type: str) -> List[str]:
+    """기본 옵션 수집 (실행 유형 1~3)"""
     base_args = []
     if run_type == '1':
         logger.info("실제 수집 모드")
@@ -186,7 +220,7 @@ def get_basic_options(run_type: str) -> List[str]:
 
     regions = input("지역 코드 (기본 전체, 여러 개는 쉼표, 예: B10,C10): ").strip()
     if regions:
-        if all(part.strip() for part in regions.split(',')):
+        if validate_region_input(regions):
             base_args.extend(['--regions', regions])
             logger.info(f"지역 옵션: {regions}")
         else:
@@ -203,7 +237,12 @@ def get_basic_options(run_type: str) -> List[str]:
         logger.info(f"제한 개수: {limit}")
     return base_args
 
-def menu_advanced_mode() -> tuple:
+def validate_region_input(regions: str) -> bool:
+    """지역 코드 입력 형식 검증 (예: B10,C10,J10)"""
+    return bool(re.match(r'^[A-Z]\d{2}(,[A-Z]\d{2})*$', regions.strip()))
+
+def menu_advanced_mode() -> Tuple[Optional[List[str]], bool]:
+    """고급 모드 메뉴형 옵션 선택"""
     args = []
     print(f"\n{YELLOW}[고급 모드 메뉴형] 옵션을 선택하세요.{RESET}")
     logger.info("고급 모드 메뉴형 시작")
@@ -237,22 +276,25 @@ def menu_advanced_mode() -> tuple:
                 is_parallel = False
                 logger.info("샤드 모드: 통합")
         elif val == 11:
-            return None, False  # 뒤로 가기
+            return None, False
         elif val == 22:
-            return "restart", False
+            return [INPUT_RESTART], False
         elif val == 33:
             logger.info("종료 선택")
             sys.exit(0)
     else:
-        # 기본값 통합
         args.extend(['--shard', 'none'])
         is_parallel = False
         logger.info("샤드 모드: 통합")
 
     regions = input("\n지역 코드 (기본 전체, 여러 개는 쉼표, 예: B10,C10): ").strip()
     if regions:
-        args.extend(['--regions', regions])
-        logger.info(f"지역: {regions}")
+        if validate_region_input(regions):
+            args.extend(['--regions', regions])
+            logger.info(f"지역: {regions}")
+        else:
+            logger.warning(f"잘못된 지역 형식: {regions}")
+            print(f"{YELLOW}⚠️ 잘못된 형식, 무시합니다.{RESET}")
 
     limit = input("수집 제한 개수 (기본 전체): ").strip()
     if limit.isdigit():
@@ -266,7 +308,8 @@ def menu_advanced_mode() -> tuple:
 
     return args, is_parallel
 
-def direct_advanced_mode() -> List[str]:
+def direct_advanced_mode() -> Optional[List[str]]:
+    """고급 모드 직접 입력 옵션"""
     print(f"\n{YELLOW}[고급 모드 직접 입력] 원하는 옵션을 한 줄로 입력하세요.{RESET}")
     print("예시: --shard odd --regions B10 --limit 50 --debug")
     print()  # 빈 줄
@@ -277,9 +320,9 @@ def direct_advanced_mode() -> List[str]:
     if custom.isdigit():
         val = int(custom)
         if val == 11:
-            return None  # 뒤로 가기
+            return None
         elif val == 22:
-            return "restart"
+            return [INPUT_RESTART]
         elif val == 33:
             logger.info("종료 선택")
             sys.exit(0)
@@ -298,12 +341,20 @@ def direct_advanced_mode() -> List[str]:
         return []
 
 def dry_run_cmd(script: str, args: List[str]) -> bool:
+    """드라이 런: 실행 명령어만 출력"""
     cmd = [sys.executable, script] + args
     print(f"{CYAN}📋 드라이 런: {' '.join(cmd)}{RESET}")
     logger.info(f"드라이 런 명령: {' '.join(cmd)}")
     return True
 
+def format_timeout(seconds: int) -> str:
+    """초를 분/초 문자열로 변환"""
+    if seconds >= 60:
+        return f"{seconds//60}분 {seconds%60}초"
+    return f"{seconds}초"
+
 def run_collector(collector_name: str, args: List[str], timeout: Optional[int] = None) -> bool:
+    """collector_cli.py를 통해 수집기 실행"""
     cmd = [sys.executable, "collector_cli.py", collector_name] + args
     logger.info(f"실행 명령: {' '.join(cmd)}")
     print(f"\n{GREEN}▶ 실행: {' '.join(cmd)}{RESET}\n")
@@ -313,7 +364,7 @@ def run_collector(collector_name: str, args: List[str], timeout: Optional[int] =
         return True
     except subprocess.TimeoutExpired as e:
         logger.error(f"수집기 타임아웃 ({timeout}초): {e}")
-        print(f"{RED}❌ 수집기 실행 타임아웃 ({timeout//60}분){RESET}")
+        print(f"{RED}❌ 수집기 실행 타임아웃 ({format_timeout(timeout)}){RESET}")
         return False
     except subprocess.CalledProcessError as e:
         logger.error(f"수집기 실행 오류: {e}")
@@ -325,6 +376,7 @@ def run_collector(collector_name: str, args: List[str], timeout: Optional[int] =
         raise
 
 def run_parallel(parallel_script: str, base_args: List[str], collector_name: str, timeout: Optional[int] = None) -> bool:
+    """병렬 실행 스크립트 실행"""
     cmd = [sys.executable, parallel_script, collector_name] + base_args
     logger.info(f"병렬 실행 명령: {' '.join(cmd)}")
     print(f"\n{GREEN}▶ 병렬 실행: {' '.join(cmd)}{RESET}\n")
@@ -334,7 +386,7 @@ def run_parallel(parallel_script: str, base_args: List[str], collector_name: str
         return True
     except subprocess.TimeoutExpired as e:
         logger.error(f"병렬 실행 타임아웃 ({timeout}초): {e}")
-        print(f"{RED}❌ 병렬 실행 타임아웃 ({timeout//60}분){RESET}")
+        print(f"{RED}❌ 병렬 실행 타임아웃 ({format_timeout(timeout)}){RESET}")
         return False
     except subprocess.CalledProcessError as e:
         logger.error(f"병렬 실행 오류: {e}")
@@ -346,19 +398,26 @@ def run_parallel(parallel_script: str, base_args: List[str], collector_name: str
         raise
 
 def get_table_count(db_path: str, table_name: str) -> Optional[int]:
+    """테이블의 레코드 수 조회 (SQL 인젝션 방어 포함)"""
     if table_name not in ALLOWED_TABLES:
         logger.error(f"허용되지 않은 테이블명: {table_name}")
+        return None
+    # 추가 안전장치: 테이블명에 위험 문자 포함 검사
+    dangerous = ['`', ';', '--', '/*', '*/', 'drop', 'delete', 'update', 'insert']
+    if any(char in table_name.lower() for char in dangerous):
+        logger.error(f"위험한 문자 포함 테이블명: {table_name}")
         return None
     try:
         with sqlite3.connect(db_path) as conn:
             cur = conn.cursor()
-            cur.execute(f"SELECT COUNT(*) FROM `{table_name}`")
+            cur.execute(f'SELECT COUNT(*) FROM "{table_name}"')
             return cur.fetchone()[0]
     except Exception as e:
         logger.error(f"DB 조회 실패 {db_path}: {e}")
         return None
 
 def execute_collection(collector: Dict[str, Any], args: List[str], mode: str, run_type: str) -> bool:
+    """선택된 모드에 따라 수집 실행"""
     is_dry_run = (run_type == '6')
     timeout = collector.get('timeout_seconds')
     parallel_timeout = collector.get('parallel_timeout_seconds')
@@ -403,7 +462,250 @@ def execute_collection(collector: Dict[str, Any], args: List[str], mode: str, ru
         logger.error(f"알 수 없는 모드: {mode}")
         return False
 
-def post_run_menu(collector: Dict[str, Any], all_collectors: List[Dict[str, Any]], last_args: List[str] = None, last_mode: str = None) -> str:
+# ====== 후속 작업 기능별 분리 ======
+def check_data_integrity(collector: Dict[str, Any], **kwargs) -> MenuResult:
+    """데이터 무결성 확인"""
+    logger.info("데이터 무결성 확인 선택")
+    print(f"\n{BLUE}📊 데이터 무결성 확인{RESET}")
+    db_path = collector.get('db_path')
+    table = collector['table_name']
+    total_db = None
+    if db_path and os.path.exists(db_path):
+        total_db = get_table_count(db_path, table)
+        print(f"   통합 DB ({db_path}): {total_db if total_db is not None else '오류'}건")
+    else:
+        print(f"   통합 DB 없음")
+
+    odd_path = collector.get('shard_odd')
+    even_path = collector.get('shard_even')
+    odd_count = get_table_count(odd_path, table) if odd_path and os.path.exists(odd_path) else None
+    even_count = get_table_count(even_path, table) if even_path and os.path.exists(even_path) else None
+
+    if odd_count is not None:
+        print(f"   odd 샤드 ({odd_path}): {odd_count}건")
+    if even_count is not None:
+        print(f"   even 샤드 ({even_path}): {even_count}건")
+
+    if odd_count is not None and even_count is not None:
+        total_shard = odd_count + even_count
+        print(f"   샤드 합계: {total_shard}건")
+        if total_db is not None:
+            if total_shard == total_db:
+                print(f"{GREEN}   ✅ 통합 DB와 샤드 합계가 일치합니다.{RESET}")
+                logger.info(f"무결성 일치: 통합 {total_db}, 샤드 합계 {total_shard}")
+            else:
+                print(f"{RED}   ❌ 불일치! 통합 DB: {total_db}, 샤드 합계: {total_shard}{RESET}")
+                logger.warning(f"무결성 불일치: 통합 {total_db}, 샤드 합계 {total_shard}")
+        else:
+            print(f"{YELLOW}   통합 DB가 없어 비교 불가{RESET}")
+    elif odd_count is not None or even_count is not None:
+        print(f"{YELLOW}   하나의 샤드만 존재합니다.{RESET}")
+    return MenuResult.CONTINUE  # 후속 메뉴 유지
+
+def execute_merge(collector: Dict[str, Any], **kwargs) -> MenuResult:
+    """병합 실행"""
+    logger.info("병합 실행 선택")
+    merge_script = collector.get('merge_script')
+    if merge_script and os.path.exists(merge_script):
+        merge_timeout = collector.get('merge_timeout_seconds', 1800)
+        print(f"\n{GREEN}🔗 병합 스크립트 실행{RESET}")
+        try:
+            subprocess.run([sys.executable, merge_script], check=True, timeout=merge_timeout)
+            logger.info("병합 스크립트 정상 종료")
+            print(f"{GREEN}✅ 병합 완료{RESET}")
+        except subprocess.TimeoutExpired:
+            logger.error(f"병합 스크립트 타임아웃 ({merge_timeout}초)")
+            print(f"{RED}❌ 병합 스크립트 타임아웃 ({format_timeout(merge_timeout)}){RESET}")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"병합 스크립트 오류: {e}")
+            print(f"{RED}❌ 병합 스크립트 실행 오류{RESET}")
+        except KeyboardInterrupt:
+            logger.warning("병합 스크립트 사용자 중단")
+            print(f"\n{YELLOW}⚠️ 사용자 중단{RESET}")
+    else:
+        logger.warning("병합 스크립트 없음")
+        print(f"{RED}❌ 병합 스크립트가 없습니다.{RESET}")
+    return MenuResult.CONTINUE
+
+def export_data(collector: Dict[str, Any], **kwargs) -> MenuResult:
+    """데이터 내보내기"""
+    logger.info("데이터 내보내기 선택")
+    print(f"\n{BLUE}📤 데이터 내보내기{RESET}")
+    try:
+        from exporters.region_filter import get_all_regions, parse_region_input
+    except ImportError:
+        logger.error("exporters 모듈을 찾을 수 없습니다.")
+        print(f"{RED}❌ 내보내기 모듈이 없습니다. exporters/ 디렉토리를 생성하고 필요한 파일을 넣어주세요.{RESET}")
+        return MenuResult.CONTINUE
+
+    print("\n내보낼 지역을 선택하세요 (기본: 전체):")
+    for code, name in get_all_regions():
+        print(f"  • {name} ({code})")
+    region_input = input("지역 입력 (예: 서울,경기 또는 B10,J10): ").strip()
+    regions = parse_region_input(region_input) if region_input else None
+
+    print("\n내보낼 형식을 선택하세요:")
+    print("  1) Excel 파일 (.xlsx) - 학교 목록 상세 데이터")
+    print("  2) 통계 리포트 (JSON) - 요약 통계")
+    print("  3) 통계 리포트 (CSV)")
+    print("  4) 통계 리포트 (텍스트)")
+    format_choice = input("선택 (1-4): ").strip()
+    format_map = {'1': 'excel', '2': 'json', '3': 'csv', '4': 'text'}
+    report_format = format_map.get(format_choice, 'json')
+
+    try:
+        db_path = collector.get('db_path')
+        table_name = collector['table_name']
+        if report_format == 'excel':
+            from exporters.excel_exporter import ExcelExporter
+            exporter = ExcelExporter()
+            output_path = exporter.export_from_db(
+                db_path=db_path,
+                table_name=table_name,
+                regions=regions
+            )
+        else:
+            from exporters.report_generator import ReportGenerator
+            generator = ReportGenerator()
+            output_path = generator.generate_from_db(
+                db_path=db_path,
+                table_name=table_name,
+                regions=regions,
+                report_format=report_format
+            )
+        if output_path:
+            print(f"{GREEN}✅ 내보내기 완료: {output_path}{RESET}")
+            logger.info(f"데이터 내보내기 완료: {output_path}")
+        else:
+            print(f"{YELLOW}⚠️ 내보낼 데이터가 없습니다.{RESET}")
+    except ImportError as e:
+        logger.warning(f"내보내기 모듈 로드 실패: {e}")
+        print(f"{YELLOW}⚠️ 필요한 라이브러리가 없습니다: {e}")
+        print(f"   설치 명령: pip install pandas openpyxl")
+    except Exception as e:
+        logger.error(f"내보내기 중 오류: {e}", exc_info=True)
+        print(f"{RED}❌ 내보내기 실패: {e}{RESET}")
+    return MenuResult.CONTINUE
+
+def generate_single_metrics(collector: Dict[str, Any], **kwargs) -> MenuResult:
+    """단일 수집기 메트릭 생성"""
+    logger.info(f"{collector['name']} 메트릭 생성 선택")
+    if not collector.get('metrics_config', {}).get('enabled', False):
+        print(f"{YELLOW}⚠️ {collector['name']}의 메트릭 생성이 비활성화되어 있습니다.{RESET}")
+        return MenuResult.CONTINUE
+    backup_date = datetime.now().strftime("%Y%m%d_%H%M")
+    metrics_dir = BASE_DIR / "metrics"
+    domain_config = {
+        collector['name']: {
+            "db_path": collector['db_path'],
+            "table": collector['table_name'],
+            "enabled": True
+        }
+    }
+    try:
+        from core.metrics import generate_and_save_metrics
+        result = generate_and_save_metrics(
+            backup_date=backup_date,
+            base_dir=str(BASE_DIR),
+            metrics_dir=str(metrics_dir),
+            domain_config=domain_config,
+            global_dbs=[],
+            include_geo=collector.get('metrics_config', {}).get('collect_geo', False),
+            include_global_tables=collector.get('metrics_config', {}).get('collect_global', False),
+            print_to_stdout=True
+        )
+        print(f"{GREEN}✅ {collector['name']} 메트릭 생성 완료{RESET}")
+        if result.get('summary_path'):
+            logger.info(f"메트릭 요약 파일: {result['summary_path']}")
+    except ImportError as e:
+        logger.warning(f"metrics 모듈 로드 실패: {e}")
+        print(f"{YELLOW}⚠️ 메트릭 모듈을 찾을 수 없습니다. 기능을 건너뜁니다.{RESET}")
+    except Exception as e:
+        logger.error(f"메트릭 생성 중 예외: {e}", exc_info=True)
+        print(f"{RED}❌ 메트릭 생성 실패: {e}{RESET}")
+    return MenuResult.CONTINUE
+
+def generate_all_metrics(collector: Dict[str, Any], all_collectors: List[Dict[str, Any]], **kwargs) -> MenuResult:
+    """모든 수집기 메트릭 일괄 생성"""
+    logger.info("모든 수집기 메트릭 일괄 생성 선택")
+    enabled_collectors = [c for c in all_collectors if c.get('metrics_config', {}).get('enabled', False)]
+    if not enabled_collectors:
+        print(f"{YELLOW}⚠️ 활성화된 메트릭 생성 수집기가 없습니다.{RESET}")
+        return MenuResult.CONTINUE
+    domain_config = {}
+    for c in enabled_collectors:
+        domain_config[c['name']] = {
+            "db_path": c['db_path'],
+            "table": c['table_name'],
+            "enabled": True
+        }
+    backup_date = datetime.now().strftime("%Y%m%d_%H%M")
+    metrics_dir = BASE_DIR / "metrics"
+    include_geo = any(c.get('metrics_config', {}).get('collect_geo', False) for c in enabled_collectors)
+    include_global = any(c.get('metrics_config', {}).get('collect_global', False) for c in enabled_collectors)
+    try:
+        from core.metrics import generate_and_save_metrics
+        result = generate_and_save_metrics(
+            backup_date=backup_date,
+            base_dir=str(BASE_DIR),
+            metrics_dir=str(metrics_dir),
+            domain_config=domain_config,
+            global_dbs=[],
+            include_geo=include_geo,
+            include_global_tables=include_global,
+            print_to_stdout=True
+        )
+        print(f"{GREEN}✅ 전체 메트릭 생성 완료 (활성 수집기: {len(enabled_collectors)}개){RESET}")
+        if result.get('summary_path'):
+            logger.info(f"메트릭 요약 파일: {result['summary_path']}")
+    except ImportError as e:
+        logger.warning(f"metrics 모듈 로드 실패: {e}")
+        print(f"{YELLOW}⚠️ 메트릭 모듈을 찾을 수 없습니다. 기능을 건너뜁니다.{RESET}")
+    except Exception as e:
+        logger.error(f"전체 메트릭 생성 중 예외: {e}", exc_info=True)
+        print(f"{RED}❌ 전체 메트릭 생성 실패: {e}{RESET}")
+    return MenuResult.CONTINUE
+
+def view_logs(collector: Dict[str, Any], **kwargs) -> MenuResult:
+    """수집기 로그 확인"""
+    logger.info("로그 확인 선택")
+    log_file = Path("logs") / f"{collector['name']}.log"
+    if log_file.exists():
+        print(f"\n{BLUE}📄 로그 파일: {log_file}{RESET}")
+        try:
+            # 최근 50줄 출력
+            result = subprocess.run(['tail', '-n', '50', str(log_file)], capture_output=True, text=True)
+            print(result.stdout)
+        except Exception as e:
+            print(f"{RED}로그 읽기 실패: {e}{RESET}")
+    else:
+        print(f"{YELLOW}⚠️ 로그 파일이 없습니다: {log_file}{RESET}")
+    return MenuResult.CONTINUE
+
+def debug_rerun(collector: Dict[str, Any], args: List[str], mode: str, run_type: str, **kwargs) -> Tuple[MenuResult, Optional[List[str]]]:
+    """디버그 모드 재실행"""
+    logger.info("디버그 모드로 재실행 선택")
+    if args is None or mode is None:
+        print(f"{RED}❌ 재실행에 필요한 정보가 없습니다.{RESET}")
+        return MenuResult.CONTINUE, args
+    print(f"\n{GREEN}🔧 디버그 모드로 재실행합니다...{RESET}")
+    if '--debug' not in args:
+        args.append('--debug')
+    return MenuResult.DEBUG, args  # DEBUG 결과를 반환하여 실행 루프에서 재실행 처리
+
+# 후속 작업 매핑
+POST_RUN_ACTIONS = {
+    1: check_data_integrity,
+    2: execute_merge,
+    3: export_data,
+    4: generate_single_metrics,
+    5: generate_all_metrics,
+    6: view_logs,
+    7: debug_rerun,
+}
+
+def post_run_menu(collector: Dict[str, Any], all_collectors: List[Dict[str, Any]], last_args: List[str] = None, last_mode: str = None) -> Tuple[MenuResult, Optional[List[str]]]:
+    """후속 작업 메뉴"""
     while True:
         print(f"\n{YELLOW}후속 작업을 선택하세요.{RESET}")
         print("  1) 데이터 무결성 확인 (레코드 수, 샤드 합계 등)")
@@ -421,233 +723,30 @@ def post_run_menu(collector: Dict[str, Any], all_collectors: List[Dict[str, Any]
 
         if choice.isdigit():
             val = int(choice)
-            if val == 1:
-                logger.info("데이터 무결성 확인 선택")
-                print(f"\n{BLUE}📊 데이터 무결성 확인{RESET}")
-                db_path = collector.get('db_path')
-                table = collector['table_name']
-                total_db = None
-                if db_path and os.path.exists(db_path):
-                    total_db = get_table_count(db_path, table)
-                    print(f"   통합 DB ({db_path}): {total_db if total_db is not None else '오류'}건")
+            if 1 <= val <= 7:
+                # 각 기능별 함수 호출
+                if val == 7:
+                    result, new_args = debug_rerun(collector, last_args, last_mode, None)
+                    if result == MenuResult.DEBUG:
+                        return result, new_args
                 else:
-                    print(f"   통합 DB 없음")
-
-                odd_path = collector.get('shard_odd')
-                even_path = collector.get('shard_even')
-                odd_count = get_table_count(odd_path, table) if odd_path and os.path.exists(odd_path) else None
-                even_count = get_table_count(even_path, table) if even_path and os.path.exists(even_path) else None
-
-                if odd_count is not None:
-                    print(f"   odd 샤드 ({odd_path}): {odd_count}건")
-                if even_count is not None:
-                    print(f"   even 샤드 ({even_path}): {even_count}건")
-
-                if odd_count is not None and even_count is not None:
-                    total_shard = odd_count + even_count
-                    print(f"   샤드 합계: {total_shard}건")
-                    if total_db is not None:
-                        if total_shard == total_db:
-                            print(f"{GREEN}   ✅ 통합 DB와 샤드 합계가 일치합니다.{RESET}")
-                            logger.info(f"무결성 일치: 통합 {total_db}, 샤드 합계 {total_shard}")
-                        else:
-                            print(f"{RED}   ❌ 불일치! 통합 DB: {total_db}, 샤드 합계: {total_shard}{RESET}")
-                            logger.warning(f"무결성 불일치: 통합 {total_db}, 샤드 합계 {total_shard}")
+                    # 일반 기능 실행
+                    if val == 5:
+                        result = POST_RUN_ACTIONS[val](collector, all_collectors=all_collectors)
                     else:
-                        print(f"{YELLOW}   통합 DB가 없어 비교 불가{RESET}")
-                elif odd_count is not None or even_count is not None:
-                    print(f"{YELLOW}   하나의 샤드만 존재합니다.{RESET}")
-
-            elif val == 2:
-                logger.info("병합 실행 선택")
-                merge_script = collector.get('merge_script')
-                if merge_script and os.path.exists(merge_script):
-                    merge_timeout = collector.get('merge_timeout_seconds', 1800)
-                    print(f"\n{GREEN}🔗 병합 스크립트 실행{RESET}")
-                    try:
-                        subprocess.run([sys.executable, merge_script], check=True, timeout=merge_timeout)
-                        logger.info("병합 스크립트 정상 종료")
-                        print(f"{GREEN}✅ 병합 완료{RESET}")
-                    except subprocess.TimeoutExpired:
-                        logger.error(f"병합 스크립트 타임아웃 ({merge_timeout}초)")
-                        print(f"{RED}❌ 병합 스크립트 타임아웃 ({merge_timeout//60}분){RESET}")
-                    except subprocess.CalledProcessError as e:
-                        logger.error(f"병합 스크립트 오류: {e}")
-                        print(f"{RED}❌ 병합 스크립트 실행 오류{RESET}")
-                    except KeyboardInterrupt:
-                        logger.warning("병합 스크립트 사용자 중단")
-                        print(f"\n{YELLOW}⚠️ 사용자 중단{RESET}")
-                else:
-                    logger.warning("병합 스크립트 없음")
-                    print(f"{RED}❌ 병합 스크립트가 없습니다.{RESET}")
-
-            elif val == 3:
-                logger.info("데이터 내보내기 선택")
-                print(f"\n{BLUE}📤 데이터 내보내기{RESET}")
-                try:
-                    from exporters.region_filter import get_all_regions, parse_region_input
-                except ImportError:
-                    logger.error("exporters 모듈을 찾을 수 없습니다. exporters/ 디렉토리가 있는지 확인하세요.")
-                    print(f"{RED}❌ 내보내기 모듈이 없습니다. exporters/ 디렉토리를 생성하고 필요한 파일을 넣어주세요.{RESET}")
-                    continue
-
-                print("\n내보낼 지역을 선택하세요 (기본: 전체):")
-                for code, name in get_all_regions():
-                    print(f"  • {name} ({code})")
-                region_input = input("지역 입력 (예: 서울,경기 또는 B10,J10): ").strip()
-                regions = parse_region_input(region_input) if region_input else None
-
-                print("\n내보낼 형식을 선택하세요:")
-                print("  1) Excel 파일 (.xlsx) - 학교 목록 상세 데이터")
-                print("  2) 통계 리포트 (JSON) - 요약 통계 (지역/학교급별 분포, 좌표 보유율 등)")
-                print("  3) 통계 리포트 (CSV)")
-                print("  4) 통계 리포트 (텍스트)")
-                format_choice = input("선택 (1-4): ").strip()
-                format_map = {'1': 'excel', '2': 'json', '3': 'csv', '4': 'text'}
-                report_format = format_map.get(format_choice, 'json')
-
-                try:
-                    db_path = collector.get('db_path')
-                    table_name = collector['table_name']
-                    if report_format == 'excel':
-                        from exporters.excel_exporter import ExcelExporter
-                        exporter = ExcelExporter()
-                        output_path = exporter.export_from_db(
-                            db_path=db_path,
-                            table_name=table_name,
-                            regions=regions
-                        )
-                    else:
-                        from exporters.report_generator import ReportGenerator
-                        generator = ReportGenerator()
-                        output_path = generator.generate_from_db(
-                            db_path=db_path,
-                            table_name=table_name,
-                            regions=regions,
-                            report_format=report_format
-                        )
-                    if output_path:
-                        print(f"{GREEN}✅ 내보내기 완료: {output_path}{RESET}")
-                        logger.info(f"데이터 내보내기 완료: {output_path}")
-                    else:
-                        print(f"{YELLOW}⚠️ 내보낼 데이터가 없습니다.{RESET}")
-                except ImportError as e:
-                    logger.warning(f"내보내기 모듈 로드 실패: {e}")
-                    print(f"{YELLOW}⚠️ 필요한 라이브러리가 없습니다: {e}")
-                    print(f"   설치 명령: pip install pandas openpyxl")
-                except Exception as e:
-                    logger.error(f"내보내기 중 오류: {e}", exc_info=True)
-                    print(f"{RED}❌ 내보내기 실패: {e}{RESET}")
-
-            elif val == 4:
-                logger.info(f"{collector['name']} 메트릭 생성 선택")
-                if not collector.get('metrics_config', {}).get('enabled', False):
-                    print(f"{YELLOW}⚠️ {collector['name']}의 메트릭 생성이 비활성화되어 있습니다.{RESET}")
-                    continue
-                backup_date = datetime.now().strftime("%Y%m%d_%H%M")
-                metrics_dir = BASE_DIR / "metrics"
-                domain_config = {
-                    collector['name']: {
-                        "db_path": collector['db_path'],
-                        "table": collector['table_name'],
-                        "enabled": True
-                    }
-                }
-                try:
-                    from core.metrics import generate_and_save_metrics
-                    result = generate_and_save_metrics(
-                        backup_date=backup_date,
-                        base_dir=str(BASE_DIR),
-                        metrics_dir=str(metrics_dir),
-                        domain_config=domain_config,
-                        global_dbs=[],
-                        include_geo=collector.get('metrics_config', {}).get('collect_geo', False),
-                        include_global_tables=collector.get('metrics_config', {}).get('collect_global', False),
-                        print_to_stdout=True
-                    )
-                    print(f"{GREEN}✅ {collector['name']} 메트릭 생성 완료{RESET}")
-                    if result.get('summary_path'):
-                        logger.info(f"메트릭 요약 파일: {result['summary_path']}")
-                except ImportError as e:
-                    logger.warning(f"metrics 모듈 로드 실패: {e}")
-                    print(f"{YELLOW}⚠️ 메트릭 모듈을 찾을 수 없습니다. 기능을 건너뜁니다.{RESET}")
-                except Exception as e:
-                    logger.error(f"메트릭 생성 중 예외: {e}", exc_info=True)
-                    print(f"{RED}❌ 메트릭 생성 실패: {e}{RESET}")
-
-            elif val == 5:
-                logger.info("모든 수집기 메트릭 일괄 생성 선택")
-                enabled_collectors = [c for c in all_collectors if c.get('metrics_config', {}).get('enabled', False)]
-                if not enabled_collectors:
-                    print(f"{YELLOW}⚠️ 활성화된 메트릭 생성 수집기가 없습니다.{RESET}")
-                    continue
-                domain_config = {}
-                for c in enabled_collectors:
-                    domain_config[c['name']] = {
-                        "db_path": c['db_path'],
-                        "table": c['table_name'],
-                        "enabled": True
-                    }
-                backup_date = datetime.now().strftime("%Y%m%d_%H%M")
-                metrics_dir = BASE_DIR / "metrics"
-                include_geo = any(c.get('metrics_config', {}).get('collect_geo', False) for c in enabled_collectors)
-                include_global = any(c.get('metrics_config', {}).get('collect_global', False) for c in enabled_collectors)
-                try:
-                    from core.metrics import generate_and_save_metrics
-                    result = generate_and_save_metrics(
-                        backup_date=backup_date,
-                        base_dir=str(BASE_DIR),
-                        metrics_dir=str(metrics_dir),
-                        domain_config=domain_config,
-                        global_dbs=[],
-                        include_geo=include_geo,
-                        include_global_tables=include_global,
-                        print_to_stdout=True
-                    )
-                    print(f"{GREEN}✅ 전체 메트릭 생성 완료 (활성 수집기: {len(enabled_collectors)}개){RESET}")
-                    if result.get('summary_path'):
-                        logger.info(f"메트릭 요약 파일: {result['summary_path']}")
-                except ImportError as e:
-                    logger.warning(f"metrics 모듈 로드 실패: {e}")
-                    print(f"{YELLOW}⚠️ 메트릭 모듈을 찾을 수 없습니다. 기능을 건너뜁니다.{RESET}")
-                except Exception as e:
-                    logger.error(f"전체 메트릭 생성 중 예외: {e}", exc_info=True)
-                    print(f"{RED}❌ 전체 메트릭 생성 실패: {e}{RESET}")
-
-            elif val == 6:
-                logger.info("로그 확인 선택")
-                log_file = Path("logs") / f"{collector['name']}.log"
-                if log_file.exists():
-                    print(f"\n{BLUE}📄 로그 파일: {log_file}{RESET}")
-                    try:
-                        # 최근 50줄 출력
-                        result = subprocess.run(['tail', '-n', '50', str(log_file)], capture_output=True, text=True)
-                        print(result.stdout)
-                    except Exception as e:
-                        print(f"{RED}로그 읽기 실패: {e}{RESET}")
-                else:
-                    print(f"{YELLOW}⚠️ 로그 파일이 없습니다: {log_file}{RESET}")
-
-            elif val == 7:
-                logger.info("디버그 모드로 재실행 선택")
-                if last_args is not None and last_mode is not None:
-                    print(f"\n{GREEN}🔧 디버그 모드로 재실행합니다...{RESET}")
-                    return POST_RUN_DEBUG
-                else:
-                    print(f"{RED}❌ 재실행에 필요한 정보가 없습니다.{RESET}")
-
+                        result = POST_RUN_ACTIONS[val](collector)
+                    if result != MenuResult.CONTINUE:
+                        return result, last_args
+                # CONTINUE면 루프 계속
             elif val == 11:
                 logger.info("뒤로 가기 선택")
-                return POST_RUN_BACK
-
+                return MenuResult.BACK, last_args
             elif val == 22:
                 logger.info("처음으로 (수집기 선택) 선택")
-                return POST_RUN_CONTINUE
-
+                return MenuResult.CONTINUE, last_args  # 여기서는 CONTINUE지만 상위에서 처리
             elif val == 33:
                 logger.info("프로그램 종료 선택")
-                return POST_RUN_EXIT
-
+                return MenuResult.EXIT, last_args
             else:
                 logger.warning(f"잘못된 후속 작업 선택: {choice}")
                 print(f"{RED}잘못된 선택입니다.{RESET}")
@@ -661,22 +760,22 @@ def main():
         while True:
             print_header()
             collector = select_collector(collectors)
-            if collector is None:
+            if collector == MenuResult.EXIT:
                 break
-            if collector == "retry":
+            if collector == MenuResult.RETRY:
                 continue
+            # collector는 딕셔너리
 
             while True:
                 run_type = select_run_type()
-                if run_type is None:
-                    break  # 뒤로 가기 (수집기 선택으로)
-                if run_type == "retry":
+                if run_type == MenuResult.BACK:
+                    break  # 수집기 선택으로
+                if run_type == MenuResult.RETRY:
                     continue
-                if run_type == "exit":
+                if run_type == MenuResult.EXIT:
                     sys.exit(0)
-                if run_type == "restart":
-                    # 처음으로 (수집기 선택)
-                    break
+                if run_type == MenuResult.RESTART:
+                    break  # 처음으로 (수집기 선택)
 
                 if run_type == '3':
                     logging.getLogger().setLevel(logging.DEBUG)
@@ -689,13 +788,20 @@ def main():
                 if is_dry_run:
                     print(f"{CYAN}📋 드라이 런 모드입니다. 실제 실행하지 않습니다.{RESET}")
 
-                if run_type == '4':
+                # run_type 4,5, else 분기
+                if run_type == '4':  # 고급 모드 메뉴형
                     args, is_parallel = menu_advanced_mode()
                     if args is None:
                         break  # 뒤로 가기
-                    if args == "restart":
-                        # 처음으로 (수집기 선택)
-                        break
+                    if args == [INPUT_RESTART]:
+                        break  # 처음으로
+                    mode = "병렬" if is_parallel else "통합"  # 실제 모드는 execute_collection에서 결정
+                    # mode는 execute_collection에서 다시 결정되므로 여기서는 임시
+                    # execute_collection에 전달할 args와 mode
+                    # mode는 execute_collection에서 결정되므로 여기서는 빈 값?
+                    # execute_collection이 args를 보고 mode를 결정하게 하려면?
+                    # 현재 execute_collection은 mode를 인자로 받으므로, mode를 계산해서 넘겨야 함.
+                    # mode 계산 로직 복원
                     if is_parallel:
                         mode = "병렬"
                     else:
@@ -710,34 +816,32 @@ def main():
                     success = execute_collection(collector, args, mode, run_type)
                     if not success and not is_dry_run:
                         logger.warning("수집 실패 또는 부분 실패")
-                    result = post_run_menu(collector, collectors, last_args, last_mode)
-                    if result == POST_RUN_EXIT:
+                    result, new_args = post_run_menu(collector, collectors, last_args, last_mode)
+                    if result == MenuResult.EXIT:
                         sys.exit(0)
-                    elif result == POST_RUN_CONTINUE:
+                    elif result == MenuResult.CONTINUE:
                         break
-                    elif result == POST_RUN_BACK:
+                    elif result == MenuResult.BACK:
                         continue
-                    elif result == POST_RUN_DEBUG:
-                        # 디버그 모드로 재실행: args에 --debug 추가
-                        if '--debug' not in args:
-                            args.append('--debug')
-                        success = execute_collection(collector, args, mode, run_type)
+                    elif result == MenuResult.DEBUG:
+                        # 디버그 재실행: args는 이미 new_args에 업데이트됨
+                        success = execute_collection(collector, new_args, mode, run_type)
                         if not success and not is_dry_run:
                             logger.warning("수집 실패 또는 부분 실패")
-                        # 재실행 후 다시 후속 메뉴로
-                        result = post_run_menu(collector, collectors, args, mode)
-                        if result == POST_RUN_EXIT:
+                        # 다시 후속 메뉴로
+                        result, new_args2 = post_run_menu(collector, collectors, new_args, mode)
+                        if result == MenuResult.EXIT:
                             sys.exit(0)
-                        elif result == POST_RUN_CONTINUE:
+                        elif result == MenuResult.CONTINUE:
                             break
-                        elif result == POST_RUN_BACK:
+                        elif result == MenuResult.BACK:
                             continue
 
-                elif run_type == '5':
+                elif run_type == '5':  # 고급 모드 직접 입력
                     args = direct_advanced_mode()
                     if args is None:
                         break  # 뒤로 가기
-                    if args == "restart":
+                    if args == [INPUT_RESTART]:
                         break  # 처음으로
                     if args:
                         if '--shard' in args:
@@ -751,64 +855,59 @@ def main():
                         success = execute_collection(collector, args, mode, run_type)
                         if not success and not is_dry_run:
                             logger.warning("수집 실패")
-                        result = post_run_menu(collector, collectors, last_args, last_mode)
-                        if result == POST_RUN_EXIT:
+                        result, new_args = post_run_menu(collector, collectors, last_args, last_mode)
+                        if result == MenuResult.EXIT:
                             sys.exit(0)
-                        elif result == POST_RUN_CONTINUE:
+                        elif result == MenuResult.CONTINUE:
                             break
-                        elif result == POST_RUN_BACK:
+                        elif result == MenuResult.BACK:
                             continue
-                        elif result == POST_RUN_DEBUG:
-                            if '--debug' not in args:
-                                args.append('--debug')
-                            success = execute_collection(collector, args, mode, run_type)
+                        elif result == MenuResult.DEBUG:
+                            success = execute_collection(collector, new_args, mode, run_type)
                             if not success and not is_dry_run:
                                 logger.warning("수집 실패")
-                            result = post_run_menu(collector, collectors, args, mode)
-                            if result == POST_RUN_EXIT:
+                            result, new_args2 = post_run_menu(collector, collectors, new_args, mode)
+                            if result == MenuResult.EXIT:
                                 sys.exit(0)
-                            elif result == POST_RUN_CONTINUE:
+                            elif result == MenuResult.CONTINUE:
                                 break
-                            elif result == POST_RUN_BACK:
+                            elif result == MenuResult.BACK:
                                 continue
 
-                else:
+                else:  # 기본 실행 유형 (1,2,3)
                     base_args = get_basic_options(run_type)
                     while True:
                         mode = select_mode(collector)
-                        if mode is None:
-                            break  # 뒤로 가기 (실행 유형 선택으로)
-                        if mode == "retry":
+                        if mode == MenuResult.BACK:
+                            break  # 실행 유형 선택으로
+                        if mode == MenuResult.RETRY:
                             continue
-                        if mode == "exit":
+                        if mode == MenuResult.EXIT:
                             sys.exit(0)
-                        if mode == "restart":
-                            # 처음으로 (수집기 선택)
-                            break
+                        if mode == MenuResult.RESTART:
+                            break  # 처음으로
                         last_args = base_args
                         last_mode = mode
                         success = execute_collection(collector, base_args, mode, run_type)
                         if not success and not is_dry_run:
                             logger.warning("수집 실패 또는 부분 실패")
-                        result = post_run_menu(collector, collectors, last_args, last_mode)
-                        if result == POST_RUN_EXIT:
+                        result, new_args = post_run_menu(collector, collectors, last_args, last_mode)
+                        if result == MenuResult.EXIT:
                             sys.exit(0)
-                        elif result == POST_RUN_CONTINUE:
+                        elif result == MenuResult.CONTINUE:
                             break
-                        elif result == POST_RUN_BACK:
+                        elif result == MenuResult.BACK:
                             break
-                        elif result == POST_RUN_DEBUG:
-                            if '--debug' not in base_args:
-                                base_args.append('--debug')
-                            success = execute_collection(collector, base_args, mode, run_type)
+                        elif result == MenuResult.DEBUG:
+                            success = execute_collection(collector, new_args, mode, run_type)
                             if not success and not is_dry_run:
                                 logger.warning("수집 실패 또는 부분 실패")
-                            result = post_run_menu(collector, collectors, base_args, mode)
-                            if result == POST_RUN_EXIT:
+                            result, new_args2 = post_run_menu(collector, collectors, new_args, mode)
+                            if result == MenuResult.EXIT:
                                 sys.exit(0)
-                            elif result == POST_RUN_CONTINUE:
+                            elif result == MenuResult.CONTINUE:
                                 break
-                            elif result == POST_RUN_BACK:
+                            elif result == MenuResult.BACK:
                                 break
 
     except KeyboardInterrupt:
