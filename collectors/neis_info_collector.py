@@ -6,7 +6,6 @@
 - 기본 모드에서도 지역별 좌표 현황 출력
 - 전체 수집 완료 후 누적 통계 표시 (성공률 포함)
 - GitHub Actions 환경에서는 자동으로 quiet 모드
-- 진행률에 [LIMIT:xx] 표시 추가
 - 지번 주소 (jibun_address) 추출 및 저장
 """
 import os
@@ -99,7 +98,7 @@ class NeisInfoCollector(BaseCollector):
         self.total_new = 0
         self.total_failed = 0
         self.total_skipped = 0
-        self._counter_lock = threading.Lock()  # ✅ 스레드 안전성 확보
+        self._counter_lock = threading.Lock()
 
         if not quiet_mode:
             print(f"🏫 NeisInfoCollector 초기화 완료 (샤드: {shard})")
@@ -232,23 +231,8 @@ class NeisInfoCollector(BaseCollector):
         new_coords: Dict[str, Tuple[float, float]] = {}
         failed_count = 0
         skipped_count = 0
-        start_time = time.time()
-        last_update = start_time
-        total_items = len(row_meta)
 
-        def _print_progress(current, total, success, failed, skipped, start_t, quiet):
-            if quiet:
-                return
-            elapsed = time.time() - start_t
-            avg = current / elapsed if elapsed > 0 else 0
-            bar_len = 40
-            filled = int(bar_len * current / total) if total > 0 else 0
-            bar = '█' * filled + '░' * (bar_len - filled)
-            status = f"{GREEN}✅{RESET}{success:3d} {RED}❌{RESET}{failed:3d} {YELLOW}⏭️{RESET}{skipped:3d}"
-            suffix = f" [LIMIT:{limit}]" if limit else ""
-            print(f"\r[{bar}] {current}/{total}{suffix} {status} {avg:6.1f} 개/초", end="", flush=True)
-
-        for i, (sc_code, meta) in enumerate(row_meta.items(), 1):
+        for sc_code, meta in row_meta.items():
             if meta["old"].get("hash") != meta["new_hash"] and meta["full_address"]:
                 cleaned = AddressFilter.clean(meta["full_address"], level=self.LEVEL_GEOCODING)
                 jibun = AddressFilter.extract_jibun(meta["full_address"])
@@ -301,11 +285,9 @@ class NeisInfoCollector(BaseCollector):
                 except Exception as e:
                     self.logger.error(f"주소 변환 실패 {sc_code}: {e}")
 
-            # ✅ 디버그 출력 조건화
             if self.debug_mode and not self.quiet_mode:
                 print(f"🔁 enqueue 호출: {sc_code}")
 
-            # ✅ school_id 생성 예외 처리
             try:
                 school_id = create_school_id(atpt_code, sc_code)
             except Exception as e:
@@ -342,13 +324,6 @@ class NeisInfoCollector(BaseCollector):
                 "jibun_address": meta.get("jibun_address"),
                 "kakao_address": None,
             }])
-
-            if not self.quiet_mode and (time.time() - last_update >= 0.2 or i == total_items):
-                _print_progress(i, total_items, len(new_coords), failed_count, skipped_count, start_time, self.quiet_mode)
-                last_update = time.time()
-
-        if not self.quiet_mode:
-            print()
 
         region_name = REGION_NAMES.get(region_code, region_code)
         self.logger.info(f"[{region_name}] 좌표 갱신: {len(new_coords)}개 / 완료")

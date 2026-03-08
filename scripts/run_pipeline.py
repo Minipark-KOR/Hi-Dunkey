@@ -4,7 +4,7 @@
 병렬 샤드 실행기 + 자동 병합 + 연도 프롬프트 + 로그 정리 (collector_cli.py 기반)
 여러 region에 대해 odd/even 샤드를 병렬로 실행합니다.
 사용법:
-    python scripts/run_pipeline.py <collector_name> [--year YYYY] [--timeout 초] [--regions REGIONS] [추가 인자...]
+    python scripts/run_pipeline.py <collector_name> [--year YYYY] [--timeout 초] [--regions REGIONS] [--quiet] [추가 인자...]
 예:
     python scripts/run_pipeline.py neis_info --regions ALL
     python scripts/run_pipeline.py neis_info --year 2025 --regions B10,C10 --debug
@@ -21,10 +21,10 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# ✅ 프로젝트 루트를 sys.path에 추가
+# 프로젝트 루트를 sys.path에 추가
 sys.path.append(str(Path(__file__).parent.parent))
 
-from core.kst_time import KST, now_kst  # 타임존 처리를 위해 추가
+from core.kst_time import KST, now_kst
 
 # 도메인별 병합 스크립트 매핑
 MERGE_SCRIPT_MAP = {
@@ -98,7 +98,6 @@ lock = threading.Lock()
 processes = []  # 실행 중인 Popen 객체 리스트
 
 def signal_handler(sig, frame):
-    """시그널 처리 (SIGINT, SIGTERM) - 하위 버전 호환성 확보"""
     signal_names = {
         signal.SIGINT: 'SIGINT',
         signal.SIGTERM: 'SIGTERM',
@@ -227,6 +226,13 @@ def run_shard(region: str, shard: str, collector: str, extra_args: List[str], ye
     print(f"  {region} {shard} 완료 ({elapsed:.1f}초) {status}")
     return region, shard, ret_code
 
+def print_progress(completed: int, total: int, bar_length: int = 10):
+    """10칸 진행률 바 출력 (같은 줄에 덮어쓰기)"""
+    percent = completed / total
+    filled = int(bar_length * percent)
+    bar = '█' * filled + '░' * (bar_length - filled)
+    print(f"\r📊 전체 진행: [{bar}] {completed}/{total} ({percent*100:.1f}%)", end='', flush=True)
+
 def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -236,10 +242,15 @@ def main():
     parser.add_argument("--year", type=int, help="학년도 (미지정 시 프롬프트)")
     parser.add_argument("--timeout", type=int, default=None, help="각 샤드/병합의 최대 실행 시간(초)")
     parser.add_argument("--regions", default="ALL", help="교육청 코드 (쉼표 구분, 기본: ALL)")
+    parser.add_argument("--quiet", action="store_true", help="출력 최소화")
     args, remaining = parser.parse_known_args()
     extra_args = list(remaining)
     if extra_args and extra_args[0] == "--":
         extra_args = extra_args[1:]
+
+    # GitHub Actions 환경에서는 자동으로 quiet 모드
+    if os.getenv('GITHUB_ACTIONS') == 'true' and not args.quiet:
+        args.quiet = True
 
     # extra_args 에서 --year, --shard, --regions 등이 포함되어 있다면 제거 (중복 방지)
     filtered_args = []
@@ -249,7 +260,6 @@ def main():
             skip_next = False
             continue
         if arg in ("--year", "-y", "--shard", "-s", "--regions", "-r"):
-            # 다음 인자도 건너뜀 (값이 있다면)
             if i + 1 < len(extra_args) and not extra_args[i+1].startswith("-"):
                 skip_next = True
             continue
@@ -266,7 +276,8 @@ def main():
         year = prompt_year(get_current_school_year())
 
     regions = parse_regions(args.regions)
-    print(f"📌 대상 지역: {regions} (총 {len(regions)}개)")
+    if not args.quiet:
+        print(f"📌 대상 지역: {regions} (총 {len(regions)}개)")
 
     # collector_cli.py 존재 여부 확인
     if not Path("collector_cli.py").exists():
@@ -283,7 +294,8 @@ def main():
         for shard in ("odd", "even"):
             tasks.append((region, shard))
 
-    print(f"🚀 총 {len(tasks)}개 작업을 병렬로 실행합니다. (최대 동시 작업: CPU 코어 수에 따라 결정)")
+    if not args.quiet:
+        print(f"🚀 총 {len(tasks)}개 작업을 병렬로 실행합니다.")
 
     # ThreadPoolExecutor로 병렬 실행
     with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as executor:
@@ -291,10 +303,18 @@ def main():
             executor.submit(run_shard, region, shard, args.collector, extra_args, year, args.timeout): (region, shard)
             for region, shard in tasks
         }
+        completed = 0
+        total = len(tasks)
         for future in as_completed(future_to_task):
             region, shard, ret_code = future.result()
+            completed += 1
+            if not args.quiet:
+                print_progress(completed, total)
             with lock:
                 results[(region, shard)] = ret_code
+
+    if not args.quiet:
+        print()  # 진행률 줄바꿈
 
     # 결과 집계
     failed = [(r, s) for (r, s), code in results.items() if code != 0]

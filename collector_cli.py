@@ -4,6 +4,7 @@ Collector 공통 CLI 진입점
 """
 import sys
 import argparse
+import os
 from typing import Optional
 
 from constants.codes import ALL_REGIONS, NEIS_API_KEY
@@ -35,6 +36,7 @@ def build_common_parser(description: str) -> argparse.ArgumentParser:
     parser.add_argument("--year", type=int, default=None, help="학년도 (기본: 현재)")
     parser.add_argument("--date", default=None, help="수집일 YYYYMMDD")
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--quiet", action="store_true", help="출력 최소화")
     return parser
 
 
@@ -56,6 +58,10 @@ def run_collector(collector_name: str):
     parser.add_argument("--limit", type=int, help="테스트용 제한 개수")
     args = parser.parse_args()
 
+    # GitHub Actions 환경에서는 자동으로 quiet 모드
+    if os.getenv('GITHUB_ACTIONS') == 'true' and not args.quiet:
+        args.quiet = True
+
     if collector_name == "neis_info" and not NEIS_API_KEY:
         print("❌ NEIS_API_KEY 환경변수 없음", file=sys.stderr)
         sys.exit(2)
@@ -69,16 +75,22 @@ def run_collector(collector_name: str):
     year = args.year or get_current_school_year(now_kst())
     target_date = args.date or now_kst().strftime("%Y%m%d")
     regions = parse_regions(args.regions)
+    total_regions = len(regions)
 
     collector = collector_cls(
         shard=args.shard,
         school_range=school_range,
-        debug_mode=args.debug
+        debug_mode=args.debug,
+        quiet_mode=args.quiet
     )
 
     failed = []
     try:
-        for region in regions:
+        for idx, region in enumerate(regions, 1):
+            # 지역 단위 진행률 출력 (quiet 모드가 아닐 때만)
+            if not args.quiet:
+                print(f"\n📌 [{idx}/{total_regions}] {region} 수집 중...")
+
             try:
                 if collector_name == "meal_collector":
                     collector.fetch_daily(region, target_date)
@@ -96,6 +108,10 @@ def run_collector(collector_name: str):
             except Exception as e:
                 print(f"❌ [{region}] 수집 실패: {e}", file=sys.stderr)
                 failed.append(region)
+
+            if args.limit and idx >= args.limit:
+                break
+
     except KeyboardInterrupt:
         collector.logger.warning("⚠️ 수집 중단 (KeyboardInterrupt)")
     finally:
@@ -105,7 +121,8 @@ def run_collector(collector_name: str):
         print(f"⚠️ 실패 지역: {', '.join(failed)}", file=sys.stderr)
         sys.exit(1)
 
-    print("✅ 수집 완료")
+    if not args.quiet:
+        print("\n✅ 모든 지역 수집 완료")
     sys.exit(0)
 
 

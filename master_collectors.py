@@ -2,7 +2,7 @@
 # 개발 가이드: docs/developer_guide.md 참조
 """
 마스터 수집기 - 실행 유형과 수집 방식을 계층적으로 선택
-- 실행 후 결과 확인 메뉴 제공 (데이터 무결성, 병합, 내보내기, 메트릭 생성, 다른 수집기, 종료)
+- 실행 후 결과 확인 메뉴 제공 (데이터 무결성, 병합, 내보내기, 메트릭 생성, 로그 확인, 디버그 재실행, 다른 수집기, 종료)
 - 메트릭 설명: 각 통계 항목이 무엇을 의미하는지 주석으로 표시
 """
 import os
@@ -57,6 +57,7 @@ from constants.paths import MASTER_DIR
 POST_RUN_CONTINUE = "continue"   # 메인 메뉴(수집기 선택)로
 POST_RUN_EXIT = "exit"           # 프로그램 종료
 POST_RUN_BACK = "back"           # 이전 메뉴(실행 유형 선택)로
+POST_RUN_DEBUG = "debug"         # 디버그 모드로 재실행
 
 ALLOWED_TABLES = {'schools', 'meals', 'timetable', 'schedule', 'staff'}
 
@@ -113,7 +114,7 @@ def select_collector(collectors: List[Dict[str, Any]]) -> Union[Dict[str, Any], 
     logger.warning(f"잘못된 선택: {choice}")
     print(f"{RED}잘못된 선택입니다.{RESET}")
     return "retry"
-    
+
 def select_run_type() -> Union[str, None]:
     print(f"\n{YELLOW}실행 유형을 선택하세요:{RESET}")
     print("  1) 학교 기본정보 수집 (실제 수집, 전체)")
@@ -402,7 +403,7 @@ def execute_collection(collector: Dict[str, Any], args: List[str], mode: str, ru
         logger.error(f"알 수 없는 모드: {mode}")
         return False
 
-def post_run_menu(collector: Dict[str, Any], all_collectors: List[Dict[str, Any]]) -> str:
+def post_run_menu(collector: Dict[str, Any], all_collectors: List[Dict[str, Any]], last_args: List[str] = None, last_mode: str = None) -> str:
     while True:
         print(f"\n{YELLOW}후속 작업을 선택하세요.{RESET}")
         print("  1) 데이터 무결성 확인 (레코드 수, 샤드 합계 등)")
@@ -410,6 +411,8 @@ def post_run_menu(collector: Dict[str, Any], all_collectors: List[Dict[str, Any]
         print("  3) 데이터 내보내기 (Excel/리포트)")
         print("  4) 이 수집기 메트릭 생성 (수집 현황 통계)")
         print("  5) 모든 수집기 메트릭 일괄 생성")
+        print("  6) 로그 확인 (현재 수집기)")
+        print("  7) 디버그 모드로 재실행")
         print()  # 빈 줄
         print("  11) 뒤로 가기")
         print("  22) 처음으로 (수집기 선택)")
@@ -611,6 +614,28 @@ def post_run_menu(collector: Dict[str, Any], all_collectors: List[Dict[str, Any]
                     logger.error(f"전체 메트릭 생성 중 예외: {e}", exc_info=True)
                     print(f"{RED}❌ 전체 메트릭 생성 실패: {e}{RESET}")
 
+            elif val == 6:
+                logger.info("로그 확인 선택")
+                log_file = Path("logs") / f"{collector['name']}.log"
+                if log_file.exists():
+                    print(f"\n{BLUE}📄 로그 파일: {log_file}{RESET}")
+                    try:
+                        # 최근 50줄 출력
+                        result = subprocess.run(['tail', '-n', '50', str(log_file)], capture_output=True, text=True)
+                        print(result.stdout)
+                    except Exception as e:
+                        print(f"{RED}로그 읽기 실패: {e}{RESET}")
+                else:
+                    print(f"{YELLOW}⚠️ 로그 파일이 없습니다: {log_file}{RESET}")
+
+            elif val == 7:
+                logger.info("디버그 모드로 재실행 선택")
+                if last_args is not None and last_mode is not None:
+                    print(f"\n{GREEN}🔧 디버그 모드로 재실행합니다...{RESET}")
+                    return POST_RUN_DEBUG
+                else:
+                    print(f"{RED}❌ 재실행에 필요한 정보가 없습니다.{RESET}")
+
             elif val == 11:
                 logger.info("뒤로 가기 선택")
                 return POST_RUN_BACK
@@ -680,21 +705,33 @@ def main():
                             mode = f"{shard_val} 샤드"
                         else:
                             mode = "통합"
+                    last_args = args
+                    last_mode = mode
                     success = execute_collection(collector, args, mode, run_type)
                     if not success and not is_dry_run:
                         logger.warning("수집 실패 또는 부분 실패")
-                    result = post_run_menu(collector, collectors)
+                    result = post_run_menu(collector, collectors, last_args, last_mode)
                     if result == POST_RUN_EXIT:
                         sys.exit(0)
                     elif result == POST_RUN_CONTINUE:
-                        break  # 처음으로 (수집기 선택)
+                        break
                     elif result == POST_RUN_BACK:
-                        continue  # 후속 작업 메뉴로 다시? 아니면 실행 유형 선택으로? 여기서는 while 루프 처음으로 (실행 유형 선택)
-                        # 실행 유형 선택으로 돌아가려면 현재 내부 while을 break? 아니면 continue? 현재 while True가 실행 유형 선택 루프이므로 break하면 수집기 선택으로 가고, continue는 아무 일도 안 함.
-                        # post_run_menu에서 BACK이면 현재 while 루프(실행 유형 선택)를 계속 진행해야 함. 즉, 아무것도 안 하고 다시 select_run_type()으로 가야 함.
-                        # 따라서 result == POST_RUN_BACK이면 아래의 아무 처리 없이 continue (select_run_type() 반복)
-                        # 이미 while True로 다시 올라가므로 pass
-                        pass
+                        continue
+                    elif result == POST_RUN_DEBUG:
+                        # 디버그 모드로 재실행: args에 --debug 추가
+                        if '--debug' not in args:
+                            args.append('--debug')
+                        success = execute_collection(collector, args, mode, run_type)
+                        if not success and not is_dry_run:
+                            logger.warning("수집 실패 또는 부분 실패")
+                        # 재실행 후 다시 후속 메뉴로
+                        result = post_run_menu(collector, collectors, args, mode)
+                        if result == POST_RUN_EXIT:
+                            sys.exit(0)
+                        elif result == POST_RUN_CONTINUE:
+                            break
+                        elif result == POST_RUN_BACK:
+                            continue
 
                 elif run_type == '5':
                     args = direct_advanced_mode()
@@ -709,16 +746,31 @@ def main():
                             mode = f"{shard_val} 샤드"
                         else:
                             mode = "통합"
+                        last_args = args
+                        last_mode = mode
                         success = execute_collection(collector, args, mode, run_type)
                         if not success and not is_dry_run:
                             logger.warning("수집 실패")
-                        result = post_run_menu(collector, collectors)
+                        result = post_run_menu(collector, collectors, last_args, last_mode)
                         if result == POST_RUN_EXIT:
                             sys.exit(0)
                         elif result == POST_RUN_CONTINUE:
                             break
                         elif result == POST_RUN_BACK:
-                            continue  # 실행 유형 선택으로
+                            continue
+                        elif result == POST_RUN_DEBUG:
+                            if '--debug' not in args:
+                                args.append('--debug')
+                            success = execute_collection(collector, args, mode, run_type)
+                            if not success and not is_dry_run:
+                                logger.warning("수집 실패")
+                            result = post_run_menu(collector, collectors, args, mode)
+                            if result == POST_RUN_EXIT:
+                                sys.exit(0)
+                            elif result == POST_RUN_CONTINUE:
+                                break
+                            elif result == POST_RUN_BACK:
+                                continue
 
                 else:
                     base_args = get_basic_options(run_type)
@@ -733,17 +785,31 @@ def main():
                         if mode == "restart":
                             # 처음으로 (수집기 선택)
                             break
+                        last_args = base_args
+                        last_mode = mode
                         success = execute_collection(collector, base_args, mode, run_type)
                         if not success and not is_dry_run:
                             logger.warning("수집 실패 또는 부분 실패")
-                        result = post_run_menu(collector, collectors)
+                        result = post_run_menu(collector, collectors, last_args, last_mode)
                         if result == POST_RUN_EXIT:
                             sys.exit(0)
                         elif result == POST_RUN_CONTINUE:
-                            break  # 처음으로 (수집기 선택)
-                        elif result == POST_RUN_BACK:
-                            # 현재 mode 선택 루프를 벗어나서 실행 유형 선택으로
                             break
+                        elif result == POST_RUN_BACK:
+                            break
+                        elif result == POST_RUN_DEBUG:
+                            if '--debug' not in base_args:
+                                base_args.append('--debug')
+                            success = execute_collection(collector, base_args, mode, run_type)
+                            if not success and not is_dry_run:
+                                logger.warning("수집 실패 또는 부분 실패")
+                            result = post_run_menu(collector, collectors, base_args, mode)
+                            if result == POST_RUN_EXIT:
+                                sys.exit(0)
+                            elif result == POST_RUN_CONTINUE:
+                                break
+                            elif result == POST_RUN_BACK:
+                                break
 
     except KeyboardInterrupt:
         logger.info("사용자에 의해 프로그램 종료")
@@ -752,3 +818,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
