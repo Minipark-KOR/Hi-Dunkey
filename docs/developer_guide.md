@@ -1,5 +1,5 @@
 ```markdown
-# 📘 Hi-Dunkey Collector 개발 가이드
+# 📘 Hi-Dunkey Collector 개발 가이드 (최신 구조)
 
 이 문서는 Hi-Dunkey 프로젝트에서 새로운 수집기(Collector)를 개발할 때 반드시 따라야 할 표준 패턴과 규칙을 설명합니다.  
 모든 수집기는 `core.base_collector.BaseCollector`를 상속받아야 하며, `collector_cli.py`에 등록되어야 합니다.  
@@ -20,6 +20,19 @@ from constants.codes import REGION_NAMES, NEIS_ENDPOINTS  # 필요에 따라
 from constants.paths import MASTER_DIR  # 또는 적절한 경로
 
 class NewCollector(BaseCollector):
+    # ----- 메타데이터 (클래스 변수) -----
+    description = "새로운 수집기 설명"
+    table_name = "my_table"                     # 기본 테이블명
+    merge_script = "scripts/merge_my_dbs.py"    # 병합 스크립트 (없으면 None)
+    # parallel_script는 기본값 "scripts/run_pipeline.py" 사용 (변경 필요시 오버라이드)
+    timeout_seconds = 3600                       # 개별 수집 타임아웃
+    parallel_timeout_seconds = 7200              # 병렬 실행 타임아웃
+    merge_timeout_seconds = 1800                  # 병합 타임아웃
+    modes = ["통합", "odd 샤드", "even 샤드", "병렬 실행"]  # 지원 모드 (필요시 변경)
+    metrics_config = {"enabled": False}           # 메트릭 설정
+    parallel_config = {}                           # 병렬 실행 설정
+    # ------------------------------------
+
     def __init__(self, shard="none", school_range=None, debug_mode=False, **kwargs):
         # 도메인명, 저장 디렉토리, 샤드, 범위를 BaseCollector에 전달
         super().__init__("new_domain", str(MASTER_DIR), shard, school_range)
@@ -43,6 +56,8 @@ class NewCollector(BaseCollector):
 - `shard="odd"` → `{base_dir}/{name}_odd.db`
 - `shard="even"` → `{base_dir}/{name}_even.db`
 - `school_range`가 있으면 `{name}_{shard}_{school_range}.db`
+
+※ `base_dir`은 일반적으로 `constants.paths.MASTER_DIR`을 사용합니다.
 
 ---
 
@@ -198,35 +213,39 @@ COLLECTOR_MAP = {
 }
 ```
 
-### 7.3. 추가 명령행 인자 처리
-수집기별로 추가 옵션이 필요하면 `extra_parsers`에 등록합니다.
-
-```python
-extra_parsers = {
-    "timetable_collector": lambda p: p.add_argument("--semester", type=int, default=1, choices=[1,2]),
-    "new_collector": lambda p: p.add_argument("--my-option", type=int, help="설명"),
-}
-```
-
-### 7.4. `run_collector` 함수 내 fetch 메서드 분기 추가
-각 collector에 맞는 fetch 메서드를 호출하는 분기문을 추가합니다.
-
-```python
-if collector_name == "new_collector":
-    collector.fetch_region(region, year=year, date=target_date, my_option=args.my_option)
-elif collector_name == "meal_collector":
-    collector.fetch_daily(region, target_date)
-elif ...
-```
+이제 `collector_cli.py`에서 `new_collector`를 인자로 실행할 수 있습니다.
 
 ---
 
-## 8. `run_collector.py`에서 호출 (선택 사항)
+## 8. `master_collectors.py`에서의 동작
 
-`run_collector.py`(구 run_daily.py)는 정기적으로 실행되는 스크립트입니다.  
-새 수집기를 추가하려면 적절한 함수(예: `run_new_collector_daily`)를 만들고 `main()`에서 호출합니다.  
-단, 이 스크립트는 `collector_cli.py`를 통해 수집기를 호출하므로, 이미 `collector_cli.py`에 등록되었다면 별도 수정 없이 사용할 수 있습니다.  
-필요한 경우 `run_collector` 함수를 사용하여 호출하면 됩니다.
+`master_collectors.py`는 더 이상 `collectors.json`을 읽지 않습니다. 대신 `collector_cli.py`의 `COLLECTOR_MAP`을 임포트하여 모든 수집기 목록을 동적으로 가져옵니다.  
+각 collector 클래스에 정의된 메타데이터(설명, 테이블명, 병합 스크립트, 타임아웃 등)를 읽어와 메뉴를 구성하고 실행합니다.
+
+- 새 수집기를 추가하면 `COLLECTOR_MAP`에 등록하는 것만으로 `master_collectors.py`에 자동 반영됩니다.
+- 실행은 항상 `collector_cli.py`를 통해 이루어집니다.
+
+---
+
+## 9. 병렬 실행 (`run_pipeline.py`)
+
+`run_pipeline.py`는 하나의 collector에 대해 odd/even 샤드를 병렬로 실행하고, 선택적으로 병합까지 수행하는 통합 스크립트입니다.  
+사용법:
+```bash
+python scripts/run_pipeline.py <collector_name> [--year YYYY] [--timeout 초] [--regions REGIONS] [추가 인자...]
+```
+
+- `--regions`로 여러 지역을 지정하면 각 지역별로 odd/even을 병렬 실행합니다.
+- `--year`를 생략하면 프롬프트로 입력받습니다.
+- collector별 병합 스크립트는 `merge_script` 메타데이터에 정의된 것을 사용합니다.
+
+---
+
+## 10. 정기 실행 (`run_collector.py`)
+
+`run_collector.py`(구 run_daily.py)는 cron 등에서 정기적으로 실행되는 스크립트입니다.  
+내부적으로 `collector_cli.py`를 호출하여 필요한 수집기를 순차 실행합니다.  
+새 수집기를 정기 실행에 추가하려면 `run_collector.py`에 해당 함수를 추가하고 `main()`에서 호출합니다.
 
 ```python
 def run_new_collector():
@@ -235,66 +254,40 @@ def run_new_collector():
 
 ---
 
-## 9. 병렬 실행 스크립트 (선택 사항)
+## 11. 공통 유틸리티 활용
 
-대량 수집을 위해 odd/even 샤드를 동시에 실행하는 병렬 래퍼 스크립트를 만들 수 있습니다.  
-예: `neis_info_shard_collector.py`, `school_info_shard_collector.py` 참조.
-
-```python
-#!/usr/bin/env python3
-import sys
-import subprocess
-from concurrent.futures import ProcessPoolExecutor
-
-def run_shard(shard):
-    cmd = [sys.executable, "collector_cli.py", "new_collector", "--shard", shard] + sys.argv[1:]
-    return subprocess.run(cmd).returncode
-
-if __name__ == "__main__":
-    with ProcessPoolExecutor(max_workers=2) as executor:
-        futures = [executor.submit(run_shard, "odd"), executor.submit(run_shard, "even")]
-        results = [f.result() for f in futures]
-    sys.exit(0 if all(r == 0 for r in results) else 1)
-```
-
----
-
-## 10. 공통 유틸리티 활용
-
-### 10.1. API 키 및 환경변수
+### 11.1. API 키 및 환경변수
 - `constants.codes`에 정의된 `NEIS_API_KEY`, `VWORLD_API_KEY` 등을 사용합니다.
 - `.env` 파일을 통해 키를 관리할 수 있습니다 (`core/__init__.py`에서 로드).
 
-### 10.2. 에러 처리 및 재시도
+### 11.2. 에러 처리 및 재시도
 - `RetryManager`를 사용하여 실패한 작업을 기록하고 재시도할 수 있습니다.
 - `self.retry_mgr.record_failure(...)`로 실패를 기록하고, `scripts/retry_worker.py`가 처리합니다.
 
-### 10.3. 로깅
+### 11.3. 로깅
 - `self.logger`를 사용하여 로그를 남깁니다. (자동으로 파일과 콘솔에 출력)
-- `build_logger`를 직접 호출할 필요 없이 `self.logger`를 사용하면 됩니다.
 
-### 10.4. 메트릭 생성
+### 11.4. 메트릭 생성
 - `core.metrics` 모듈을 사용하여 수집 현황 통계를 생성할 수 있습니다. (선택 사항)
-- `collectors.json`에 `metrics_config`를 설정하면 `master_collectors.py`에서 메트릭을 생성할 수 있습니다.
+- collector 클래스의 `metrics_config`에 설정을 정의하면 `master_collectors.py`에서 메트릭을 생성할 수 있습니다.
 
-### 10.5. Vocab 관리
+### 11.5. Vocab 관리
 - `VocabManager`, `MetaVocabManager`를 사용하여 정규화된 ID를 생성하고 관리할 수 있습니다.
-- 예: 급식 메뉴명, 과목명, 주소 구성 요소 등.
 
-### 10.6. 주소 필터링
-- `AddressFilter`를 사용하여 주소를 정규화하고 지번을 추출할 수 있습니다.
+### 11.6. 주소 필터링
+- `core.filters.AddressFilter`를 사용하여 주소를 정규화하고 지번을 추출할 수 있습니다.
 
-### 10.7. ID 생성
+### 11.7. ID 생성
 - `school_id.create_school_id()`로 교육청 코드+학교 코드 → 32비트 정수 ID 생성.
 - `IDGenerator`로 임의 텍스트 기반 63비트 ID 생성.
 
-### 10.8. 시간 처리
+### 11.8. 시간 처리
 - `core.kst_time.now_kst()`로 KST 현재 시간 획득.
 - `core.school_year.get_current_school_year()`로 현재 학년도 계산.
 
 ---
 
-## 11. 템플릿 예제 (전체 코드)
+## 12. 템플릿 예제 (전체 코드)
 
 ```python
 #!/usr/bin/env python3
@@ -313,6 +306,16 @@ from constants.paths import MASTER_DIR
 API_URL = "https://api.example.com/endpoint"
 
 class TemplateCollector(BaseCollector):
+    # 메타데이터
+    description = "템플릿 수집기"
+    table_name = "template"
+    merge_script = "scripts/merge_template_dbs.py"
+    timeout_seconds = 3600
+    parallel_timeout_seconds = 7200
+    merge_timeout_seconds = 1800
+    metrics_config = {"enabled": True}
+    parallel_config = {"max_workers": 2}
+
     def __init__(self, shard="none", school_range=None, debug_mode=False, **kwargs):
         super().__init__("template", str(MASTER_DIR), shard, school_range)
         self.debug_mode = debug_mode
@@ -366,7 +369,7 @@ if __name__ == "__main__":
 
 ---
 
-## 12. 참고할 기존 Collector
+## 13. 참고할 기존 Collector
 
 - **NEIS 학교정보** (`collectors/neis_info_collector.py`): 복잡한 지오코딩, Diff 처리, MetaVocabManager 사용 예
 - **학교알리미** (`collectors/school_info_collector.py`): 기본 구조, 학년도 필터링
@@ -376,8 +379,14 @@ if __name__ == "__main__":
 
 ---
 
+## 14. 중요: `collectors.json` 제거
+
+프로젝트에서 `collectors.json` 파일은 더 이상 사용하지 않습니다.  
+모든 설정은 각 collector 클래스의 메타데이터로 대체되었습니다.  
+새로운 수집기 추가 시 `collector_cli.py`의 `COLLECTOR_MAP`에 등록하고, 클래스에 필요한 메타데이터를 정의하면 모든 도구(`master_collectors.py`, `run_pipeline.py` 등)에 자동으로 통합됩니다.
+
+---
+
 이 가이드를 따라 새로운 수집기를 만들면 `collector_cli.py`와 `run_collector.py`에 자연스럽게 통합되며, 프로젝트의 일관성을 유지할 수 있습니다.  
 궁금한 점이 있으면 기존 collector의 코드를 참조하거나 팀 리더에게 문의하세요.
 ```
-
-이 마크다운 파일을 프로젝트 루트에 `COLLECTOR_GUIDE.md` 또는 `docs/collector_guide.md`로 저장하면 됩니다. 필요에 따라 추가 내용을 업데이트할 수 있습니다.
