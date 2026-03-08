@@ -2,11 +2,19 @@
 # collectors/meal_collector.py
 # 개발 가이드: docs/developer_guide.md 참조
 
+import os
+import sys
+from pathlib import Path
+
+# 프로젝트 루트를 sys.path에 추가
+sys.path.append(str(Path(__file__).parent.parent))
+
 import random
 import time
 from datetime import date, timedelta
 
 from core.base_meal_collector import BaseMealCollector
+from core.config import config
 from constants.codes import NEIS_ENDPOINTS
 from constants.paths import ACTIVE_DIR
 
@@ -19,11 +27,18 @@ class MealCollector(BaseMealCollector):
     description = "급식 정보 (NEIS)"
     table_name = "meal"
     merge_script = "scripts/merge_meal_dbs.py"
-    timeout_seconds = 1800
-    parallel_timeout_seconds = 3600
-    merge_timeout_seconds = 1800
-    metrics_config = {"enabled": True}
-    parallel_config = {"max_workers": 2, "cpu_factor": 0.8, "max_by_api": 5, "absolute_max": 8}
+    
+    _cfg = config.get_collector_config("meal")
+    timeout_seconds = _cfg.get("timeout_seconds", 1800)
+    parallel_timeout_seconds = _cfg.get("parallel_timeout_seconds", 3600)
+    merge_timeout_seconds = _cfg.get("merge_timeout_seconds", 1800)
+    metrics_config = _cfg.get("metrics_config", {"enabled": True})
+    parallel_config = {
+        "max_workers": _cfg.get("max_workers", 2),
+        "cpu_factor": _cfg.get("cpu_factor", 0.8),
+        "max_by_api": _cfg.get("max_by_api", 5),
+        "absolute_max": _cfg.get("absolute_max", 8),
+    }
     # ---------------------
 
     def __init__(self, shard: str = "none", school_range=None,
@@ -76,4 +91,3 @@ if __name__ == "__main__":
         _fetch_daily,
         "일별 급식 수집기",
     )
-    

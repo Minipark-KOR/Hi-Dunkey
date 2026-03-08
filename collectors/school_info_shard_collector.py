@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# collectors/school_info_shard_collector.py
 # 개발 가이드: docs/developer_guide.md 참조
 """
 학교알리미 수집기 - 샤드 병렬 실행용 래퍼
@@ -13,17 +14,10 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 BASE_DIR = Path(__file__).parent
 COLLECTOR_SCRIPT = BASE_DIR / "school_info_collector.py"
-CONFIG_FILE = BASE_DIR.parent / "collectors.json"
 
 def get_collector_config(name: str) -> dict:
-    try:
-        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            collectors = json.load(f)
-        for col in collectors:
-            if col.get('name') == name:
-                return col
-    except Exception:
-        pass
+    # config.yaml에서 설정을 읽어오는 방식으로 변경할 수 있으나,
+    # 단순 래퍼이므로 기본값 사용 (선택 사항)
     return {}
 
 def run_shard(shard_type: str, base_args: list) -> int:

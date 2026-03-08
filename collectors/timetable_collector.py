@@ -2,6 +2,12 @@
 # collectors/timetable_collector.py
 # 개발 가이드: docs/developer_guide.md 참조
 
+import os
+import sys
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).parent.parent))
+
 import time
 import random
 from typing import List
@@ -10,6 +16,7 @@ from core.base_collector import BaseCollector
 from core.database import get_db_connection
 from core.meta_vocab import MetaVocabManager
 from core.id_generator import IDGenerator
+from core.config import config
 from parsers.timetable_parser import parse_timetable_row
 from constants.codes import (
     TIMETABLE_ENDPOINTS, GRADE_RANGES, API_CONFIG,
@@ -25,11 +32,18 @@ class AnnualFullTimetableCollector(BaseCollector):
     description = "시간표"
     table_name = "timetable"
     merge_script = "scripts/merge_timetable_dbs.py"
-    timeout_seconds = 3600
-    parallel_timeout_seconds = 7200
-    merge_timeout_seconds = 3600
-    metrics_config = {"enabled": True}
-    parallel_config = {"max_workers": 4, "cpu_factor": 1.0, "max_by_api": 10, "absolute_max": 16}
+    
+    _cfg = config.get_collector_config("timetable")
+    timeout_seconds = _cfg.get("timeout_seconds", 3600)
+    parallel_timeout_seconds = _cfg.get("parallel_timeout_seconds", 7200)
+    merge_timeout_seconds = _cfg.get("merge_timeout_seconds", 3600)
+    metrics_config = _cfg.get("metrics_config", {"enabled": True})
+    parallel_config = {
+        "max_workers": _cfg.get("max_workers", 4),
+        "cpu_factor": _cfg.get("cpu_factor", 1.0),
+        "max_by_api": _cfg.get("max_by_api", 10),
+        "absolute_max": _cfg.get("absolute_max", 16),
+    }
     # ---------------------
 
     def __init__(self, shard="none", school_range=None, debug_mode=False):

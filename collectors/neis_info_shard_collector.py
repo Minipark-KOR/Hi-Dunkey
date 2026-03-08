@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# collectors/neis_info_shard_collector.py
 # 개발 가이드: docs/developer_guide.md 참조
 """
 neis_info odd/even 샤드 병렬 수집기
@@ -22,19 +23,16 @@ BLUE = "\033[94m"
 RESET = "\033[0m"
 
 def print_colored(prefix, color, line):
-    """색상과 접두어를 붙여 출력"""
     sys.stdout.write(f"{color}[{prefix}]{RESET} {line}")
     sys.stdout.flush()
 
 def stream_reader(pipe, prefix, color):
-    """프로세스의 출력 스트림을 읽어 실시간 출력"""
     with pipe:
         for line in iter(pipe.readline, ''):
             if line:
                 print_colored(prefix, color, line)
 
 def run_shard(shard):
-    """단일 샤드 실행 (하위 프로세스)"""
     cmd = [sys.executable, "collectors/neis_info_collector.py", "--shard", shard]
     return subprocess.Popen(
         cmd,
@@ -49,11 +47,9 @@ def main():
     print(f"{YELLOW}각 프로세스의 출력 앞에 [ODD] / [EVEN] 접두어가 붙습니다.{RESET}")
     print("-" * 60)
 
-    # 프로세스 시작
     proc_odd = run_shard("odd")
     proc_even = run_shard("even")
 
-    # 출력 스트림을 읽는 스레드 시작
     thread_odd = threading.Thread(
         target=stream_reader,
         args=(proc_odd.stdout, "ODD", GREEN)
@@ -65,7 +61,6 @@ def main():
     thread_odd.start()
     thread_even.start()
 
-    # 프로세스 종료 대기
     proc_odd.wait()
     proc_even.wait()
     thread_odd.join()
@@ -74,7 +69,6 @@ def main():
     print("-" * 60)
     print(f"{GREEN}✅ 두 샤드 수집이 모두 완료되었습니다.{RESET}")
 
-    # 결과 요약 (레코드 수)
     odd_count = 0
     even_count = 0
     odd_db = Path("data/master/neis_info_odd.db")
@@ -100,7 +94,6 @@ def main():
     print(f"   even 샤드: {even_count}건")
     print(f"{GREEN}   총합: {total}건{RESET}")
 
-    # 병합 여부 묻기
     print()
     answer = input("병합 스크립트를 실행하시겠습니까? (y/n): ").strip().lower()
     if answer == 'y':

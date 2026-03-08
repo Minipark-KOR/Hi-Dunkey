@@ -2,13 +2,19 @@
 # collectors/schedule_collector.py
 # 개발 가이드: docs/developer_guide.md 참조
 
-from datetime import date, timedelta
+import os
+import sys
 from pathlib import Path
+
+sys.path.append(str(Path(__file__).parent.parent))
+
+from datetime import date, timedelta
 from typing import List
 
 from core.base_collector import BaseCollector
 from core.database import get_db_connection
 from core.meta_vocab import MetaVocabManager
+from core.config import config
 from parsers.schedule_parser import parse_schedule_row
 from constants.codes import NEIS_ENDPOINTS
 from core.kst_time import now_kst
@@ -23,11 +29,18 @@ class AnnualFullScheduleCollector(BaseCollector):
     description = "학사일정"
     table_name = "schedule"
     merge_script = "scripts/merge_schedule_dbs.py"
-    timeout_seconds = 3600
-    parallel_timeout_seconds = 7200
-    merge_timeout_seconds = 3600
-    metrics_config = {"enabled": True}
-    parallel_config = {"max_workers": 4, "cpu_factor": 1.0, "max_by_api": 10, "absolute_max": 16}
+    
+    _cfg = config.get_collector_config("schedule")
+    timeout_seconds = _cfg.get("timeout_seconds", 3600)
+    parallel_timeout_seconds = _cfg.get("parallel_timeout_seconds", 7200)
+    merge_timeout_seconds = _cfg.get("merge_timeout_seconds", 3600)
+    metrics_config = _cfg.get("metrics_config", {"enabled": True})
+    parallel_config = {
+        "max_workers": _cfg.get("max_workers", 4),
+        "cpu_factor": _cfg.get("cpu_factor", 1.0),
+        "max_by_api": _cfg.get("max_by_api", 10),
+        "absolute_max": _cfg.get("absolute_max", 16),
+    }
     # ---------------------
 
     def __init__(self, shard="none", school_range=None, debug_mode=False):

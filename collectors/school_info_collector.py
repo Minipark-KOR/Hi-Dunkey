@@ -2,6 +2,7 @@
 # collectors/school_info_collector.py
 # 개발 가이드: docs/developer_guide.md 참조
 
+import os
 import sys
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from core.shard import should_include_school
 from core.kst_time import now_kst
 from core.school_year import get_current_school_year
 from core.network import safe_json_request, build_session
+from core.config import config
 from constants.codes import REGION_NAMES
 from constants.paths import MASTER_DIR
 
@@ -24,19 +26,17 @@ class SchoolInfoCollector(BaseCollector):
     description = "학교 기본정보 (학교알리미)"
     table_name = "schools"
     merge_script = "scripts/merge_school_info_dbs.py"
-    timeout_seconds = 3600
-    parallel_timeout_seconds = 7200
-    merge_timeout_seconds = 3600
-    metrics_config = {
-        "enabled": True,
-        "collect_geo": True,
-        "collect_global": True
-    }
+    
+    _cfg = config.get_collector_config("school_info")
+    timeout_seconds = _cfg.get("timeout_seconds", 3600)
+    parallel_timeout_seconds = _cfg.get("parallel_timeout_seconds", 7200)
+    merge_timeout_seconds = _cfg.get("merge_timeout_seconds", 3600)
+    metrics_config = _cfg.get("metrics_config", {"enabled": True, "collect_geo": True, "collect_global": True})
     parallel_config = {
-        "max_workers": 4,
-        "cpu_factor": 1.0,
-        "max_by_api": 10,
-        "absolute_max": 16
+        "max_workers": _cfg.get("max_workers", 4),
+        "cpu_factor": _cfg.get("cpu_factor", 1.0),
+        "max_by_api": _cfg.get("max_by_api", 10),
+        "absolute_max": _cfg.get("absolute_max", 16),
     }
     # ---------------------
 

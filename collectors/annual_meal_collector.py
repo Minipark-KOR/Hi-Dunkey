@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
+# collectors/annual_meal_collector.py
 # 개발 가이드: docs/developer_guide.md 참조
-"""
-급식 정보 수집기 - 학년도 전체 버전
-"""
+
+import os
+import sys
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).parent.parent))
+
 import calendar
 from typing import List
 
 from core.base_meal_collector import BaseMealCollector
+from core.config import config
 from constants.codes import NEIS_ENDPOINTS
 from constants.paths import ACTIVE_DIR
 
@@ -14,6 +20,24 @@ NEIS_URL = NEIS_ENDPOINTS['meal']
 
 
 class AnnualMealCollector(BaseMealCollector):
+    # ----- 메타데이터 (선택 사항, 필요시 config 사용) -----
+    description = "급식 정보 (연간)"
+    table_name = "meal"
+    merge_script = "scripts/merge_meal_dbs.py"
+    
+    _cfg = config.get_collector_config("meal")  # meal 설정 공유
+    timeout_seconds = _cfg.get("timeout_seconds", 1800)
+    parallel_timeout_seconds = _cfg.get("parallel_timeout_seconds", 3600)
+    merge_timeout_seconds = _cfg.get("merge_timeout_seconds", 1800)
+    metrics_config = _cfg.get("metrics_config", {"enabled": True})
+    parallel_config = {
+        "max_workers": _cfg.get("max_workers", 2),
+        "cpu_factor": _cfg.get("cpu_factor", 0.8),
+        "max_by_api": _cfg.get("max_by_api", 5),
+        "absolute_max": _cfg.get("absolute_max", 8),
+    }
+    # ---------------------
+
     def __init__(self, shard="none", school_range=None, debug_mode=False):
         super().__init__("meal", str(ACTIVE_DIR), shard, school_range, debug_mode)
 
@@ -36,8 +60,8 @@ class AnnualMealCollector(BaseMealCollector):
         }
         rows = self._fetch_paginated(
             NEIS_URL, base_params, 'mealServiceDietInfo', page_size=100,
-            region=region,   # ✅ 이렇게 함수 인자로 포함
-            year=y           # ✅
+            region=region,
+            year=y
         )
         for r in rows:
             items = self._process_item(r)

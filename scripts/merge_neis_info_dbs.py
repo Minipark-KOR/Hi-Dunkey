@@ -117,6 +117,7 @@ if __name__ == "__main__":
     parser.add_argument("--even", default="data/master/neis_info_even.db", help="even 샤드 파일 경로")
     parser.add_argument("--output", default="data/master/neis_info_total.db", help="출력 통합 DB 경로")
     parser.add_argument("--quiet", action="store_true", help="출력 최소화")
+    parser.add_argument("--year", type=int, help="학년도 (사용되지 않음)")  # 추가
     args = parser.parse_args()
 
     # 파일 존재 확인
