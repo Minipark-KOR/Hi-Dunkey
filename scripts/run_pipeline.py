@@ -21,6 +21,9 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# ✅ 프로젝트 루트를 sys.path에 추가
+sys.path.append(str(Path(__file__).parent.parent))
+
 from core.kst_time import KST, now_kst  # 타임존 처리를 위해 추가
 
 # 도메인별 병합 스크립트 매핑
