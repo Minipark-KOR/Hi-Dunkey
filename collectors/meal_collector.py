@@ -16,6 +16,16 @@ NEIS_URL = NEIS_ENDPOINTS['meal']
 
 
 class MealCollector(BaseMealCollector):
+    # ----- 메타데이터 -----
+    description = "급식 정보 (NEIS)"
+    table_name = "meal"
+    merge_script = "scripts/merge_meal_dbs.py"
+    timeout_seconds = 1800
+    parallel_timeout_seconds = 3600
+    merge_timeout_seconds = 1800
+    metrics_config = {"enabled": True}
+    parallel_config = {"max_workers": 2, "cpu_factor": 0.8, "max_by_api": 5, "absolute_max": 8}
+    # ---------------------
 
     def __init__(self, shard: str = "none", school_range=None,
                  incremental: bool = False, full: bool = False, debug_mode: bool = False):
@@ -37,8 +47,8 @@ class MealCollector(BaseMealCollector):
         }
         rows = self._fetch_paginated(
             NEIS_URL, params, 'mealServiceDietInfo', page_size=1000,
-            region=region,               # ✅ 추가
-            year=int(date_from[:4])      # ✅ 추가
+            region=region,
+            year=int(date_from[:4])
         )
         if not rows:
             self.logger.warning(f"[{region}] {date_from} 수집 결과 없음")

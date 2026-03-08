@@ -46,7 +46,6 @@ def parse_regions(regions_arg: str):
 
 def run_collector(collector_name: str):
     """collector_name에 해당하는 수집기 실행"""
-    # collector별 추가 인자 처리 (예: timetable은 --semester 필요)
     extra_parsers = {
         "timetable_collector": lambda p: p.add_argument("--semester", type=int, default=1, choices=[1,2]),
     }
@@ -57,7 +56,6 @@ def run_collector(collector_name: str):
     parser.add_argument("--limit", type=int, help="테스트용 제한 개수")
     args = parser.parse_args()
 
-    # API 키 체크 (neis_info만 필요)
     if collector_name == "neis_info" and not NEIS_API_KEY:
         print("❌ NEIS_API_KEY 환경변수 없음", file=sys.stderr)
         sys.exit(2)
@@ -82,7 +80,6 @@ def run_collector(collector_name: str):
     try:
         for region in regions:
             try:
-                # 각 collector에 맞는 fetch 메서드 호출
                 if collector_name == "meal_collector":
                     collector.fetch_daily(region, target_date)
                 elif collector_name == "schedule_collector":
@@ -92,7 +89,6 @@ def run_collector(collector_name: str):
                 elif collector_name in ["neis_info", "school_info"]:
                     collector.fetch_region(region, year=year, date=target_date)
                 else:
-                    # 기본 fetch_region 시도 (없으면 에러)
                     if hasattr(collector, 'fetch_region'):
                         collector.fetch_region(region, year=year, date=target_date)
                     else:

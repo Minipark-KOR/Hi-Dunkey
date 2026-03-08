@@ -22,6 +22,17 @@ from constants.paths import ACTIVE_DIR, GLOBAL_VOCAB_PATH
 
 
 class AnnualFullTimetableCollector(BaseCollector):
+    # ----- 메타데이터 -----
+    description = "시간표"
+    table_name = "timetable"
+    merge_script = "scripts/merge_timetable_dbs.py"
+    timeout_seconds = 3600
+    parallel_timeout_seconds = 7200
+    merge_timeout_seconds = 3600
+    metrics_config = {"enabled": True}
+    parallel_config = {"max_workers": 4, "cpu_factor": 1.0, "max_by_api": 10, "absolute_max": 16}
+    # ---------------------
+
     def __init__(self, shard="none", school_range=None, debug_mode=False):
         super().__init__("timetable", str(ACTIVE_DIR), shard, school_range)
         self.api_context = 'timetable'
@@ -136,9 +147,9 @@ class AnnualFullTimetableCollector(BaseCollector):
                 try:
                     rows = self._fetch_paginated(
                         info['url'], params, endpoint_name,
-                        page_size=100, max_page=1,  # 시간표는 반당 최대 35건
-                        region=school_info['atpt_code'],   # ✅ 추가
-                        year=ay                            # ✅ 추가
+                        page_size=100, max_page=1,
+                        region=school_info['atpt_code'],
+                        year=ay
                     )
                     if not rows:
                         consecutive_empty += 1

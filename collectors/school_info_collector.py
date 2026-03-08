@@ -17,16 +17,34 @@ from core.shard import should_include_school
 from core.kst_time import now_kst
 from core.school_year import get_current_school_year
 from core.network import safe_json_request, build_session
-from constants.codes import REGION_NAMES, ALL_REGIONS
+from constants.codes import REGION_NAMES
 from constants.paths import MASTER_DIR
 
-# NEIS 학교 기본정보 API 엔드포인트 (학교알리미)
 API_URL = "https://open.neis.go.kr/hub/schoolInfo"
 
 
 class SchoolInfoCollector(BaseCollector):
+    # ----- 메타데이터 -----
+    description = "학교 기본정보 (학교알리미)"
+    table_name = "schools"
+    merge_script = "scripts/merge_school_info_dbs.py"
+    timeout_seconds = 3600
+    parallel_timeout_seconds = 7200
+    merge_timeout_seconds = 3600
+    metrics_config = {
+        "enabled": True,
+        "collect_geo": True,
+        "collect_global": True
+    }
+    parallel_config = {
+        "max_workers": 4,
+        "cpu_factor": 1.0,
+        "max_by_api": 10,
+        "absolute_max": 16
+    }
+    # ---------------------
+
     def __init__(self, shard="none", school_range=None, debug_mode=False):
-        # BaseCollecter에 도메인명 "school_info" 전달 → DB 경로가 data/master/school_info[_shard].db 로 결정됨
         super().__init__("school_info", str(MASTER_DIR), shard, school_range)
         self.debug_mode = debug_mode
         self._init_db()
@@ -59,12 +77,6 @@ class SchoolInfoCollector(BaseCollector):
             conn.execute("CREATE INDEX IF NOT EXISTS idx_schools_type ON schools(school_type)")
 
     def fetch_region(self, region_code: str, year: int = None, date: str = None):
-        """
-        지역별 학교 정보 수집
-        - region_code: 교육청 코드 (B10, C10, ...)
-        - year: 학년도 (기본값: 현재 날짜 기준 학년도)
-        - date: 수집 기준일 (미사용, API 호환용)
-        """
         if year is None:
             year = get_current_school_year(now_kst())
         region_name = REGION_NAMES.get(region_code, region_code)
@@ -79,7 +91,6 @@ class SchoolInfoCollector(BaseCollector):
             self.logger.warning(f"[{region_name}] 수집된 데이터 없음")
             return
 
-        # 샤드 필터링 + 배치 저장
         for row in rows:
             school_code = row.get("SD_SCHUL_CODE")
             if not school_code or not should_include_school(self.shard, self.school_range, school_code):
@@ -88,7 +99,6 @@ class SchoolInfoCollector(BaseCollector):
             self.enqueue([self._transform_row(row, region_code)])
 
     def _transform_row(self, row: dict, region_code: str) -> dict:
-        """API 응답 row를 DB 레코드 딕셔너리로 변환"""
         now = now_kst().isoformat()
         return {
             "school_code": row.get("SD_SCHUL_CODE"),
@@ -118,7 +128,6 @@ class SchoolInfoCollector(BaseCollector):
             return None
 
     def _do_save_batch(self, conn, batch):
-        """배치 저장 (BaseCollector의 콜백)"""
         sql = """
             INSERT OR REPLACE INTO schools (
                 school_code, school_name, region_code, region_name,
@@ -136,9 +145,6 @@ class SchoolInfoCollector(BaseCollector):
         conn.executemany(sql, rows)
 
     def _fetch_paginated(self, url, base_params, root_key, region=None, year=None, page_size=100):
-        """
-        페이지네이션 처리 (core.network의 safe_json_request 활용)
-        """
         session = build_session()
         all_rows = []
         page = 1
@@ -151,7 +157,6 @@ class SchoolInfoCollector(BaseCollector):
                 "AY": str(year) if year else None,
                 "Type": "json"
             })
-            # None 값 제거
             params = {k: v for k, v in params.items() if v is not None}
 
             data = safe_json_request(session, url, params, self.logger)
@@ -172,4 +177,17 @@ class SchoolInfoCollector(BaseCollector):
             page += 1
 
         return all_rows
-        
+
+
+if __name__ == "__main__":
+    from core.collector_cli import run_collector
+
+    def _fetch(collector, region, **kwargs):
+        collector.fetch_region(region, **kwargs)
+
+    run_collector(
+        SchoolInfoCollector,
+        _fetch,
+        "학교알리미 수집기",
+    )
+    

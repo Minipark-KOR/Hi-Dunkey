@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# 개발 가이드: docs/developer_guide.md 참조
 """
 마스터 수집기 - 실행 유형과 수집 방식을 계층적으로 선택
 - 실행 후 결과 확인 메뉴 제공 (데이터 무결성, 병합, 내보내기, 메트릭 생성, 다른 수집기, 종료)
@@ -49,7 +50,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-CONFIG_FILE = BASE_DIR / "collectors.json"
+# collectors.json 대신 collector_cli.py의 COLLECTOR_MAP 사용
+from core.collector_cli import COLLECTOR_MAP
+from constants.paths import MASTER_DIR
+
 POST_RUN_CONTINUE = "continue"
 POST_RUN_EXIT = "exit"
 ALLOWED_TABLES = {'schools', 'meals', 'timetable', 'schedule', 'staff'}
@@ -60,61 +64,28 @@ def resolve_path(path_str: str) -> Optional[str]:
     p = Path(path_str)
     return str(p if p.is_absolute() else BASE_DIR / p)
 
-def validate_collector(collector: Dict[str, Any], idx: int) -> bool:
-    REQUIRED_KEYS = ['name', 'description', 'script', 'db_path', 'table_name']
-    for key in REQUIRED_KEYS:
-        if key not in collector:
-            logger.error(f"Collector #{idx} 필수 키 누락: {key}")
-            return False
-    for key in ['timeout_seconds', 'parallel_timeout_seconds', 'merge_timeout_seconds']:
-        if key in collector:
-            val = collector[key]
-            if not isinstance(val, (int, float)) or val <= 0:
-                logger.error(f"Collector #{idx} {key} 는 양수여야 함")
-                return False
-    pconf = collector.get('parallel_config', {})
-    for key, typ in [('max_workers', int), ('cpu_factor', (int, float)), 
-                     ('max_by_api', int), ('absolute_max', int)]:
-        if key in pconf:
-            if not isinstance(pconf[key], typ):
-                logger.error(f"Collector #{idx} parallel_config.{key} 타입 오류")
-                return False
-            if key != 'cpu_factor' and pconf[key] <= 0:
-                logger.error(f"Collector #{idx} parallel_config.{key} 는 양수여야 함")
-                return False
-    return True
-
 def load_collectors() -> List[Dict[str, Any]]:
-    if not CONFIG_FILE.exists():
-        logger.error(f"설정 파일 없음: {CONFIG_FILE}")
-        print(f"{RED}❌ 설정 파일이 없습니다: {CONFIG_FILE}{RESET}")
-        sys.exit(1)
-    try:
-        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            collectors = json.load(f)
-        if not isinstance(collectors, list):
-            logger.error("설정 파일 최상위가 리스트가 아님")
-            sys.exit(1)
-        valid = []
-        for i, col in enumerate(collectors):
-            if validate_collector(col, i+1):
-                for key in ['script', 'parallel_script', 'merge_script', 'db_path', 'shard_odd', 'shard_even']:
-                    if key in col and col[key]:
-                        col[key] = resolve_path(col[key])
-                if 'modes' not in col:
-                    col['modes'] = ['통합', 'odd 샤드', 'even 샤드', '병렬 실행']
-                if 'metrics_config' not in col:
-                    col['metrics_config'] = {'enabled': False}
-                if 'parallel_config' not in col:
-                    col['parallel_config'] = {}
-                valid.append(col)
-        if not valid:
-            logger.error("유효한 collector가 없습니다.")
-            sys.exit(1)
-        return valid
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON 파싱 오류: {e}")
-        sys.exit(1)
+    collectors = []
+    for name, cls in COLLECTOR_MAP.items():
+        # BaseCollector에 정의된 기본값 사용
+        collectors.append({
+            "name": name,
+            "description": getattr(cls, "description", name),
+            "parallel_script": getattr(cls, "parallel_script", "scripts/run_pipeline.py"),
+            "merge_script": getattr(cls, "merge_script", None),
+            "table_name": getattr(cls, "table_name", name),
+            "modes": getattr(cls, "modes", ["통합", "odd 샤드", "even 샤드", "병렬 실행"]),
+            "timeout_seconds": getattr(cls, "timeout_seconds", 3600),
+            "parallel_timeout_seconds": getattr(cls, "parallel_timeout_seconds", 7200),
+            "merge_timeout_seconds": getattr(cls, "merge_timeout_seconds", 1800),
+            "metrics_config": getattr(cls, "metrics_config", {"enabled": False}),
+            "parallel_config": getattr(cls, "parallel_config", {}),
+            # DB 경로는 실제 collector와 동일한 규칙 사용
+            "db_path": str(MASTER_DIR / f"{name}.db"),
+            "shard_odd": str(MASTER_DIR / f"{name}_odd.db"),
+            "shard_even": str(MASTER_DIR / f"{name}_even.db"),
+        })
+    return collectors
 
 def print_header() -> None:
     print(f"\n{BLUE}{'='*60}{RESET}")
@@ -278,8 +249,8 @@ def dry_run_cmd(script: str, args: List[str]) -> bool:
     logger.info(f"드라이 런 명령: {' '.join(cmd)}")
     return True
 
-def run_collector(script: str, args: List[str], timeout: Optional[int] = None) -> bool:
-    cmd = [sys.executable, script] + args
+def run_collector(collector_name: str, args: List[str], timeout: Optional[int] = None) -> bool:
+    cmd = [sys.executable, "collector_cli.py", collector_name] + args
     logger.info(f"실행 명령: {' '.join(cmd)}")
     print(f"\n{GREEN}▶ 실행: {' '.join(cmd)}{RESET}\n")
     try:
@@ -341,21 +312,21 @@ def execute_collection(collector: Dict[str, Any], args: List[str], mode: str, ru
     if mode == "통합":
         full_args = args + ['--shard', 'none']
         if is_dry_run:
-            return dry_run_cmd(collector['script'], full_args)
+            return dry_run_cmd("collector_cli.py", [collector['name']] + full_args)
         else:
-            return run_collector(collector['script'], full_args, timeout)
+            return run_collector(collector['name'], full_args, timeout)
     elif "odd" in mode:
         full_args = args + ['--shard', 'odd']
         if is_dry_run:
-            return dry_run_cmd(collector['script'], full_args)
+            return dry_run_cmd("collector_cli.py", [collector['name']] + full_args)
         else:
-            return run_collector(collector['script'], full_args, timeout)
+            return run_collector(collector['name'], full_args, timeout)
     elif "even" in mode:
         full_args = args + ['--shard', 'even']
         if is_dry_run:
-            return dry_run_cmd(collector['script'], full_args)
+            return dry_run_cmd("collector_cli.py", [collector['name']] + full_args)
         else:
-            return run_collector(collector['script'], full_args, timeout)
+            return run_collector(collector['name'], full_args, timeout)
     elif "병렬" in mode:
         parallel_script = collector.get('parallel_script')
         if is_dry_run:
@@ -363,16 +334,16 @@ def execute_collection(collector: Dict[str, Any], args: List[str], mode: str, ru
                 dry_run_cmd(parallel_script, [collector['name']] + args)
             else:
                 print(f"{YELLOW}⚠️ 병렬 스크립트 없음, 순차 실행:{RESET}")
-                dry_run_cmd(collector['script'], args + ['--shard', 'odd'])
-                dry_run_cmd(collector['script'], args + ['--shard', 'even'])
+                dry_run_cmd("collector_cli.py", [collector['name']] + args + ['--shard', 'odd'])
+                dry_run_cmd("collector_cli.py", [collector['name']] + args + ['--shard', 'even'])
             return True
         else:
             if parallel_script and os.path.exists(parallel_script):
                 return run_parallel(parallel_script, args, collector['name'], parallel_timeout)
             else:
                 print(f"{YELLOW}⚠️ 병렬 스크립트 없음, 순차 실행합니다.{RESET}")
-                success_odd = run_collector(collector['script'], args + ['--shard', 'odd'], timeout)
-                success_even = run_collector(collector['script'], args + ['--shard', 'even'], timeout)
+                success_odd = run_collector(collector['name'], args + ['--shard', 'odd'], timeout)
+                success_even = run_collector(collector['name'], args + ['--shard', 'even'], timeout)
                 return success_odd and success_even
     else:
         logger.error(f"알 수 없는 모드: {mode}")
@@ -383,7 +354,7 @@ def post_run_menu(collector: Dict[str, Any], all_collectors: List[Dict[str, Any]
         print(f"\n{YELLOW}후속 작업을 선택하세요.{RESET}")
         print("  1) 데이터 무결성 확인 (레코드 수, 샤드 합계 등)")
         print("  2) 병합 실행 (샤드 파일이 있을 경우)")
-        print("  3) 데이터 내보내기 (Excel/리포트)")   # 신규
+        print("  3) 데이터 내보내기 (Excel/리포트)")
         print("  4) 이 수집기 메트릭 생성 (수집 현황 통계)")
         print("  5) 모든 수집기 메트릭 일괄 생성")
         print("  6) 다른 수집기 실행 (메인 메뉴로)")
@@ -453,7 +424,6 @@ def post_run_menu(collector: Dict[str, Any], all_collectors: List[Dict[str, Any]
         elif choice == '3':
             logger.info("데이터 내보내기 선택")
             print(f"\n{BLUE}📤 데이터 내보내기{RESET}")
-            # 지역 필터 입력
             try:
                 from exporters.region_filter import get_all_regions, parse_region_input
             except ImportError:
@@ -525,12 +495,6 @@ def post_run_menu(collector: Dict[str, Any], all_collectors: List[Dict[str, Any]
             }
             try:
                 from core.metrics import generate_and_save_metrics
-                # generate_and_save_metrics 함수는 다음 통계를 생성합니다:
-                # - total_count: 전체 레코드 수
-                # - region_distribution: 지역별 학교 수
-                # - school_type_distribution: 학교급별 수
-                # - geo_coverage: 좌표 보유율 (데이터 품질 지표)
-                # - latest_collection: 최근 수집 일시
                 result = generate_and_save_metrics(
                     backup_date=backup_date,
                     base_dir=str(BASE_DIR),

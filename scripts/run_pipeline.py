@@ -21,6 +21,8 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from core.kst_time import KST, now_kst  # 타임존 처리를 위해 추가
+
 # 도메인별 병합 스크립트 매핑
 MERGE_SCRIPT_MAP = {
     "neis_info": "merge_neis_info_dbs.py",
@@ -76,10 +78,12 @@ def make_env() -> dict:
     return env
 
 def cleanup_old_logs(log_dir: Path, collector: str, days: int = 7):
-    cutoff = datetime.now() - timedelta(days=days)
+    """오래된 로그 파일 정리 (KST 타임존 기준)"""
+    cutoff = KST.localize(datetime.now().replace(tzinfo=None)) - timedelta(days=days)
     for log_file in log_dir.glob(f"{collector}_*.log"):
         try:
-            if datetime.fromtimestamp(log_file.stat().st_mtime) < cutoff:
+            mtime = KST.localize(datetime.fromtimestamp(log_file.stat().st_mtime))
+            if mtime < cutoff:
                 log_file.unlink()
                 print(f"🧹 오래된 로그 삭제: {log_file.name}")
         except Exception:
@@ -91,7 +95,15 @@ lock = threading.Lock()
 processes = []  # 실행 중인 Popen 객체 리스트
 
 def signal_handler(sig, frame):
-    print(f"\n[{signal.Signals(sig).name}] 종료 신호 수신. 자식 프로세스 정리 중...")
+    """시그널 처리 (SIGINT, SIGTERM) - 하위 버전 호환성 확보"""
+    signal_names = {
+        signal.SIGINT: 'SIGINT',
+        signal.SIGTERM: 'SIGTERM',
+        getattr(signal, 'SIGHUP', None): 'SIGHUP',
+    }
+    sig_name = signal_names.get(sig, f'SIG{sig}')
+    
+    print(f"\n[{sig_name}] 종료 신호 수신. 자식 프로세스 정리 중...")
     with lock:
         procs = processes[:]
     for p in procs:

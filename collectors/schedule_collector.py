@@ -20,6 +20,17 @@ NEIS_URL = NEIS_ENDPOINTS['schedule']
 
 
 class AnnualFullScheduleCollector(BaseCollector):
+    # ----- 메타데이터 -----
+    description = "학사일정"
+    table_name = "schedule"
+    merge_script = "scripts/merge_schedule_dbs.py"
+    timeout_seconds = 3600
+    parallel_timeout_seconds = 7200
+    merge_timeout_seconds = 3600
+    metrics_config = {"enabled": True}
+    parallel_config = {"max_workers": 4, "cpu_factor": 1.0, "max_by_api": 10, "absolute_max": 16}
+    # ---------------------
+
     def __init__(self, shard="none", school_range=None, debug_mode=False):
         super().__init__("schedule", str(ACTIVE_DIR), shard, school_range)
         self.api_context = 'schedule'
@@ -109,14 +120,13 @@ class AnnualFullScheduleCollector(BaseCollector):
         }
         rows = self._fetch_paginated(
             NEIS_URL, base_params, 'schoolSchedule', page_size=100,
-            region=region,               # ✅ 추가
-            year=int(date_from[:4])      # ✅ 추가
+            region=region,
+            year=int(date_from[:4])
         )
         for r in rows:
             items = self._process_item(r)
             if items:
                 self.enqueue(items)
-
 
     def _process_item(self, raw_item: dict) -> List[dict]:
         sc_code = self._get_field(raw_item, 'school_code')

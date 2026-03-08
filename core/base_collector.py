@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# 개발 가이드: docs/developer_guide.md 참조
 """
 수집기 베이스 클래스 - 공통 기능 통합
 """
@@ -11,6 +12,7 @@ import glob
 import re
 import random
 import sys
+import traceback
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -29,6 +31,18 @@ from core.retry import RetryManager
 
 
 class BaseCollector(ABC):
+    # ----- 메타데이터 (하위 클래스에서 오버라이드) -----
+    description = None
+    table_name = None
+    merge_script = None
+    parallel_script = "scripts/run_pipeline.py"
+    timeout_seconds = 3600
+    parallel_timeout_seconds = 7200
+    merge_timeout_seconds = 1800
+    modes = ["통합", "odd 샤드", "even 샤드", "병렬 실행"]
+    metrics_config = {"enabled": False}
+    parallel_config = {}
+    # ------------------------------------------------
 
     def __init__(
         self,
@@ -134,6 +148,10 @@ class BaseCollector(ABC):
         except Exception as e:
             self.logger.error(f"학교 캐시 로드 실패: {e}")
 
+    def get_school_info(self, school_code: str) -> Optional[Dict[str, Any]]:
+        """학교 코드로 학교 정보 조회"""
+        return self.school_cache.get(school_code)
+
     def _get_field(self, raw_item: dict, field: str, default=None):
         from constants.api_mappings import get_api_field
         return get_api_field(raw_item, field, context=self.api_context, default=default)
@@ -222,14 +240,15 @@ class BaseCollector(ABC):
                         nxt = self.q.get_nowait()
                         if nxt is None:
                             self.q.task_done()
-                            self.q.put(None)
+                            # None을 다시 넣지 않음
                             break
                         items_processed += 1
                         batch.extend(self._flatten(nxt))
                     except queue.Empty:
                         break
 
-                print(f"🔍 [writer_loop] 배치 수집 완료: {len(batch)}개")
+                if self.debug_mode:
+                    print(f"🔍 [writer_loop] 배치 수집 완료: {len(batch)}개")
 
                 try:
                     if batch:
@@ -262,7 +281,8 @@ class BaseCollector(ABC):
         return [data]
 
     def enqueue(self, data: Union[dict, List[dict]]):
-        print(f"🔍 [base_enqueue] 데이터 크기: {len(data) if isinstance(data, list) else 1}")
+        if hasattr(self, 'debug_mode') and self.debug_mode:
+            print(f"🔍 [base_enqueue] 데이터 크기: {len(data) if isinstance(data, list) else 1}")
         self.q.put(data)
 
     def create_dated_backup(self):
@@ -311,10 +331,12 @@ class BaseCollector(ABC):
         pass
 
     def _save_batch(self, batch: List[dict]):
-        print(f"🔍 [_save_batch] 저장 시도: {len(batch)}개, DB 경로: {self.db_path}")
+        if self.debug_mode:
+            print(f"🔍 [_save_batch] 저장 시도: {len(batch)}개, DB 경로: {self.db_path}")
         with get_db_connection(self.db_path) as conn:
             self._do_save_batch(conn, batch)
-        print(f"✅ [_save_batch] 저장 완료")
+        if self.debug_mode:
+            print(f"✅ [_save_batch] 저장 완료")
 
     def _load_checkpoints(self):
         pass
