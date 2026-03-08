@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # collectors/geo_collector.py
+# 개발 가이드: docs/developer_guide.md 참조
 import os
 import sys
 import time

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# 개발 가이드: docs/developer_guide.md 참조
 """
 전체 데이터 수집기 (오케스트레이터) + 체크포인트 재시도
 """

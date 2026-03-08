@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# 개발 가이드: docs/developer_guide.md 참조
 """
 neis_info odd/even 샤드 병렬 수집기
 - 두 개의 하위 프로세스로 odd, even 샤드를 동시에 실행

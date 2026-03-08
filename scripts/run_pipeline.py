@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
+# 개발 가이드: docs/developer_guide.md 참조
 """
-병렬 샤드 실행기 + 자동 병합 + 연도 프롬프트 + 로그 정리
+병렬 샤드 실행기 + 자동 병합 + 연도 프롬프트 + 로그 정리 (collector_cli.py 기반)
 사용법:
-    python scripts/run_merge_parallel.py <collector_name> [--year YYYY] [--timeout 초] [추가 인자...]
+    python scripts/run_pipeline.py <collector_name> [--year YYYY] [--timeout 초] [추가 인자...]
 예:
-    python scripts/run_merge_parallel.py neis_info --regions ALL
-    python scripts/run_merge_parallel.py neis_info --year 2025 --regions ALL
-    python scripts/run_merge_parallel.py neis_info --year 2025 --regions ALL --debug
+    python scripts/run_pipeline.py neis_info --regions ALL
+    python scripts/run_pipeline.py neis_info --year 2025 --regions ALL --debug
 """
 import sys
 import subprocess
@@ -17,18 +17,15 @@ import signal
 import os
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, List
 
 # 도메인별 병합 스크립트 매핑
 MERGE_SCRIPT_MAP = {
     "neis_info": "merge_neis_info_dbs.py",
-    "neis_info_collector": "merge_neis_info_dbs.py",   # ✅ 추가
+    "school_info": "merge_school_info_dbs.py",
     "meal": "merge_meal_dbs.py",
-    "meal_collector": "merge_meal_dbs.py",                 # 필요시 추가
     "schedule": "merge_schedule_dbs.py",
-    "schedule_collector": "merge_schedule_dbs.py",
     "timetable": "merge_timetable_dbs.py",
-    "timetable_collector": "merge_timetable_dbs.py",
 }
 
 def get_merge_script(collector: str) -> str:
@@ -153,9 +150,15 @@ def run_merge(collector: str, year: int, log_dir: Path, timeout: Optional[int] =
                 if proc in processes:
                     processes.remove(proc)
 
-def run_shard(shard: str, collector: str, script_path: Path, extra_args: list, timeout: Optional[int] = None):
+def run_shard(shard: str, collector: str, extra_args: List[str], year: int, timeout: Optional[int] = None):
+    """collector_cli.py를 통해 단일 샤드 실행"""
     log_file = Path("logs") / f"{collector}_{shard}.log"
-    cmd = [sys.executable, str(script_path), "--shard", shard] + extra_args
+    # collector_cli.py에 전달할 기본 인자
+    cmd = [
+        sys.executable, "collector_cli.py", collector,
+        "--shard", shard,
+        "--year", str(year)
+    ] + extra_args
 
     print(f"🚀 {shard} 시작 (로그: {log_file})")
     start_time = time.time()
@@ -212,14 +215,29 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    parser = argparse.ArgumentParser(description="병렬 샤드 실행기 + 자동 병합")
-    parser.add_argument("collector", help="콜렉터 이름 (neis_info, meal, timetable, schedule 등)")
+    parser = argparse.ArgumentParser(description="병렬 샤드 실행기 + 자동 병합 (collector_cli.py 기반)")
+    parser.add_argument("collector", help="콜렉터 이름 (neis_info, school_info, meal, timetable, schedule 등)")
     parser.add_argument("--year", type=int, help="학년도 (미지정 시 프롬프트)")
     parser.add_argument("--timeout", type=int, default=None, help="각 샤드/병합의 최대 실행 시간(초)")
     args, remaining = parser.parse_known_args()
     extra_args = list(remaining)
     if extra_args and extra_args[0] == "--":
         extra_args = extra_args[1:]
+
+    # extra_args 에서 --year 또는 --shard 가 포함되어 있다면 제거 (중복 방지)
+    filtered_args = []
+    skip_next = False
+    for i, arg in enumerate(extra_args):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in ("--year", "-y", "--shard", "-s"):
+            # 다음 인자도 건너뜀 (값이 있다면)
+            if i + 1 < len(extra_args) and not extra_args[i+1].startswith("-"):
+                skip_next = True
+            continue
+        filtered_args.append(arg)
+    extra_args = filtered_args
 
     if args.year is not None:
         if not validate_year(args.year):
@@ -230,20 +248,18 @@ def main():
     else:
         year = prompt_year(get_current_school_year())
 
-    collector_script = Path("collectors") / f"{args.collector}.py"
-    if not collector_script.exists():
-        print(f"❌ 콜렉터 파일 없음: {collector_script}")
+    # collector_cli.py 존재 여부 확인 (선택 사항)
+    if not Path("collector_cli.py").exists():
+        print("❌ collector_cli.py 파일을 찾을 수 없습니다. (프로젝트 루트에 있어야 함)")
         sys.exit(1)
 
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
     cleanup_old_logs(log_dir, args.collector, days=7)
 
-    full_args = ["--year", str(year)] + extra_args
-
     threads = []
     for shard in ("odd", "even"):
-        t = threading.Thread(target=run_shard, args=(shard, args.collector, collector_script, full_args, args.timeout))
+        t = threading.Thread(target=run_shard, args=(shard, args.collector, extra_args, year, args.timeout))
         t.start()
         threads.append(t)
 
@@ -272,3 +288,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    

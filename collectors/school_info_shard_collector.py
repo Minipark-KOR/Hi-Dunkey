@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# 개발 가이드: docs/developer_guide.md 참조
 """
 학교알리미 수집기 - 샤드 병렬 실행용 래퍼
 - odd/even 샤드를 동시에 실행하여 수집 시간 단축

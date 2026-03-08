@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# 개발 가이드: docs/developer_guide.md 참조
 """
 학교 기본정보 수집기 (Diff 기반 좌표 갱신)
 - GeoCollector 통합으로 캐시 및 API 사용량 추적
@@ -131,16 +132,23 @@ class NeisInfoCollector(BaseCollector):
     def _get_target_key(self) -> str:
         return self.run_date
 
-    def fetch_region(self, region_code: str, limit: Optional[int] = None, **kwargs):
+    def fetch_region(self, region_code: str, limit: Optional[int] = None, year: Optional[int] = None, **kwargs):
+        """
+        year: 학년도 (None이면 현재 날짜 기준 학년도)
+        """
+        if year is None:
+            year = get_current_school_year(now_kst())  # 또는 int(self.run_date[:4])? 학년도와 수집일은 다를 수 있으므로 get_current_school_year 권장
+
         region_name = REGION_NAMES.get(region_code, region_code)
         if self.debug_mode and not self.quiet_mode:
-            print(f"\n📡 [{region_name}({region_code})] 데이터 수집 시작...")
+            print(f"\n📡 [{region_name}({region_code})] 학년도 {year} 데이터 수집 시작...")
+
         base_params = {"ATPT_OFCDC_SC_CODE": region_code}
         rows = self._fetch_paginated(
             NEIS_URL, base_params, 'schoolInfo',
             page_size=100,
             region=region_code,
-            year=int(self.run_date[:4])
+            year=year  # ✅ year 전달
         )
         if self.debug_mode:
             print(f"🔍 {region_code} rows length: {len(rows)}")
