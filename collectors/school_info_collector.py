@@ -765,6 +765,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-print("school_info_collector.py is running")
-    
+        
