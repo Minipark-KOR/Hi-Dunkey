@@ -20,6 +20,7 @@ from core.logger import build_logger
 from core.kst_time import now_kst
 from core.filters import AddressFilter
 from core.error_classifier import classify_error
+from core.geo import VWorldGeocoder
 from collectors.geo_collector import GeoCollector
 
 logger = build_logger("retry_worker", "logs/retry_worker.log")
@@ -29,10 +30,12 @@ HandlerResult = Tuple[bool, bool]
 TASK_HANDLERS: Dict[tuple, Callable[[Dict[str, Any]], HandlerResult]] = {}
 
 _GEO_COLLECTOR: Optional[GeoCollector] = None
+_VWORLD_GEOCODER: Optional[VWorldGeocoder] = None
 _NEIS_INFO_DB = "data/master/neis_info.db"
+_SCHOOLINFO_DB = "data/master/school_info.db"
 _FAILURES_DB = "data/failures.db"
 
-# 에러 메시지 저장용 전역 변수
+# 에러 메시지 저장용
 _LAST_ERROR_MSG: Optional[str] = None
 
 GREEN, RED, YELLOW, RESET = "\033[92m", "\033[91m", "\033[93m", "\033[0m"
@@ -65,140 +68,108 @@ def get_geo_collector() -> GeoCollector:
     return _GEO_COLLECTOR
 
 
-def _geocode_vworld(gc: GeoCollector, address: str, addr_type: str = "ROAD") -> Tuple[Optional[Tuple[float, float]], int]:
-    if not gc.vworld_key:
-        logger.error("VWORLD_API_KEY not set")
-        return None, 0
+def get_vworld_geocoder() -> VWorldGeocoder:
+    global _VWORLD_GEOCODER
+    if _VWORLD_GEOCODER is None:
+        _VWORLD_GEOCODER = VWorldGeocoder(calls_per_second=3.0)
+    return _VWORLD_GEOCODER
+
+
+def geocode_vworld(address: str, addr_type: str = "road") -> Optional[Tuple[float, float]]:
+    """VWorld 지오코딩"""
+    gc = get_vworld_geocoder()
+    return gc.geocode(address, addr_type)
+
+
+def reverse_geocode(lat: float, lon: float) -> Optional[str]:
+    """VWorld 역지오코딩"""
+    gc = get_vworld_geocoder()
+    return gc.reverse_geocode(lat, lon)
+
+
+def get_neis_school_info(sc_code: str) -> Optional[Dict]:
+    """나이스 DB에서 학교 정보 조회 (도로명/지번 주소, 좌표)"""
+    if not os.path.exists(_NEIS_INFO_DB):
+        return None
     try:
-        coords = gc._geocode_with_type(address, addr_type)
-        if coords:
-            return coords, 200
-        return None, 404
-    except requests.exceptions.HTTPError as e:
-        if hasattr(e, 'response') and e.response is not None:
-            return None, e.response.status_code
-        return None, 500
-    except requests.exceptions.RequestException as e:
-        logger.error(f"VWorld {addr_type} request error: {e}")
-        return None, 500
+        conn = sqlite3.connect(_NEIS_INFO_DB)
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute("""
+            SELECT address, cleaned_address, jibun_address, latitude, longitude
+            FROM schools
+            WHERE sc_code = ? AND status = '운영'
+        """, (sc_code,))
+        row = cur.fetchone()
+        conn.close()
+        if row:
+            return {
+                "road_addr": row["address"] or row["cleaned_address"],
+                "jibun_addr": row["jibun_address"],
+                "lat": row["latitude"],
+                "lon": row["longitude"],
+            }
     except Exception as e:
-        logger.error(f"VWorld {addr_type} unexpected error: {e}")
-        return None, 500
+        logger.warning(f"나이스 DB 조회 실패: {e}")
+    return None
 
 
-def geocode_kakao(address: str) -> Tuple[Optional[Tuple[float, float]], Optional[int], Optional[str]]:
-    """Kakao API 지오코딩 (폴백용)"""
-    kakao_key = os.getenv("KAKAO_API_KEY", "").strip()
-    if not kakao_key:
-        try:
-            from constants.codes import KAKAO_API_KEY
-            kakao_key = (KAKAO_API_KEY or "").strip()
-        except:
-            pass
-    if not kakao_key:
-        return None, None, None
-
-    url = "https://dapi.kakao.com/v2/local/search/address.json"
-    headers = {"Authorization": f"KakaoAK {kakao_key}"}
-    params = {"query": address, "analyze_type": "exact"}
-
+def get_schoolinfo_coords(sc_code: str) -> Optional[Tuple[float, float]]:
+    """학교알리미 DB에서 좌표 조회"""
+    if not os.path.exists(_SCHOOLINFO_DB):
+        return None
     try:
-        resp = requests.get(url, headers=headers, params=params, timeout=5)
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get('documents'):
-                doc = data['documents'][0]
-                x = float(doc['x'])
-                y = float(doc['y'])
-                official = doc.get('road_address', {}).get('address_name') or doc.get('address', {}).get('address_name')
-                return (x, y), 200, official
-            else:
-                # documents가 없으면 404로 처리
-                return None, 404, None
-        return None, resp.status_code, None
+        conn = sqlite3.connect(_SCHOOLINFO_DB)
+        cur = conn.execute(
+            "SELECT latitude, longitude FROM schools WHERE school_code = ?",
+            (sc_code,)
+        )
+        row = cur.fetchone()
+        conn.close()
+        if row and row[0] is not None and row[1] is not None:
+            return (row[0], row[1])
     except Exception as e:
-        logger.error(f"Kakao geocode error: {e}")
-        return None, None, None
+        logger.warning(f"학교알리미 좌표 조회 실패: {e}")
+    return None
 
 
-def update_school_coords(
-    sc_code: str,
-    lon: float,
-    lat: float,
-    cleaned: str,
-    addr_components: Dict[str, Any],
-    kakao_address: Optional[str] = None
-):
-    with sqlite3.connect(_NEIS_INFO_DB, timeout=30) as conn:
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA busy_timeout=30000;")
+def update_school_coords(sc_code: str, coords: Tuple[float, float], address: str, source: str):
+    """neis_info.db에 좌표 및 주소 업데이트"""
+    lon, lat = coords  # VWorld는 (lon, lat) 순서
+    with sqlite3.connect(_NEIS_INFO_DB) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
         try:
-            conn.execute(
-                """
+            conn.execute("""
                 UPDATE schools
-                SET longitude = ?, latitude = ?,
-                    cleaned_address = ?,
-                    geocode_attempts = 0,
-                    last_error = NULL,
-                    city_id = ?, district_id = ?, street_id = ?,
-                    number_type = ?, number_value = ?, number_start = ?, number_end = ?, number_bit = ?,
-                    kakao_address = COALESCE(?, kakao_address)
+                SET longitude = ?, latitude = ?, cleaned_address = ?,
+                    geocode_attempts = 0, last_error = NULL
                 WHERE sc_code = ?
-                """,
-                (
-                    lon, lat, cleaned,
-                    addr_components.get("city_id", 0),
-                    addr_components.get("district_id", 0),
-                    addr_components.get("street_id", 0),
-                    addr_components.get("number_type"),
-                    addr_components.get("number"),
-                    addr_components.get("number_start"),
-                    addr_components.get("number_end"),
-                    addr_components.get("number_bit"),
-                    kakao_address,
-                    sc_code,
-                ),
-            )
-        except sqlite3.OperationalError as e:
-            logger.warning(f"kakao_address 컬럼 없음, 기본 업데이트: {e}")
-            conn.execute(
-                """
-                UPDATE schools
-                SET longitude = ?, latitude = ?, cleaned_address = ?
-                WHERE sc_code = ?
-                """,
-                (lon, lat, cleaned, sc_code),
-            )
+            """, (lon, lat, address, sc_code))
+            conn.commit()
+            logger.info(f"✅ [{source}] {sc_code} 좌표 업데이트 완료")
+        except sqlite3.Error as e:
+            logger.error(f"좌표 업데이트 실패 {sc_code}: {e}")
 
 
-def log_address_mapping(original: str, mapped: str, sc_code: str, source: str):
-    if original == mapped:
-        return
-    mapping_data = {
-        "sc_code": sc_code,
-        "original": original,
-        "mapped": mapped,
-        "source": source,
-        "timestamp": now_kst().isoformat()
-    }
-    address_mapping_logger.info(json.dumps(mapping_data, ensure_ascii=False))
-
-
-def get_consecutive_404(sc_code: str) -> int:
-    try:
-        with sqlite3.connect(_FAILURES_DB) as conn:
-            cur = conn.execute(
-                """
-                SELECT COUNT(*) FROM failures 
-                WHERE sc_code=? 
-                AND (error_msg LIKE '%404%' OR error_msg LIKE '%NOT_FOUND%')
-                AND status='FAILED' AND resolved_at IS NULL
-                """,
-                (sc_code,)
-            )
-            return cur.fetchone()[0] or 0
-    except Exception:
-        return 0
+def record_step_log(sc_code: str, step: str, address: str, status: str, reason: str = ""):
+    """각 단계의 성공/실패를 로그 테이블에 기록"""
+    conn = sqlite3.connect(_FAILURES_DB)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS geo_step_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sc_code TEXT,
+            step TEXT,
+            attempted_at TEXT,
+            address TEXT,
+            status TEXT,
+            reason TEXT
+        )
+    """)
+    conn.execute("""
+        INSERT INTO geo_step_log (sc_code, step, attempted_at, address, status, reason)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (sc_code, step, now_kst().isoformat(), address, status, reason))
+    conn.commit()
+    conn.close()
 
 
 def handle_school_geocode(failure: dict) -> HandlerResult:
@@ -206,111 +177,77 @@ def handle_school_geocode(failure: dict) -> HandlerResult:
     _LAST_ERROR_MSG = None
 
     sc_code = failure.get("sc_code")
-    original_address = failure.get("address")
-    retries = failure.get("retries") or 0
-
-    if not sc_code or not original_address:
+    original_address = failure.get("address")  # 학교알리미 주소
+    if not sc_code:
         return (False, True)
 
-    level = min(max(int(retries), 1), 3)
-    cleaned = AddressFilter.clean(original_address, level=level)
+    # 1. 나이스 정보 조회
+    neis_info = get_neis_school_info(sc_code)
 
-    gc = get_geo_collector()
-    final_status = 0
-    error_messages = []
+    # 2. 학교알리미 좌표 조회
+    schoolinfo_coords = get_schoolinfo_coords(sc_code)
 
-    # 1차: VWorld road
-    coords, status = _geocode_vworld(gc, cleaned, "ROAD")
-    if coords:
-        lon, lat = coords
-        addr_components = gc.meta_vocab.save_address(cleaned)
-        update_school_coords(sc_code, lon, lat, cleaned, addr_components)
-        log_address_mapping(original_address, cleaned, sc_code, "vworld")
-        return (True, False)
-    if status:
-        final_status = status
-        error_messages.append(f"ROAD:{status}")
-
-    # 2차: VWorld parcel
-    coords, status = _geocode_vworld(gc, cleaned, "PARCEL")
-    if coords:
-        lon, lat = coords
-        addr_components = gc.meta_vocab.save_address(cleaned)
-        update_school_coords(sc_code, lon, lat, cleaned, addr_components)
-        log_address_mapping(original_address, cleaned, sc_code, "vworld")
-        return (True, False)
-    if status:
-        final_status = status
-        error_messages.append(f"PARCEL:{status}")
-
-    simplified = re.sub(r'\s*[-,.+()].*$', '', cleaned).strip()
-
-    # 3차: simplified road
-    if simplified != cleaned:
-        coords, status = _geocode_vworld(gc, simplified, "ROAD")
+    # 3. 단계별 지오코딩 시도
+    # 단계 1: 나이스 도로명 → VWorld
+    if neis_info and neis_info.get("road_addr"):
+        coords = geocode_vworld(neis_info["road_addr"], "road")
         if coords:
-            lon, lat = coords
-            addr_components = gc.meta_vocab.save_address(simplified)
-            update_school_coords(sc_code, lon, lat, simplified, addr_components)
-            log_address_mapping(original_address, simplified, sc_code, "vworld")
+            update_school_coords(sc_code, coords, neis_info["road_addr"], "neis_road")
+            record_step_log(sc_code, "neis_road", neis_info["road_addr"], "success")
             return (True, False)
-        if status:
-            final_status = status
-            error_messages.append(f"SIMPLIFIED_ROAD:{status}")
+        else:
+            record_step_log(sc_code, "neis_road", neis_info["road_addr"], "failure", "VWorld geocode failed")
 
-    # 4차: simplified parcel
-    if simplified != cleaned:
-        coords, status = _geocode_vworld(gc, simplified, "PARCEL")
+    # 단계 2: 나이스 지번 → VWorld
+    if neis_info and neis_info.get("jibun_addr"):
+        coords = geocode_vworld(neis_info["jibun_addr"], "parcel")
         if coords:
-            lon, lat = coords
-            addr_components = gc.meta_vocab.save_address(simplified)
-            update_school_coords(sc_code, lon, lat, simplified, addr_components)
-            log_address_mapping(original_address, simplified, sc_code, "vworld")
+            update_school_coords(sc_code, coords, neis_info["jibun_addr"], "neis_jibun")
+            record_step_log(sc_code, "neis_jibun", neis_info["jibun_addr"], "success")
             return (True, False)
-        if status:
-            final_status = status
-            error_messages.append(f"SIMPLIFIED_PARCEL:{status}")
+        else:
+            record_step_log(sc_code, "neis_jibun", neis_info["jibun_addr"], "failure", "VWorld geocode failed")
 
-    # 5차: Kakao API (최종 폴백)
-    coords, status, official_address = geocode_kakao(cleaned)
-    if coords:
-        lon, lat = coords
-        logger.info(f"Kakao API success for {cleaned[:30]}")
+    # 단계 3: 학교알리미 도로명 → VWorld
+    if original_address:
+        coords = geocode_vworld(original_address, "road")
+        if coords:
+            update_school_coords(sc_code, coords, original_address, "schoolinfo_road")
+            record_step_log(sc_code, "schoolinfo_road", original_address, "success")
+            return (True, False)
+        else:
+            record_step_log(sc_code, "schoolinfo_road", original_address, "failure", "VWorld geocode failed")
 
-        if official_address and official_address != cleaned:
-            log_address_mapping(original_address, official_address, sc_code, "kakao")
-            cleaned = official_address
+    # 단계 4: 학교알리미 지번 → VWorld
+    if original_address:
+        jibun = AddressFilter.extract_jibun(original_address)
+        if jibun:
+            coords = geocode_vworld(jibun, "parcel")
+            if coords:
+                update_school_coords(sc_code, coords, jibun, "schoolinfo_jibun")
+                record_step_log(sc_code, "schoolinfo_jibun", jibun, "success")
+                return (True, False)
+            else:
+                record_step_log(sc_code, "schoolinfo_jibun", jibun, "failure", "VWorld geocode failed")
 
-        addr_hash = gc._hash_address(cleaned)
-        gc.cache[addr_hash] = (lon, lat)
-        gc._save_to_cache(cleaned, lon, lat, "KAKAO")
+    # 단계 5: 학교알리미 좌표 → 역지오코딩 → VWorld 재검증
+    if schoolinfo_coords:
+        rev_addr = reverse_geocode(schoolinfo_coords[0], schoolinfo_coords[1])
+        if rev_addr:
+            coords2 = geocode_vworld(rev_addr, "road")
+            if coords2:
+                update_school_coords(sc_code, coords2, rev_addr, "schoolinfo_reverse")
+                record_step_log(sc_code, "schoolinfo_reverse", rev_addr, "success")
+                return (True, False)
+            else:
+                record_step_log(sc_code, "schoolinfo_reverse", rev_addr, "failure", "forward geocode failed after reverse")
+        else:
+            record_step_log(sc_code, "schoolinfo_reverse", f"{schoolinfo_coords[0]},{schoolinfo_coords[1]}", "failure", "reverse geocode failed")
 
-        addr_components = gc.meta_vocab.save_address(cleaned)
-        update_school_coords(sc_code, lon, lat, cleaned, addr_components, kakao_address=official_address)
-        return (True, False)
-
-    if status:
-        final_status = status
-        error_messages.append(f"KAKAO:{status}")
-    else:
-        error_messages.append("KAKAO:NOT_CALLED")
-
-    consec_404 = get_consecutive_404(sc_code)
-    err_info = classify_error(final_status, consec_404)
-    full_error = f"[{','.join(error_messages)}] {err_info['message']}" if error_messages else err_info['message']
-
-    if err_info['action'] == 'stop':
-        logger.critical(f"Fatal auth error for {sc_code}: {err_info['message']}")
-        _LAST_ERROR_MSG = full_error
-        return (False, True)
-    elif err_info['action'] == 'orphan':
-        logger.warning(f"Orphan detected for {sc_code}: {full_error}")
-        _LAST_ERROR_MSG = full_error
-        return (False, True)
-    else:
-        logger.info(f"Transient failure for {sc_code}: {full_error}")
-        _LAST_ERROR_MSG = full_error
-        return (False, False)
+    # 모든 단계 실패 → ORPHAN 처리
+    record_step_log(sc_code, "final", original_address or "", "failure", "all attempts failed")
+    _LAST_ERROR_MSG = "all geocoding attempts failed"
+    return (False, True)  # is_permanent = True (ORPHAN)
 
 
 register_handler("school", "geocode", handle_school_geocode)
@@ -339,7 +276,6 @@ def print_summary(success, retry, orphan, start_time, remaining):
     print(f"📌 남은 작업: {remaining:,}개 (status='FAILED')")
     print("=" * 70)
 
-    # ✅ 이번 실행 결과를 파일에 저장
     try:
         os.makedirs("logs", exist_ok=True)
         with open("logs/last_result.txt", "w", encoding="utf-8") as f:
@@ -353,10 +289,8 @@ def print_summary(success, retry, orphan, start_time, remaining):
         logger.error(f"결과 저장 실패: {e}")
 
 
-# ========================================================
-# 메뉴 기능
-# ========================================================
-
+# 메뉴 함수들 (기존 코드와 동일, 생략 가능)
+def check_missing_count(neis_info_db: str):
     if not os.path.exists(neis_info_db):
         print("❌ DB 파일 없음")
         return
@@ -390,11 +324,9 @@ def check_db_size(neis_info_db: str, failures_db: str):
 
 
 def list_failed_schools(neis_info_db: str, failures_db: str):
-    """실패한 학교 목록 출력 (학교명, 도로명 주소, 지번 주소) - 3줄 표시"""
     print("\n📋 실패한 학교 목록 (status='FAILED')")
     print("=" * 90)
     try:
-        # 1. failures DB에서 FAILED 상태인 sc_code 목록 가져오기
         with sqlite3.connect(failures_db) as conn_f:
             conn_f.row_factory = sqlite3.Row
             cur_f = conn_f.execute("SELECT sc_code, error_msg, retries FROM failures WHERE status='FAILED'")
@@ -404,7 +336,6 @@ def list_failed_schools(neis_info_db: str, failures_db: str):
             print("ℹ️  현재 FAILED 상태인 학교가 없습니다.")
             return
 
-        # 2. neis info DB에서 해당 학교 정보 조회
         with sqlite3.connect(neis_info_db) as conn_s:
             conn_s.row_factory = sqlite3.Row
             placeholders = ','.join(['?'] * len(failed_rows))
@@ -433,7 +364,6 @@ def list_failed_schools(neis_info_db: str, failures_db: str):
 
 
 def reset_orphan_only(failures_db: str):
-    """ORPHAN 상태를 FAILED로 초기화"""
     print("\n🔄 ORPHAN → FAILED 초기화 중...")
     try:
         with sqlite3.connect(failures_db) as conn:
@@ -445,7 +375,6 @@ def reset_orphan_only(failures_db: str):
 
 
 def reset_expired_and_orphan(failures_db: str):
-    """EXPIRED와 ORPHAN 상태를 모두 FAILED로 초기화 (3번 메뉴용)"""
     print("\n🔄 EXPIRED, ORPHAN → FAILED 초기화 중...")
     try:
         with sqlite3.connect(failures_db) as conn:
@@ -461,7 +390,6 @@ def reset_expired_and_orphan(failures_db: str):
 
 
 def run_retry_worker(force: bool = False, limit: int = 100):
-    """retry_worker를 다시 실행 (force 옵션 및 limit 지정 가능)"""
     mode = "force" if force else "normal"
     print(f"\n🚀 retry_worker 다시 실행 중... (mode: {mode}, limit: {limit})")
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -476,7 +404,6 @@ def run_retry_worker(force: bool = False, limit: int = 100):
 
 
 def run_cleanse_failures():
-    """cleanse_failures.py 실행"""
     print("\n🚀 cleanse_failures.py 실행 중...")
     script_dir = os.path.dirname(os.path.abspath(__file__))
     result = subprocess.run(
@@ -491,7 +418,6 @@ def run_cleanse_failures():
 
 
 def run_seed_failures():
-    """seed_failures.py 실행 (누락 학교 등록)"""
     print("\n🚀 seed_failures.py 실행 중...")
     script_dir = os.path.dirname(os.path.abspath(__file__))
     result = subprocess.run(
@@ -506,7 +432,6 @@ def run_seed_failures():
 
 
 def show_last_result():
-    """가장 최근 실행 결과 보기 (3번 메뉴)"""
     result_file = "logs/last_result.txt"
     if not os.path.exists(result_file):
         print("ℹ️  이전 실행 결과가 없습니다.")
@@ -517,7 +442,6 @@ def show_last_result():
 
 
 def clear_logs():
-    """모든 로그 파일 삭제 (10번 메뉴)"""
     confirm = input("정말 모든 로그 파일을 삭제하시겠습니까? (y/N): ").strip().lower()
     if confirm == 'y':
         log_dir = "logs"
@@ -589,10 +513,6 @@ def show_menu(rm: RetryManager, neis_info_db: str, failures_db: str):
         else:
             print("❌ 잘못된 입력입니다.")
 
-
-# ========================================================
-# 메인
-# ========================================================
 
 def main():
     global _LAST_ERROR_MSG

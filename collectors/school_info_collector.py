@@ -80,6 +80,19 @@ REGION_CODES = {
     "R10": "제주", "S10": "외국"
 }
 
+<<<<<<< HEAD
+=======
+# 시도명 매핑 (행안부 시도코드 → 한글 시도명)
+SIDO_NAME_MAP = {
+    "11": "서울특별시", "26": "부산광역시", "27": "대구광역시", "28": "인천광역시",
+    "29": "광주광역시", "30": "대전광역시", "31": "울산광역시", "36": "세종특별자치시",
+    "41": "경기도", "43": "충청북도", "44": "충청남도", "46": "전라남도",
+    "47": "경상북도", "48": "경상남도", "50": "제주특별자치도", "51": "강원특별자치도",
+    "52": "전북특별자치도", "99": "기타"
+}
+
+# 학교 유형 코드 (교육청 코드와 동일)
+>>>>>>> 8147a89 (bug fix)
 SCHOOL_TYPES = {
     "1": "유치원", "2": "초등학교", "3": "중학교", "4": "고등학교",
     "5": "특수학교", "6": "각종학교", "7": "대학", "8": "기타"
@@ -402,6 +415,7 @@ class SchoolInfoCollector:
             "total_errors": 0,
             "regions_processed": set()
         }
+<<<<<<< HEAD
     
     def collect_region(self, region_code: str, school_type: Optional[str] = None, 
                       limit: Optional[int] = None) -> bool:
@@ -416,6 +430,95 @@ class SchoolInfoCollector:
                 return False
             if not schools:
                 logger.debug(f"지역 {region_code} 추가 데이터 없음 (페이지 {page})")
+=======
+        self.batch_size = self.config.get('batch_size', args.batch_size or 100)
+        self.batch_buffer = []
+
+    def _flush_batch(self):
+        """버퍼에 쌓인 데이터를 DB 에 저장"""
+        if not self.batch_buffer:
+            return
+        inserted, updated = self.db.upsert_batch(self.batch_buffer)
+        self.stats["total"] += inserted + updated
+        self.stats["inserted"] += inserted  # 실제 구분은 어려우나 대략
+        self.batch_buffer = []
+        logger.debug(f"배치 저장 완료 (누적: {self.stats['total']} 건)")
+
+    def _parse_float(self, val: Optional[str], field: str = "") -> Optional[float]:
+        if not val:
+            return None
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            if field:
+                logger.debug(f"{field} 좌표 파싱 실패: '{val}'")
+            return None
+
+    def _process_school(self, school: Dict, sido_code: str, sgg_code: str, schul_knd_code: str):
+        """단일 학교 데이터 처리 (배치에 추가)"""
+        school_code = school.get("SCHUL_CODE")
+        if not school_code:
+            logger.warning("SCHUL_CODE 없음, 건너뜀")
+            self.stats["errors"] += 1
+            return
+        if not should_process(school_code, self.args.shard):
+            return
+        now = datetime.now().isoformat()
+
+        school_name = school.get("SCHUL_NM", "")
+        region_code = school.get("ATPT_OFCDC_SC_CODE", "")
+        school_type = schul_knd_code  # API에서 받은 학교급 코드
+        school_type_name = SCHUL_KND_MAP.get(schul_knd_code, "")
+        address = school.get("SCHUL_RDNMA") or school.get("SCHUL_LNMAD") or ""
+        zip_code = school.get("SCHUL_RDNZC") or ""
+        phone = school.get("USER_TELNO") or ""
+        homepage = school.get("HMPG_ADRES") or ""
+        est_date = school.get("FOND_YMD") or ""
+        open_date = school.get("OPEN_YMD") or ""
+        close_date = school.get("CLOSE_YMD") or ""
+        lat = self._parse_float(school.get("LTTUD"), "latitude")
+        lon = self._parse_float(school.get("LGTUD"), "longitude")
+
+        # ✅ region_name 생성: 시도명 + 시군구명
+        sido_name = SIDO_NAME_MAP.get(sido_code, "")
+        sgg_name = SGG_NAMES.get(sgg_code, "") if SGG_AVAILABLE else ""
+        if sgg_name and sido_name:
+            region_name = f"{sido_name} {sgg_name}"
+        else:
+            region_name = sido_name or sgg_name or ""
+
+        self.batch_buffer.append((
+            school_code,
+            school_name,
+            region_code,
+            sido_code,
+            sgg_code,
+            region_name,          # ← 이제 region_name이 채워짐
+            school_type,
+            school_type_name,
+            address,
+            zip_code,
+            phone,
+            homepage,
+            est_date,
+            open_date,
+            close_date,
+            lat,
+            lon,
+            now,
+            now,
+            1
+        ))
+        if len(self.batch_buffer) >= self.batch_size:
+            self._flush_batch()
+
+    def collect_sido_sgg(self, sido_code: str, sgg_code: str, schul_knd_codes: List[str],
+                         limit: Optional[int] = None) -> int:
+        """하나의 시도-시군구-학교급 조합 수집"""
+        collected = 0
+        for knd in schul_knd_codes:
+            if limit and collected >= limit:
+>>>>>>> 8147a89 (bug fix)
                 break
             
             for school in schools:
@@ -532,3 +635,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+<<<<<<< HEAD
+=======
+    
+>>>>>>> 8147a89 (bug fix)
