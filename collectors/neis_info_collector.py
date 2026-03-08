@@ -9,12 +9,16 @@ import random
 import sqlite3
 import argparse
 import threading
-from typing import List, Dict, Tuple, Optional
-from datetime import timedelta
 from pathlib import Path
 
+# 프로젝트 루트를 sys.path에 추가 (모든 로컬 임포트보다 먼저)
 sys.path.append(str(Path(__file__).parent.parent))
 
+from typing import List, Dict, Tuple, Optional
+from datetime import timedelta
+
+# 이제 core 모듈 임포트 가능
+from core.config import config
 from core.base_collector import BaseCollector
 from core.database import get_db_connection, get_db_reader
 from core.school_id import create_school_id
@@ -39,21 +43,19 @@ class NeisInfoCollector(BaseCollector):
     description = "학교 기본정보 (NEIS)"
     table_name = "schools"
     merge_script = "scripts/merge_neis_info_dbs.py"
-    timeout_seconds = 3600
-    parallel_timeout_seconds = 7200
-    merge_timeout_seconds = 3600
-    metrics_config = {
-        "enabled": True,
-        "collect_geo": True,
-        "collect_global": True
-    }
+    # 설정에서 값을 가져오되, 없으면 기본값 사용
+    _cfg = config.get_collector_config("neis_info")
+    timeout_seconds = _cfg.get("timeout_seconds", 3600)
+    parallel_timeout_seconds = _cfg.get("parallel_timeout_seconds", 7200)
+    merge_timeout_seconds = _cfg.get("merge_timeout_seconds", 3600)
+    metrics_config = {"enabled": True, "collect_geo": True, "collect_global": True}
     parallel_config = {
-        "max_workers": 4,
-        "cpu_factor": 1.0,
-        "max_by_api": 10,
-        "absolute_max": 16
+        "max_workers": _cfg.get("max_workers", 4),
+        "cpu_factor": _cfg.get("cpu_factor", 1.0),
+        "max_by_api": _cfg.get("max_by_api", 10),
+        "absolute_max": _cfg.get("absolute_max", 16),
     }
-    # ---------------------
+# ---------------------
 
     LEVEL_GEOCODING = 3
     LEVEL_FINAL = 4

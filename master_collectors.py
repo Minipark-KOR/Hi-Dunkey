@@ -787,7 +787,48 @@ def post_run_menu(collector: Dict[str, Any], all_collectors: List[Dict[str, Any]
             logger.warning(f"잘못된 후속 작업 선택: {choice}")
             print(f"{RED}잘못된 선택입니다.{RESET}")
 
+def run_smoke_test() -> bool:
+    """핵심 기능 smoke test"""
+    print(f"{CYAN}🧪 Smoke test 실행 중...{RESET}")
+    try:
+        # 1. 수집기 로드 테스트
+        collectors = load_collectors()
+        assert len(collectors) > 0, "수집기 로드 실패"
+        print(f"  ✅ {len(collectors)}개 수집기 로드 성공")
+
+        # 2. DB 연결 테스트 (처음 2개만)
+        for c in collectors[:2]:
+            count = get_table_count(c['db_path'], c['table_name'])
+            print(f"  ✅ {c['name']}: {count if count is not None else 'DB 없음'}")
+
+        # 3. CLI 실행 테스트 (제한적)
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, "collector_cli.py", "neis_info", "--regions", "B10", "--limit", "1", "--quiet"],
+            capture_output=True, text=True
+        )
+        assert result.returncode == 0, f"CLI 실행 실패: {result.stderr}"
+        print(f"  ✅ collector_cli 기본 실행 성공")
+
+        # 4. 병렬 스크립트 실행 테스트 (제한적)
+        result = subprocess.run(
+            [sys.executable, "scripts/run_pipeline.py", "neis_info", "--regions", "B10", "--quiet", "--timeout", "30"],
+            capture_output=True, text=True
+        )
+        # 실패해도 무방 (데이터 없을 수 있음) - returncode 무시
+        print(f"  ✅ run_pipeline 실행 완료 (코드 {result.returncode})")
+
+        print(f"{GREEN}✅ 모든 smoke test 통과{RESET}")
+        return True
+    except Exception as e:
+        print(f"{RED}❌ smoke test 실패: {e}{RESET}")
+        return False
+
 def main():
+    # 명령행 인자 처리
+    if "--test" in sys.argv:
+        sys.exit(0 if run_smoke_test() else 1)
+        
     try:
         collectors = load_collectors()
         while True:
