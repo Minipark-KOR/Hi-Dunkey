@@ -299,12 +299,8 @@ def run_collector(script: str, args: List[str], timeout: Optional[int] = None) -
         print(f"\n{YELLOW}⚠️ 사용자 중단{RESET}")
         raise
 
-def run_parallel(parallel_script: str, base_args: List[str], timeout: Optional[int] = None) -> bool:
-    if not parallel_script or not os.path.exists(parallel_script):
-        logger.error(f"병렬 스크립트 없음: {parallel_script}")
-        print(f"{RED}❌ 병렬 실행 스크립트가 없습니다: {parallel_script}{RESET}")
-        return False
-    cmd = [sys.executable, parallel_script] + base_args
+def run_parallel(parallel_script: str, base_args: List[str], collector_name: str, timeout: Optional[int] = None) -> bool:
+    cmd = [sys.executable, parallel_script, collector_name] + base_args
     logger.info(f"병렬 실행 명령: {' '.join(cmd)}")
     print(f"\n{GREEN}▶ 병렬 실행: {' '.join(cmd)}{RESET}\n")
     try:
@@ -364,7 +360,7 @@ def execute_collection(collector: Dict[str, Any], args: List[str], mode: str, ru
         parallel_script = collector.get('parallel_script')
         if is_dry_run:
             if parallel_script:
-                dry_run_cmd(parallel_script, args)
+                dry_run_cmd(parallel_script, [collector['name']] + args)
             else:
                 print(f"{YELLOW}⚠️ 병렬 스크립트 없음, 순차 실행:{RESET}")
                 dry_run_cmd(collector['script'], args + ['--shard', 'odd'])
@@ -372,7 +368,7 @@ def execute_collection(collector: Dict[str, Any], args: List[str], mode: str, ru
             return True
         else:
             if parallel_script and os.path.exists(parallel_script):
-                return run_parallel(parallel_script, args, parallel_timeout)
+                return run_parallel(parallel_script, args, collector['name'], parallel_timeout)
             else:
                 print(f"{YELLOW}⚠️ 병렬 스크립트 없음, 순차 실행합니다.{RESET}")
                 success_odd = run_collector(collector['script'], args + ['--shard', 'odd'], timeout)

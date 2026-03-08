@@ -2,11 +2,12 @@
 # 개발 가이드: docs/developer_guide.md 참조
 """
 병렬 샤드 실행기 + 자동 병합 + 연도 프롬프트 + 로그 정리 (collector_cli.py 기반)
+여러 region에 대해 odd/even 샤드를 병렬로 실행합니다.
 사용법:
-    python scripts/run_pipeline.py <collector_name> [--year YYYY] [--timeout 초] [추가 인자...]
+    python scripts/run_pipeline.py <collector_name> [--year YYYY] [--timeout 초] [--regions REGIONS] [추가 인자...]
 예:
     python scripts/run_pipeline.py neis_info --regions ALL
-    python scripts/run_pipeline.py neis_info --year 2025 --regions ALL --debug
+    python scripts/run_pipeline.py neis_info --year 2025 --regions B10,C10 --debug
 """
 import sys
 import subprocess
@@ -17,7 +18,8 @@ import signal
 import os
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional, List
+from typing import Optional, List, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 도메인별 병합 스크립트 매핑
 MERGE_SCRIPT_MAP = {
@@ -60,6 +62,13 @@ def prompt_year(default_year: int) -> int:
             print("\n⚠️ 사용자에 의해 중단되었습니다.")
             sys.exit(1)
 
+def parse_regions(regions_arg: str) -> List[str]:
+    """지역 코드 파싱"""
+    if regions_arg.upper() == "ALL":
+        from constants.codes import ALL_REGIONS
+        return ALL_REGIONS
+    return [r.strip() for r in regions_arg.split(",") if r.strip()]
+
 def make_env() -> dict:
     env = os.environ.copy()
     existing = env.get("PYTHONPATH", "")
@@ -77,9 +86,8 @@ def cleanup_old_logs(log_dir: Path, collector: str, days: int = 7):
             pass
 
 # 전역 상태 관리
-running = {"odd": True, "even": True}
+results = {}  # (region, shard) -> returncode
 lock = threading.Lock()
-results = {"odd": None, "even": None}
 processes = []  # 실행 중인 Popen 객체 리스트
 
 def signal_handler(sig, frame):
@@ -150,17 +158,17 @@ def run_merge(collector: str, year: int, log_dir: Path, timeout: Optional[int] =
                 if proc in processes:
                     processes.remove(proc)
 
-def run_shard(shard: str, collector: str, extra_args: List[str], year: int, timeout: Optional[int] = None):
-    """collector_cli.py를 통해 단일 샤드 실행"""
-    log_file = Path("logs") / f"{collector}_{shard}.log"
-    # collector_cli.py에 전달할 기본 인자
+def run_shard(region: str, shard: str, collector: str, extra_args: List[str], year: int, timeout: Optional[int] = None) -> Tuple[str, str, int]:
+    """collector_cli.py를 통해 단일 지역-샤드 실행"""
+    log_file = Path("logs") / f"{collector}_{region}_{shard}.log"
     cmd = [
         sys.executable, "collector_cli.py", collector,
+        "--regions", region,
         "--shard", shard,
         "--year", str(year)
     ] + extra_args
 
-    print(f"🚀 {shard} 시작 (로그: {log_file})")
+    print(f"🚀 {region} {shard} 시작 (로그: {log_file})")
     start_time = time.time()
     proc = None
     ret_code = 1
@@ -181,7 +189,7 @@ def run_shard(shard: str, collector: str, extra_args: List[str], year: int, time
                 try:
                     ret_code = proc.wait(timeout=timeout)
                 except subprocess.TimeoutExpired:
-                    print(f"⏰ {shard} 타임아웃({timeout}초) 초과, 강제 종료 중...")
+                    print(f"⏰ {region} {shard} 타임아웃({timeout}초) 초과, 강제 종료 중...")
                     proc.terminate()
                     try:
                         ret_code = proc.wait(timeout=5)
@@ -191,7 +199,7 @@ def run_shard(shard: str, collector: str, extra_args: List[str], year: int, time
             else:
                 ret_code = proc.wait()
     except Exception as e:
-        print(f"❌ {shard} 예외: {e}")
+        print(f"❌ {region} {shard} 예외: {e}")
         ret_code = 1
     finally:
         if proc is not None:
@@ -200,16 +208,9 @@ def run_shard(shard: str, collector: str, extra_args: List[str], year: int, time
                     processes.remove(proc)
 
     elapsed = time.time() - start_time
-    with lock:
-        results[shard] = ret_code
-        running[shard] = False
-        other = "even" if shard == "odd" else "odd"
-        if ret_code == 0:
-            status = f" — {other} 진행 중" if running[other] else ""
-            print(f"✅ {shard} 수집완료 ({elapsed:.1f}초){status}")
-        else:
-            if ret_code >= 0:
-                print(f"❌ {shard} 실패 (코드 {ret_code}) - 로그: {log_file}")
+    status = "✅ 성공" if ret_code == 0 else f"❌ 실패(코드 {ret_code})"
+    print(f"  {region} {shard} 완료 ({elapsed:.1f}초) {status}")
+    return region, shard, ret_code
 
 def main():
     signal.signal(signal.SIGINT, signal_handler)
@@ -219,19 +220,20 @@ def main():
     parser.add_argument("collector", help="콜렉터 이름 (neis_info, school_info, meal, timetable, schedule 등)")
     parser.add_argument("--year", type=int, help="학년도 (미지정 시 프롬프트)")
     parser.add_argument("--timeout", type=int, default=None, help="각 샤드/병합의 최대 실행 시간(초)")
+    parser.add_argument("--regions", default="ALL", help="교육청 코드 (쉼표 구분, 기본: ALL)")
     args, remaining = parser.parse_known_args()
     extra_args = list(remaining)
     if extra_args and extra_args[0] == "--":
         extra_args = extra_args[1:]
 
-    # extra_args 에서 --year 또는 --shard 가 포함되어 있다면 제거 (중복 방지)
+    # extra_args 에서 --year, --shard, --regions 등이 포함되어 있다면 제거 (중복 방지)
     filtered_args = []
     skip_next = False
     for i, arg in enumerate(extra_args):
         if skip_next:
             skip_next = False
             continue
-        if arg in ("--year", "-y", "--shard", "-s"):
+        if arg in ("--year", "-y", "--shard", "-s", "--regions", "-r"):
             # 다음 인자도 건너뜀 (값이 있다면)
             if i + 1 < len(extra_args) and not extra_args[i+1].startswith("-"):
                 skip_next = True
@@ -248,7 +250,10 @@ def main():
     else:
         year = prompt_year(get_current_school_year())
 
-    # collector_cli.py 존재 여부 확인 (선택 사항)
+    regions = parse_regions(args.regions)
+    print(f"📌 대상 지역: {regions} (총 {len(regions)}개)")
+
+    # collector_cli.py 존재 여부 확인
     if not Path("collector_cli.py").exists():
         print("❌ collector_cli.py 파일을 찾을 수 없습니다. (프로젝트 루트에 있어야 함)")
         sys.exit(1)
@@ -257,22 +262,38 @@ def main():
     log_dir.mkdir(exist_ok=True)
     cleanup_old_logs(log_dir, args.collector, days=7)
 
-    threads = []
-    for shard in ("odd", "even"):
-        t = threading.Thread(target=run_shard, args=(shard, args.collector, extra_args, year, args.timeout))
-        t.start()
-        threads.append(t)
+    # 모든 지역-샤드 조합 생성
+    tasks = []
+    for region in regions:
+        for shard in ("odd", "even"):
+            tasks.append((region, shard))
 
-    for t in threads:
-        t.join()
+    print(f"🚀 총 {len(tasks)}개 작업을 병렬로 실행합니다. (최대 동시 작업: CPU 코어 수에 따라 결정)")
 
-    odd_ok = results.get("odd") == 0
-    even_ok = results.get("even") == 0
+    # ThreadPoolExecutor로 병렬 실행
+    with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as executor:
+        future_to_task = {
+            executor.submit(run_shard, region, shard, args.collector, extra_args, year, args.timeout): (region, shard)
+            for region, shard in tasks
+        }
+        for future in as_completed(future_to_task):
+            region, shard, ret_code = future.result()
+            with lock:
+                results[(region, shard)] = ret_code
+
+    # 결과 집계
+    failed = [(r, s) for (r, s), code in results.items() if code != 0]
+    success_count = len(results) - len(failed)
 
     print("\n" + "=" * 50)
-    if odd_ok and even_ok:
-        print("🎉 모든 샤드 수집 완료! (odd ✅, even ✅)")
-        print(f"👉 수집 로그: logs/{args.collector}_odd.log, logs/{args.collector}_even.log")
+    print(f"📊 결과 요약: 성공 {success_count}/{len(tasks)}, 실패 {len(failed)}")
+    if failed:
+        print("❌ 실패한 작업:")
+        for r, s in failed:
+            print(f"  - {r} {s} (로그: logs/{args.collector}_{r}_{s}.log)")
+
+    if len(failed) == 0:
+        print("🎉 모든 지역/샤드 수집 완료!")
 
         if run_merge(args.collector, year, log_dir, timeout=args.timeout):
             print("\n✅ 전체 파이프라인(수집 + 병합) 성공적으로 완료되었습니다.")
@@ -282,8 +303,7 @@ def main():
             print(f"👉 병합 로그: logs/{args.collector}_merge.log")
             sys.exit(1)
     else:
-        print("⚠️ 일부 샤드가 실패했거나 중단되었습니다.")
-        print(f"👉 로그 확인: logs/{args.collector}_odd.log, logs/{args.collector}_even.log")
+        print(f"\n⚠️ 일부 작업이 실패했습니다. 병합을 건너뜁니다.")
         sys.exit(1)
 
 if __name__ == "__main__":
