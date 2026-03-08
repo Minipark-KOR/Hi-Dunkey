@@ -51,7 +51,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # collectors.json 대신 collector_cli.py의 COLLECTOR_MAP 사용
-from core.collector_cli import COLLECTOR_MAP
+from collector_cli import COLLECTOR_MAP
 from constants.paths import MASTER_DIR
 
 POST_RUN_CONTINUE = "continue"   # 메인 메뉴(수집기 선택)로
@@ -100,20 +100,20 @@ def select_collector(collectors: List[Dict[str, Any]]) -> Union[Dict[str, Any], 
     for i, col in enumerate(collectors, 1):
         print(f"  {i}) {col['description']}")
     print()  # 빈 줄
-    print(f"  {len(collectors)+1}) 종료")
+    print("  33) 종료")
     choice = input("선택: ").strip()
     if choice.isdigit():
-        idx = int(choice)
-        if 1 <= idx <= len(collectors):
-            logger.info(f"수집기 선택: {collectors[idx-1]['description']}")
-            return collectors[idx-1]
-        elif idx == len(collectors) + 1:
+        val = int(choice)
+        if 1 <= val <= len(collectors):
+            logger.info(f"수집기 선택: {collectors[val-1]['description']}")
+            return collectors[val-1]
+        elif val == 33:
             logger.info("종료 선택")
             return None
     logger.warning(f"잘못된 선택: {choice}")
     print(f"{RED}잘못된 선택입니다.{RESET}")
     return "retry"
-
+    
 def select_run_type() -> Union[str, None]:
     print(f"\n{YELLOW}실행 유형을 선택하세요:{RESET}")
     print("  1) 학교 기본정보 수집 (실제 수집, 전체)")
@@ -752,4 +752,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
