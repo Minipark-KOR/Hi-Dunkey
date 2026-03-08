@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-학교알리미 공공데이터 수집기
-- 한국교육학술정보원(KERIS) 학교알리미 공공데이터 API 연동
-- 마스터 수집기 (master_collectors.py) 와 완전 호환
-- 설정 기반 제어, 재시도, 샤딩, 메트릭 연동 지원
+학교알리미 공공데이터 수집기 (최종 안정화 버전)
+- 공공데이터포털 '학교알리미' API 연동
+- 시군구 코드 매핑(sgg_code_map) 통합
+- 배치 UPSERT, 인덱스 최적화, 예외 처리 강화
 """
 import os
 import sys
@@ -13,10 +13,9 @@ import logging
 import sqlite3
 import hashlib
 import argparse
-import socket
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any, Tuple
 from urllib.parse import urlencode, quote_plus
 import urllib.request
 import urllib.error
@@ -29,82 +28,86 @@ RED = "\033[91m"
 CYAN = "\033[96m"
 RESET = "\033[0m"
 
-# 기준 디렉토리 설정
-BASE_DIR = Path(__file__).parent
-CONFIG_DIR = BASE_DIR / "config"
-LOG_DIR = BASE_DIR / "logs"
-DATA_DIR = BASE_DIR / "data"
+# 프로젝트 루트 추가 (모듈 임포트용)
+BASE_DIR = Path(__file__).parent.parent
+sys.path.append(str(BASE_DIR))
 
-# 디렉토리 생성
-LOG_DIR.mkdir(exist_ok=True, parents=True)
-DATA_DIR.mkdir(exist_ok=True, parents=True)
+# ==================== 시군구 코드 매핑 임포트 ====================
+SGG_AVAILABLE = False
+SGG_NAMES = {}
+SIDO_SGG = {}   # 시도별 시군구 목록 인덱스
 
-# ==================== 로깅 설정 ====================
+# 여러 위치에서 sgg_code_map 시도
+try:
+    from core.sgg_code_map import SGG_NAMES as _map, get_sgg_name
+    SGG_NAMES = _map
+    SGG_AVAILABLE = True
+except ImportError:
+    try:
+        from collectors.sgg_code_map import SGG_NAMES as _map, get_sgg_name
+        SGG_NAMES = _map
+        SGG_AVAILABLE = True
+    except ImportError:
+        # Fallback: 강원도만 포함한 최소 매핑 (실제 운영 시 모듈 설치 권장)
+        import warnings
+        warnings.warn("sgg_code_map 모듈을 찾을 수 없습니다. 내장 최소 매핑(강원도)을 사용합니다.", UserWarning)
+        SGG_NAMES = {
+            "51110": "춘천시", "51130": "원주시", "51150": "강릉시",
+            "51170": "동해시", "51190": "태백시", "51210": "속초시",
+            "51230": "삼척시", "51720": "홍천군", "51730": "횡성군",
+            "51750": "영월군", "51760": "평창군", "51770": "정선군",
+            "51780": "철원군", "51790": "화천군", "51800": "양구군",
+            "51810": "인제군", "51820": "고성군", "51830": "양양군",
+        }
 
-def setup_logging(debug: bool = False, log_file: Optional[str] = None) -> logging.Logger:
-    """로깅 초기화 (파일 + 콘솔)"""
-    level = logging.DEBUG if debug else logging.INFO
-    
-    if log_file is None:
-        log_file = LOG_DIR / f"school_info_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-    else:
-        log_file = Path(log_file)
-        log_file.parent.mkdir(exist_ok=True, parents=True)
-    
-    # 기존 핸들러 제거 (중복 방지)
-    root_logger = logging.getLogger()
-    root_logger.handlers.clear()
-    
-    logging.basicConfig(
-        level=level,
-        format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-        handlers=[
-            logging.FileHandler(log_file, encoding='utf-8', mode='a'),
-            logging.StreamHandler(sys.stdout)
-        ],
-        force=True
-    )
-    return logging.getLogger(__name__)
+# 시도별 시군구 인덱스 구축
+for code, name in SGG_NAMES.items():
+    sido = code[:2]
+    SIDO_SGG.setdefault(sido, []).append(code)
 
-logger = setup_logging()
+logger = logging.getLogger(__name__)
 
 # ==================== 설정 및 상수 ====================
-
-# ✅ 학교알리미 공공데이터 API 엔드포인트 (공공데이터포털 기준)
-# ※ 실제 사용 시 공공데이터포털에서 발급받은 정확한 서비스 URL 로 교체 필요
-# 예시: 학교기본정보 (서비스번호 15080155)
-API_BASE_URL = "https://api.odcloud.kr/api/15080155/v1/uddi:b2790938-f909-4c8d-9304-453185350b91"
-
-# 환경변수명 (NEIS 와 혼동 방지)
+# ✅ 공백 제거된 정확한 URL (사용 시 실제 서비스 ID로 교체)
+API_UUID = "b2790938-f909-4c8d-9304-453185350b91"  # 예시 UUID
+API_BASE_URL = f"https://api.odcloud.kr/api/15080155/v1/uddi:{API_UUID}"
 API_KEY_ENV = "SCHOOLINFO_SERVICE_KEY"
 
-# 기본값 (설정 파일로 오버라이드 가능)
-DEFAULT_API_RATE_LIMIT = 5       # 공공데이터는 더 엄격한 레이트 리밋
+# API 기본 설정
+DEFAULT_API_RATE_LIMIT = 5
 DEFAULT_API_RETRY_MAX = 3
 DEFAULT_API_RETRY_DELAY = 1.0
 DEFAULT_API_TIMEOUT = 30
 
-# 지역 코드 매핑 (시도교육청 - NEIS 와 호환)
-REGION_CODES = {
-    "B10": "서울", "C10": "부산", "D10": "대구", "E10": "인천",
-    "F10": "광주", "G10": "대전", "H10": "울산", "I10": "세종",
-    "J10": "경기", "K10": "강원", "L10": "충북", "M10": "충남",
-    "N10": "전북", "O10": "전남", "P10": "경북", "Q10": "경남",
-    "R10": "제주", "S10": "외국"
+# 지역 코드 매핑 (시도교육청 코드 → 행안부 시도코드)
+REGION_TO_SIDO = {
+    "B10": "11", "C10": "26", "D10": "27", "E10": "28",
+    "F10": "29", "G10": "30", "H10": "31", "I10": "36",
+    "J10": "41", "K10": "51", "L10": "43", "M10": "44",
+    "N10": "52", "O10": "46", "P10": "47", "Q10": "48",
+    "R10": "50", "S10": "99"   # 기타는 99로 처리
 }
 
-# 학교 유형 코드
+# 학교 유형 코드 (교육청 코드와 동일)
 SCHOOL_TYPES = {
     "1": "유치원", "2": "초등학교", "3": "중학교", "4": "고등학교",
     "5": "특수학교", "6": "각종학교", "7": "대학", "8": "기타"
 }
 
-# 데이터베이스 스키마
+# 학교급 코드 (API 에 전달)
+SCHUL_KND_MAP = {
+    "02": "초등학교", "03": "중학교", "04": "고등학교",
+    "05": "특수학교", "06": "그외", "07": "각종학교"
+}
+
+# DB 스키마 + 인덱스 최적화
 DB_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schools (
     school_code TEXT PRIMARY KEY,
     school_name TEXT NOT NULL,
-    region_code TEXT NOT NULL,
+    region_code TEXT NOT NULL,          -- 시도교육청 코드 (B10 등)
+    sido_code TEXT,                      -- 행안부 시도코드 (11, 26 등)
+    sgg_code TEXT,                       -- 시군구 코드 (5자리)
     region_name TEXT,
     school_type TEXT,
     school_type_name TEXT,
@@ -123,35 +126,28 @@ CREATE TABLE IF NOT EXISTS schools (
 );
 
 CREATE INDEX IF NOT EXISTS idx_schools_region ON schools(region_code);
+CREATE INDEX IF NOT EXISTS idx_schools_sido ON schools(sido_code);
+CREATE INDEX IF NOT EXISTS idx_schools_sgg ON schools(sgg_code);
 CREATE INDEX IF NOT EXISTS idx_schools_type ON schools(school_type);
 CREATE INDEX IF NOT EXISTS idx_schools_active ON schools(is_active);
 """
 
 # ==================== 유틸리티 함수 ====================
-
 def resolve_path(path_str: str) -> Optional[str]:
-    """상대 경로를 절대 경로로 변환 (None 허용)"""
     if not path_str:
         return None
     p = Path(path_str)
     return str(p if p.is_absolute() else BASE_DIR / p)
 
 def encode_service_key(key: str) -> str:
-    """
-    공공데이터포털 API 키 URL 인코딩
-    - 401 에러 방지를 위한 필수 처리
-    - 이미 인코딩된 키는 중복 방지
-    """
-    if not key:
+    if not key or '%' in key:
         return key
-    # 이미 인코딩된 문자 (% 포함) 가 있으면 그대로 반환
-    if '%' in key:
-        return key
-    # 특수문자 인코딩
     return quote_plus(key)
 
+def region_code_to_sido(region_code: str) -> str:
+    return REGION_TO_SIDO.get(region_code, "")
+
 def get_shard_key(school_code: str, shard_mode: str) -> Optional[str]:
-    """샤딩 키 계산 (odd/even/none)"""
     if shard_mode == "none" or not school_code:
         return None
     hash_val = int(hashlib.md5(school_code.encode()).hexdigest(), 16)
@@ -162,607 +158,457 @@ def get_shard_key(school_code: str, shard_mode: str) -> Optional[str]:
     return None
 
 def should_process(school_code: str, shard_mode: str) -> bool:
-    """현재 샤드 모드에서 처리 대상인지 판단"""
     if shard_mode == "none":
         return True
     return get_shard_key(school_code, shard_mode) is not None
 
 def load_config(config_path: Optional[str]) -> Dict:
-    """추가 설정 파일 로드 (환경변수 치환 지원)"""
     if not config_path:
         return {}
-    
     config_file = Path(resolve_path(config_path))
     if not config_file.exists():
         logger.warning(f"설정 파일 없음: {config_file}")
         return {}
-    
     try:
         with open(config_file, 'r', encoding='utf-8') as f:
             config = json.load(f)
-        config = _expand_env_vars(config)
         return config
     except Exception as e:
         logger.warning(f"설정 파일 로드 실패: {e}")
         return {}
 
-def _expand_env_vars(obj: Any) -> Any:
-    """딕셔너리/리스트/문자열 내 ${VAR}를 환경변수로 치환"""
-    import re
-    if isinstance(obj, str):
-        def repl(match):
-            var_name = match.group(1)
-            return os.getenv(var_name, match.group(0))
-        return re.sub(r'\$\{(\w+)\}', repl, obj)
-    elif isinstance(obj, dict):
-        return {k: _expand_env_vars(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [_expand_env_vars(item) for item in obj]
-    return obj
+def setup_logging(debug: bool = False, log_file: Optional[str] = None) -> logging.Logger:
+    level = logging.DEBUG if debug else logging.INFO
+    if log_file is None:
+        log_dir = Path(__file__).parent / "logs"
+        log_dir.mkdir(exist_ok=True)
+        log_file = log_dir / f"schoolinfo_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    else:
+        log_file = Path(log_file)
+        log_file.parent.mkdir(exist_ok=True, parents=True)
+
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()
+
+    logging.basicConfig(
+        level=level,
+        format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+        handlers=[
+            logging.FileHandler(log_file, encoding='utf-8', mode='a'),
+            logging.StreamHandler(sys.stdout)
+        ],
+        force=True
+    )
+    return logging.getLogger(__name__)
+
+logger = setup_logging()
 
 # ==================== API 클라이언트 ====================
-
 class SchoolInfoAPI:
-    """학교알리미 공공데이터 API 클라이언트"""
-    
     def __init__(self, api_key: str, config: Dict = None):
-        # ✅ 인증키 URL 인코딩 처리 (401 에러 방지)
         self.api_key = encode_service_key(api_key)
         self.config = config or {}
-        
-        # 설정값 적용
         self.rate_limit = self.config.get('rate_limit', DEFAULT_API_RATE_LIMIT)
         self.retry_max = self.config.get('retry_max', DEFAULT_API_RETRY_MAX)
         self.retry_delay = self.config.get('retry_delay', DEFAULT_API_RETRY_DELAY)
         self.timeout = self.config.get('timeout', DEFAULT_API_TIMEOUT)
-        
         self.last_call_time = 0
         self.call_count = 0
-        
         if not api_key:
-            logger.warning(f"API 키가 설정되지 않았습니다. 환경변수 {API_KEY_ENV} 을 확인하세요.")
-    
+            logger.warning(f"API 키 없음. 환경변수 {API_KEY_ENV} 확인")
+
     def _rate_limit_wait(self):
-        """API 호출 레이트 리미팅"""
         now = time.time()
         elapsed = now - self.last_call_time
-        if elapsed < 1.0 / self.rate_limit:
-            time.sleep((1.0 / self.rate_limit) - elapsed)
+        min_interval = 1.0 / self.rate_limit
+        if elapsed < min_interval:
+            time.sleep(min_interval - elapsed)
         self.last_call_time = time.time()
         self.call_count += 1
-        if self.call_count % 100 == 0:
-            logger.debug(f"API 호출 횟수: {self.call_count}")
-    
+
     def _build_url(self, params: Dict[str, str]) -> str:
-        """API 요청 URL 구성 (공공데이터포털 파라미터 구조)"""
         base_params = {
-            "serviceKey": self.api_key,      # ← KEY → serviceKey
-            "page": "1",
-            "perPage": "100",                 # ← pSize → perPage
-            "returnType": "JSON"              # ← Type → returnType
+            "serviceKey": self.api_key,
+            "returnType": "JSON"
         }
         base_params.update(params)
         return f"{API_BASE_URL}?{urlencode(base_params)}"
-    
+
     def _fetch_with_retry(self, url: str) -> Optional[Dict]:
-        """재시도 로직 포함 API 호출"""
         for attempt in range(self.retry_max):
             try:
                 self._rate_limit_wait()
-                
-                # ✅ User-Agent 헤더 추가 (공공데이터포털 권장)
-                req = urllib.request.Request(
-                    url,
-                    headers={
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                        'Accept': 'application/json'
-                    }
-                )
-                
-                with urllib.request.urlopen(req, timeout=self.timeout) as response:
-                    data = json.loads(response.read().decode('utf-8'))
-                    return data
-                    
+                req = urllib.request.Request(url, headers={
+                    'User-Agent': 'Mozilla/5.0',
+                    'Accept': 'application/json'
+                })
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    return json.loads(resp.read().decode('utf-8'))
             except urllib.error.HTTPError as e:
-                if e.code == 401:
-                    # ✅ 401 에러: 인증키 문제 상세 안내
-                    logger.error(f"인증 실패 (401): 서비스 키 유효성 또는 URL 인코딩을 확인하세요")
-                    logger.debug(f"키 프리픽스: {self.api_key[:15]}...")
-                    return None
-                elif e.code == 429:
-                    wait_time = self.retry_delay * (2 ** attempt)
-                    logger.warning(f"레이트 리밋 초과, {wait_time:.1f} 초 대기 후 재시도...")
-                    time.sleep(wait_time)
+                if e.code == 429:
+                    wait = self.retry_delay * (2 ** attempt)
+                    logger.warning(f"레이트리밋, {wait:.1f}초 대기...")
+                    time.sleep(wait)
                     continue
-                elif e.code == 400:
-                    logger.error(f"잘못된 요청 (400): 파라미터를 확인하세요 - {e.reason}")
+                elif e.code == 401:
+                    logger.error("인증 실패 (401): 서비스키 확인")
                     return None
                 else:
                     logger.error(f"HTTP 오류 {e.code}: {e.reason}")
                     return None
-                    
             except urllib.error.URLError as e:
-                logger.warning(f"네트워크 오류, 재시도 {attempt + 1}/{self.retry_max}: {e.reason}")
+                logger.warning(f"네트워크 오류 ({attempt+1}/{self.retry_max}): {e.reason}")
                 if attempt < self.retry_max - 1:
                     time.sleep(self.retry_delay * (attempt + 1))
                     continue
                 return None
-                
-            except json.JSONDecodeError as e:
-                logger.error(f"JSON 파싱 오류: {e}")
+            except Exception as e:
+                logger.error(f"예외: {e}")
                 return None
-            
-            except socket.timeout:
-                logger.warning(f"소켓 타임아웃, 재시도 {attempt + 1}/{self.retry_max}")
-                if attempt < self.retry_max - 1:
-                    time.sleep(self.retry_delay * (attempt + 1))
-                    continue
-                return None
-        
-        logger.error(f"API 호출 최대 재시도 ({self.retry_max} 회) 초과")
+        logger.error("최대 재시도 초과")
         return None
-    
-    def fetch_schools(self, region_code: Optional[str] = None,
-                     school_type: Optional[str] = None,
-                     page: int = 1, per_page: int = 100) -> Optional[List[Dict]]:
+
+    def fetch_schools(self, sido_code: str, sgg_code: str, schul_knd_code: str,
+                      page: int = 1, per_page: int = 100) -> Optional[List[Dict]]:
         """
-        학교 정보 조회 (공공데이터포털 학교알리미 API)
-        
-        Args:
-            region_code: 시도교육청코드 (예: "B10"=서울)
-            school_type: 학교급코드 (예: "2"=초등학교)
-            page: 페이지 번호 (1 부터)
-            per_page: 페이지당 결과 수 (최대 1000 권장)
-        
-        Returns:
-            학교 정보 리스트 또는 None (실패 시)
+        학교알리미 API 호출 (파라미터: sidoCode, sggCode, schulKndCode)
+        Returns: 학교 목록 (list) 또는 None (오류)
         """
         params = {
+            "sidoCode": sido_code,
+            "sggCode": sgg_code,
+            "schulKndCode": schul_knd_code,
             "page": str(page),
             "perPage": str(per_page)
         }
-        
-        # 필터링 파라미터 (API 명세에 따라 조정 필요)
-        if region_code:
-            params["ATPT_OFCDC_SC_CODE"] = region_code
-        if school_type:
-            params["LCLAS_SC_CODE"] = school_type
-        
         url = self._build_url(params)
-        logger.debug(f"API 요청: {url[:120]}...")
-        
+        logger.debug(f"API 요청: sido={sido_code}, sgg={sgg_code}, knd={schul_knd_code}, page={page}")
         result = self._fetch_with_retry(url)
         if not result:
             return None
-        
-        # ✅ 공공데이터포털 표준 응답 구조 파싱
-        try:
-            # 성공 응답: { "data": { "currentPage": N, "totalCount": N, "list": [...] } }
-            if "data" in result and isinstance(result["data"], dict):
-                schools = result["data"].get("list", [])
-                
-                # 페이지 정보 로깅
-                total = result["data"].get("totalCount", 0)
-                current = result["data"].get("currentPage", page)
-                match = result["data"].get("matchCount", len(schools))
-                
-                logger.debug(f"페이지 {current}/{(total + per_page - 1) // per_page}: "
-                           f"{len(schools)} 건 수신 (총 {total} 건, 매칭 {match} 건)")
-                
-                return schools
-            
-            # 에러 응답: { "code": "99999", "message": "..." }
-            elif "code" in result and result.get("code") != "00000":
-                logger.warning(f"API 응답 오류 [{result.get('code')}]: {result.get('message', 'Unknown')}")
+
+        # 다양한 응답 구조 처리
+        if "data" in result and isinstance(result["data"], dict):
+            # 표준 공공데이터포털 구조
+            return result["data"].get("list", [])
+        elif "code" in result:
+            if result.get("code") == "00000":
+                # code가 성공이지만 data 키가 없는 경우
+                return result.get("list", [])
+            else:
+                logger.warning(f"API 오류 [{result.get('code')}]: {result.get('message')}")
                 return []
-            
-            # 예상치 못한 응답 구조
+        elif isinstance(result, list):
+            # 최상위가 리스트인 경우
+            return result
+        else:
             logger.warning(f"예상치 못한 응답 구조: {list(result.keys())}")
             return []
-            
-        except (KeyError, TypeError, AttributeError) as e:
-            logger.error(f"응답 파싱 오류: {e}", exc_info=True)
-            logger.debug(f"원본 응답: {json.dumps(result, ensure_ascii=False)[:200]}")
-            return None
 
-# ==================== 데이터베이스 ====================
-
+# ==================== 데이터베이스 (배치 UPSERT) ====================
 class SchoolDatabase:
-    """학교 정보 SQLite 데이터베이스"""
-    
     def __init__(self, db_path: str):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(exist_ok=True, parents=True)
         self.conn = None
         self._init_db()
-    
+
     def _init_db(self):
-        """데이터베이스 초기화 (스키마 생성)"""
         try:
             self.conn = sqlite3.connect(self.db_path)
-            self.conn.execute("PRAGMA journal_mode=WAL")  # 동시성 향상
+            self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA synchronous=NORMAL")
             self.conn.executescript(DB_SCHEMA)
             self.conn.commit()
-            logger.info(f"데이터베이스 초기화 완료: {self.db_path}")
+            logger.info(f"DB 초기화 완료: {self.db_path}")
         except sqlite3.Error as e:
             logger.error(f"DB 초기화 실패: {e}")
             raise
-    
-    def upsert_school(self, school_ Dict[str, Any]) -> bool:
+
+    def upsert_batch(self, schools: List[Tuple]) -> Tuple[int, int]:
         """
-        학교 정보 삽입 또는 업데이트 (UPSERT)
-        
-        Args:
-            school_data: API 응답에서 파싱된 학교 정보 딕셔너리
-        
-        Returns:
-            성공 시 True, 실패 시 False
+        배치 UPSERT 실행
+        schools: (school_code, school_name, region_code, sido_code, sgg_code,
+                  region_name, school_type, school_type_name, address, zip_code,
+                  phone, homepage, establishment_date, open_date, close_date,
+                  latitude, longitude, collected_at, updated_at, is_active)
+        반환: (변경된 행 수, 0) - 정확한 구분은 생략 (total_changes 사용)
+        """
+        if not schools:
+            return 0, 0
+        query = """
+        INSERT INTO schools (
+            school_code, school_name, region_code, sido_code, sgg_code,
+            region_name, school_type, school_type_name, address, zip_code,
+            phone, homepage, establishment_date, open_date, close_date,
+            latitude, longitude, collected_at, updated_at, is_active
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(school_code) DO UPDATE SET
+            school_name = excluded.school_name,
+            region_code = excluded.region_code,
+            sido_code = excluded.sido_code,
+            sgg_code = excluded.sgg_code,
+            region_name = excluded.region_name,
+            school_type = excluded.school_type,
+            school_type_name = excluded.school_type_name,
+            address = excluded.address,
+            zip_code = excluded.zip_code,
+            phone = excluded.phone,
+            homepage = excluded.homepage,
+            establishment_date = excluded.establishment_date,
+            open_date = excluded.open_date,
+            close_date = excluded.close_date,
+            latitude = excluded.latitude,
+            longitude = excluded.longitude,
+            updated_at = excluded.updated_at,
+            is_active = 1
         """
         try:
-            # ✅ 필수 필드 검증 (학교알리미 API 필드명 기준)
-            required = ["SCHUL_CODE", "SCHUL_NM", "ATPT_OFCDC_SC_CODE"]
-            if not all(k in school_data for k in required):
-                missing = [k for k in required if k not in school_data]
-                logger.warning(f"필수 필드 누락 [{school_data.get('SCHUL_CODE', 'Unknown')}]: {missing}")
-                return False
-            
-            now = datetime.now().isoformat()
-            
-            # ✅ UPSERT 쿼리 (SQLite 3.24+ 지원)
-            query = """
-            INSERT INTO schools (
-                school_code, school_name, region_code, region_name,
-                school_type, school_type_name, address, zip_code,
-                phone, homepage, establishment_date, open_date, close_date,
-                latitude, longitude, collected_at, updated_at, is_active
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(school_code) DO UPDATE SET
-                school_name = excluded.school_name,
-                region_name = excluded.region_name,
-                school_type_name = excluded.school_type_name,
-                address = excluded.address,
-                zip_code = excluded.zip_code,
-                phone = excluded.phone,
-                homepage = excluded.homepage,
-                establishment_date = excluded.establishment_date,
-                open_date = excluded.open_date,
-                close_date = excluded.close_date,
-                latitude = excluded.latitude,
-                longitude = excluded.longitude,
-                updated_at = excluded.updated_at,
-                is_active = 1
-            """
-            
-            # ✅ 필드 매핑 (학교알리미 API 응답 → DB 컬럼)
-            # ※ 실제 API 응답 필드명에 맞게 조정 필요
-            values = (
-                school_data.get("SCHUL_CODE"),                    # 학교코드
-                school_data.get("SCHUL_NM"),                      # 학교명
-                school_data.get("ATPT_OFCDC_SC_CODE"),            # 시도교육청코드
-                REGION_CODES.get(school_data.get("ATPT_OFCDC_SC_CODE")),  # 지역명
-                school_data.get("LCLAS_SC_CODE"),                 # 학교급코드
-                SCHOOL_TYPES.get(school_data.get("LCLAS_SC_CODE")),  # 학교급명
-                school_data.get("ADDR"),                          # 주소
-                school_data.get("POST"),                          # 우편번호
-                school_data.get("TELNO"),                         # 전화번호
-                school_data.get("HMPG_ADDR"),                     # 홈페이지
-                school_data.get("FNDT_YMD"),                      # 개교연월일
-                school_data.get("OPEN_YMD"),                      # 개교일자
-                school_data.get("CLOSE_YMD"),                     # 폐교일자
-                self._parse_coord(school_data.get("SCNL_LAT")),   # 위도
-                self._parse_coord(school_data.get("SCNL_LON")),   # 경도
-                now,                                               # collected_at
-                now,                                               # updated_at
-                1                                                  # is_active
-            )
-            
-            self.conn.execute(query, values)
+            self.conn.executemany(query, schools)
             self.conn.commit()
-            return True
-            
+            changes = self.conn.total_changes
+            return changes, 0
         except sqlite3.Error as e:
-            logger.error(f"DB 업서트 실패 [{school_data.get('SCHUL_CODE')}]: {e}")
+            logger.error(f"배치 UPSERT 오류: {e}")
             self.conn.rollback()
-            return False
-    
-    def _parse_coord(self, value: Optional[str]) -> Optional[float]:
-        """좌표 문자열을 float 로 파싱"""
-        if not value:
-            return None
+            return 0, 0
+
+    def get_count(self, where: str = "", params: tuple = ()) -> int:
         try:
-            return float(value)
-        except (ValueError, TypeError):
-            return None
-    
-    def get_count(self, where_clause: str = "", params: tuple = ()) -> int:
-        """레코드 수 조회 (조건부 지원)"""
-        try:
-            query = f"SELECT COUNT(*) FROM schools WHERE is_active = 1"
-            if where_clause:
-                query += f" AND {where_clause}"
-            cursor = self.conn.execute(query, params)
-            return cursor.fetchone()[0]
+            sql = "SELECT COUNT(*) FROM schools WHERE is_active = 1"
+            if where:
+                sql += f" AND {where}"
+            cur = self.conn.execute(sql, params)
+            return cur.fetchone()[0]
         except sqlite3.Error as e:
-            logger.error(f"레코드 수 조회 실패: {e}")
+            logger.error(f"카운트 실패: {e}")
             return 0
-    
+
     def close(self):
-        """데이터베이스 연결 종료"""
         if self.conn:
             self.conn.close()
             logger.debug("DB 연결 종료")
 
-# ==================== 수집기 메인 로직 ====================
-
+# ==================== 수집기 ====================
 class SchoolInfoCollector:
-    """학교알리미 정보 수집기"""
-    
     def __init__(self, args: argparse.Namespace, config: Optional[Dict] = None):
         self.args = args
         self.config = config or {}
-        
-        # 로깅 레벨 설정 (재할당 대신 레벨만 조정)
         if args.debug:
             root_logger = logging.getLogger()
             root_logger.setLevel(logging.DEBUG)
-            for handler in root_logger.handlers:
-                handler.setLevel(logging.DEBUG)
-            logger.setLevel(logging.DEBUG)
-        
-        # API 클라이언트 초기화 (설정 전달)
+            for h in root_logger.handlers:
+                h.setLevel(logging.DEBUG)
         api_key = os.getenv(API_KEY_ENV, "")
         api_config = self.config.get('api', {})
         self.api = SchoolInfoAPI(api_key, api_config)
-        
-        # 데이터베이스 초기화
         db_path = args.db_path or self.config.get('db_path', 'data/school_info.db')
-        resolved_path = resolve_path(db_path)
-        if resolved_path is None:
-            raise ValueError("db_path cannot be None")
-        self.db = SchoolDatabase(resolved_path)
-        
-        # 수집 통계
+        resolved = resolve_path(db_path)
+        if not resolved:
+            raise ValueError("db_path 없음")
+        self.db = SchoolDatabase(resolved)
         self.stats = {
-            "total_processed": 0,
-            "total_inserted": 0,
-            "total_updated": 0,
-            "total_errors": 0,
-            "regions_processed": set()
+            "total": 0, "inserted": 0, "updated": 0, "errors": 0,
+            "regions": set()
         }
-    
-    def collect_region(self, region_code: str, school_type: Optional[str] = None,
-                      limit: Optional[int] = None) -> bool:
-        """단일 지역 수집"""
-        region_name = REGION_CODES.get(region_code, region_code)
-        type_name = SCHOOL_TYPES.get(school_type, "전체") if school_type else "전체"
-        logger.info(f"수집 시작: {region_name} (학교급: {type_name})")
-        
-        page = 1
-        collected_count = 0
-        per_page = 100  # API 권장값
-        
-        while True:
-            # 페이지 단위 조회
-            schools = self.api.fetch_schools(
-                region_code=region_code,
-                school_type=school_type,
-                page=page,
-                per_page=per_page
-            )
-            
-            if schools is None:
-                logger.error(f"지역 {region_code} 페이지 {page} 조회 실패")
-                return False
-            
-            if not schools:
-                logger.debug(f"지역 {region_code} 추가 데이터 없음 (페이지 {page})")
+        self.batch_size = self.config.get('batch_size', args.batch_size or 100)
+        self.batch_buffer = []
+
+    def _flush_batch(self):
+        """버퍼에 쌓인 데이터를 DB 에 저장"""
+        if not self.batch_buffer:
+            return
+        inserted, updated = self.db.upsert_batch(self.batch_buffer)
+        self.stats["total"] += inserted + updated
+        self.stats["inserted"] += inserted  # 실제 구분은 어려우나 대략
+        self.batch_buffer = []
+        logger.debug(f"배치 저장 완료 (누적: {self.stats['total']} 건)")
+
+    def _parse_float(self, val: Optional[str], field: str = "") -> Optional[float]:
+        if not val:
+            return None
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            if field:
+                logger.debug(f"{field} 좌표 파싱 실패: '{val}'")
+            return None
+
+    def _process_school(self, school: Dict, sido_code: str, sgg_code: str, schul_knd_code: str):
+        """단일 학교 데이터 처리 (배치에 추가)"""
+        school_code = school.get("SCHUL_CODE")
+        if not school_code:
+            logger.warning("SCHUL_CODE 없음, 건너뜀")
+            self.stats["errors"] += 1
+            return
+        if not should_process(school_code, self.args.shard):
+            return
+        now = datetime.now().isoformat()
+
+        school_name = school.get("SCHUL_NM", "")
+        region_code = school.get("ATPT_OFCDC_SC_CODE", "")
+        school_type = schul_knd_code  # API에서 받은 학교급 코드
+        school_type_name = SCHUL_KND_MAP.get(schul_knd_code, "")
+        address = school.get("SCHUL_RDNMA") or school.get("SCHUL_LNMAD") or ""
+        zip_code = school.get("SCHUL_RDNZC") or ""
+        phone = school.get("USER_TELNO") or ""
+        homepage = school.get("HMPG_ADRES") or ""
+        est_date = school.get("FOND_YMD") or ""
+        open_date = school.get("OPEN_YMD") or ""
+        close_date = school.get("CLOSE_YMD") or ""
+        lat = self._parse_float(school.get("LTTUD"), "latitude")
+        lon = self._parse_float(school.get("LGTUD"), "longitude")
+        region_name = ""  # 필요시 채움
+
+        self.batch_buffer.append((
+            school_code,
+            school_name,
+            region_code,
+            sido_code,
+            sgg_code,
+            region_name,
+            school_type,
+            school_type_name,
+            address,
+            zip_code,
+            phone,
+            homepage,
+            est_date,
+            open_date,
+            close_date,
+            lat,
+            lon,
+            now,
+            now,
+            1
+        ))
+        if len(self.batch_buffer) >= self.batch_size:
+            self._flush_batch()
+
+    def collect_sido_sgg(self, sido_code: str, sgg_code: str, schul_knd_codes: List[str],
+                         limit: Optional[int] = None) -> int:
+        """하나의 시도-시군구-학교급 조합 수집"""
+        collected = 0
+        for knd in schul_knd_codes:
+            if limit and collected >= limit:
                 break
-            
-            # 각 학교 처리
-            for school in schools:
-                school_code = school.get("SCHUL_CODE")
-                
-                # 샤딩 필터
-                if not should_process(school_code, self.args.shard):
-                    continue
-                
-                # 제한 개수 체크
-                if limit and collected_count >= limit:
-                    logger.info(f"수집 제한 도달 ({limit} 건)")
-                    return True
-                
-                # 데이터 저장
-                if self.db.upsert_school(school):
-                    self.stats["total_processed"] += 1
-                    collected_count += 1
-                    self.stats["total_inserted"] += 1  # UPSERT 이므로 단순 카운트
-                else:
-                    self.stats["total_errors"] += 1
-                
-                # 진행 상황 로그
-                if self.stats["total_processed"] % 100 == 0:
-                    logger.info(f"진행: {self.stats['total_processed']} 건 처리 완료")
-            
-            page += 1
-            
-            # 디버그 모드: 1 페이지만 테스트
-            if self.args.debug and page > 1:
-                logger.debug("디버그 모드: 1 페이지만 수집")
-                break
-        
-        self.stats["regions_processed"].add(region_code)
-        logger.info(f"지역 {region_name} 수집 완료: {collected_count} 건")
-        return True
-    
+            page = 1
+            while True:
+                schools = self.api.fetch_schools(sido_code, sgg_code, knd, page=page, per_page=100)
+                if schools is None:
+                    logger.error(f"API 실패: {sido_code}-{sgg_code}-{knd} page {page}")
+                    break
+                if not schools:
+                    logger.debug(f"데이터 없음: {sido_code}-{sgg_code}-{knd} page {page}")
+                    break
+                for school in schools:
+                    if limit and collected >= limit:
+                        break
+                    # 시도/시군구 코드 수동 주입
+                    school["sidoCode"] = sido_code
+                    school["sggCode"] = sgg_code
+                    self._process_school(school, sido_code, sgg_code, knd)
+                    collected += 1
+                page += 1
+                time.sleep(0.1)  # 페이지 간 휴식
+                if self.args.debug and page > 1:
+                    break
+        return collected
+
     def collect_all(self, limit: Optional[int] = None) -> bool:
-        """전체 지역 수집"""
-        # 지역 필터 적용
+        # 수집 대상 시도 결정
         if self.args.regions:
-            regions = [r.strip() for r in self.args.regions.split(',') if r.strip()]
+            # 사용자가 시도코드 직접 지정 (예: 11,26)
+            sido_list = [r.strip() for r in self.args.regions.split(',') if r.strip()]
+        elif SIDO_SGG:
+            sido_list = list(SIDO_SGG.keys())
         else:
-            regions = list(REGION_CODES.keys())
-        
-        # 학교급 필터 적용
-        school_types = None
+            logger.error("수집할 시도코드를 지정하세요 (--regions) 또는 sgg_code_map 설치")
+            return False
+
+        # 학교급 코드
         if self.args.school_type:
-            school_types = [t.strip() for t in self.args.school_type.split(',') if t.strip()]
-        
-        logger.info(f"수집 대상: 지역 {len(regions)} 개, 학교급 {school_types or '전체'}")
-        
-        success = True
-        for region in regions:
-            if school_types:
-                for st in school_types:
-                    if not self.collect_region(region, school_type=st, limit=limit):
-                        success = False
-                        logger.error(f"지역 {region} 학교급 {st} 수집 실패, 계속 진행...")
+            knd_list = [t.strip() for t in self.args.school_type.split(',') if t.strip()]
+        else:
+            knd_list = list(SCHUL_KND_MAP.keys())
+
+        logger.info(f"수집 대상: 시도 {len(sido_list)}개, 학교급 {len(knd_list)}개")
+
+        for sido in sido_list:
+            if limit and self.stats["total"] >= limit:
+                break
+            # 시도에 속한 시군구 목록
+            if SIDO_SGG and sido in SIDO_SGG:
+                sgg_list = SIDO_SGG[sido]
             else:
-                if not self.collect_region(region, limit=limit):
-                    success = False
-                    logger.error(f"지역 {region} 수집 실패, 계속 진행...")
-        
-        return success
-    
+                logger.warning(f"시도 {sido}의 시군구 매핑 없음, 전체('00000')로 시도")
+                sgg_list = ["00000"]
+            for sgg in sgg_list:
+                if limit and self.stats["total"] >= limit:
+                    break
+                collected = self.collect_sido_sgg(sido, sgg, knd_list, limit)
+                if collected:
+                    logger.info(f"✓ {sido}-{sgg}: {collected} 건")
+                time.sleep(0.5)  # 시군구 변경 시 휴식
+
+        # 마지막 배치 저장
+        self._flush_batch()
+        return True
+
     def print_summary(self):
-        """수집 결과 요약 출력"""
         print(f"\n{BLUE}{'='*50}{RESET}")
         print(f"{BLUE}📊 수집 결과 요약{RESET}")
         print(f"{BLUE}{'='*50}{RESET}")
-        print(f"   총 처리: {self.stats['total_processed']} 건")
-        print(f"   신규/업데이트: {self.stats['total_inserted']} 건")
-        print(f"   오류: {self.stats['total_errors']} 건")
-        print(f"   처리 지역: {len(self.stats['regions_processed'])} 개")
-        
-        total_in_db = self.db.get_count()
-        print(f"   DB 총 레코드: {total_in_db} 건")
+        print(f"   총 처리: {self.stats['total']} 건")
+        print(f"   신규/갱신: {self.stats['inserted']} 건 (변경 기준)")
+        print(f"   오류: {self.stats['errors']} 건")
+        print(f"   처리 지역: {len(self.stats['regions'])} 개")
+        total = self.db.get_count()
+        print(f"   DB 총 레코드: {total} 건")
         print(f"{BLUE}{'='*50}{RESET}\n")
-        
-        logger.info(f"수집 완료: 처리 {self.stats['total_processed']}, DB 총 {total_in_db}")
-    
+
     def run(self) -> int:
-        """수집 실행 (메인 엔트리포인트)"""
-        start_time = time.time()
-        logger.info(f"수집 시작: 샤드={self.args.shard}, 제한={self.args.limit}, 디버그={self.args.debug}")
-        
+        start = time.time()
+        logger.info(f"시작: 샤드={self.args.shard}, 제한={self.args.limit}")
         try:
-            success = self.collect_all(limit=self.args.limit)
+            success = self.collect_all(self.args.limit)
             self.print_summary()
-            
-            elapsed = time.time() - start_time
-            logger.info(f"수집 완료: {elapsed:.1f} 초 소요")
-            
+            logger.info(f"완료: {time.time()-start:.1f}초")
             return 0 if success else 1
-            
         except KeyboardInterrupt:
-            logger.warning("사용자에 의해 수집 중단")
-            print(f"\n{YELLOW}⚠️ 수집이 중단되었습니다.{RESET}")
+            logger.warning("사용자 중단")
             self.print_summary()
-            return 130  # SIGINT exit code
+            return 130
         except Exception as e:
-            logger.error(f"수집 중 예외 발생: {e}", exc_info=True)
-            print(f"{RED}❌ 오류 발생: {e}{RESET}")
+            logger.error(f"수집 중 오류: {e}", exc_info=True)
             return 1
         finally:
+            # 항상 미처리 배치 저장 후 종료
+            self._flush_batch()
             self.db.close()
 
-# ==================== CLI 파서 ====================
-
-def parse_args() -> argparse.Namespace:
-    """명령줄 인자 파싱"""
-    parser = argparse.ArgumentParser(
-        description="학교알리미 공공데이터 학교 기본정보 수집기",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-예시:
-  # 전체 지역 수집
-  %(prog)s
-
-  # 서울, 경기 지역만 수집
-  %(prog)s --regions B10,J10
-
-  # 테스트 모드 (50 건 제한 + 디버그)
-  %(prog)s --limit 50 --debug
-
-  # odd 샤드만 수집 (병렬 처리용)
-  %(prog)s --shard odd
-
-  # 중고등학교만 수집
-  %(prog)s --school-type 3,4
-
-환경변수:
-  SCHOOLINFO_SERVICE_KEY: 공공데이터포털 서비스 키 (필수, URL 인코딩 자동 처리)
-        """
-    )
-    
-    # 수집 옵션
-    parser.add_argument(
-        '--regions', '-r',
-        type=str,
-        help='수집 대상 지역 코드 (쉼표 구분, 예: B10,J10). 기본값: 전체'
-    )
-    parser.add_argument(
-        '--school-type', '-t',
-        type=str,
-        help='수집 대상 학교 유형 코드 (쉼표 구분, 예: 2,3,4). 기본값: 전체'
-    )
-    parser.add_argument(
-        '--limit', '-l',
-        type=int,
-        help='수집 제한 개수 (테스트용). 기본값: 전체'
-    )
-    
-    # 실행 모드
-    parser.add_argument(
-        '--shard', '-s',
-        choices=['none', 'odd', 'even'],
-        default='none',
-        help='샤딩 모드: none(통합), odd, even. 기본값: none'
-    )
-    parser.add_argument(
-        '--debug', '-d',
-        action='store_true',
-        help='디버그 모드 (상세 로그 출력)'
-    )
-    
-    # 출력 옵션
-    parser.add_argument(
-        '--db-path',
-        type=str,
-        help='데이터베이스 파일 경로. 기본값: data/school_info.db'
-    )
-    parser.add_argument(
-        '--log-file',
-        type=str,
-        help='로그 파일 경로'
-    )
-    parser.add_argument(
-        '--config',
-        type=str,
-        help='추가 설정 파일 경로 (JSON, 환경변수 ${VAR} 치환 지원)'
-    )
-    
-    return parser.parse_args()
-
-# ==================== 메인 ====================
+# ==================== CLI ====================
+def parse_args():
+    p = argparse.ArgumentParser(description="학교알리미 수집기")
+    p.add_argument('--regions', '-r', help='시도코드 (쉼표 구분, 예: 11,26)')
+    p.add_argument('--school-type', '-t', help='학교급코드 (쉼표 구분, 02,03,04)')
+    p.add_argument('--limit', '-l', type=int, help='제한 개수')
+    p.add_argument('--shard', '-s', choices=['none','odd','even'], default='none')
+    p.add_argument('--debug', '-d', action='store_true')
+    p.add_argument('--db-path', help='DB 경로')
+    p.add_argument('--log-file', help='로그 파일')
+    p.add_argument('--config', help='설정 파일')
+    p.add_argument('--batch-size', type=int, default=100, help='배치 크기 (기본 100)')
+    return p.parse_args()
 
 def main():
-    """메인 엔트리포인트"""
     args = parse_args()
-    
-    # 설정 파일 로드 (환경변수 치환 포함)
     config = load_config(args.config)
-    
-    # 설정값을 로깅에 반영 (선택)
     if config.get('logging', {}).get('level') == 'DEBUG':
         args.debug = True
-    
-    # 수집기 실행
     collector = SchoolInfoCollector(args, config)
-    exit_code = collector.run()
-    
-    sys.exit(exit_code)
+    sys.exit(collector.run())
 
 if __name__ == "__main__":
     main()
-        
+    
