@@ -15,6 +15,7 @@ import sqlite3
 import shlex
 import re
 from enum import Enum, auto
+from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Union, Tuple
@@ -49,19 +50,31 @@ LOG_DIR.mkdir(exist_ok=True)
 # 상수 정의
 class MenuResult(Enum):
     """메뉴 선택 결과를 명확히 표현하는 Enum"""
-    CONTINUE = auto()   # 메인 메뉴(수집기 선택)로
-    EXIT = auto()       # 프로그램 종료
-    BACK = auto()       # 이전 메뉴로
-    DEBUG = auto()      # 디버그 모드 재실행
-    RESTART = auto()    # 처음으로 (수집기 선택)
-    RETRY = auto()      # 잘못된 입력, 재시도
+    STAY = auto()               # 현재 메뉴 유지 (예: 후속 작업 메뉴에서 계속)
+    GO_TO_COLLECTOR = auto()     # 수집기 선택 메뉴로 이동
+    BACK = auto()                # 이전 메뉴로 이동 (예: 실행 유형 선택)
+    EXIT = auto()                # 프로그램 종료
+    DEBUG = auto()               # 디버그 모드로 재실행
+    RESTART = auto()             # 처음으로 (수집기 선택)
+    RETRY = auto()               # 잘못된 입력, 재시도
 
-POST_RUN_CONTINUE = MenuResult.CONTINUE
-POST_RUN_EXIT = MenuResult.EXIT
-POST_RUN_BACK = MenuResult.BACK
-POST_RUN_DEBUG = MenuResult.DEBUG
-INPUT_RETRY = "retry"
-INPUT_RESTART = "restart"
+class CollectionMode(Enum):
+    """수집 모드 Enum"""
+    INTEGRATED = "통합"
+    SHARD_ODD = "odd 샤드"
+    SHARD_EVEN = "even 샤드"
+    PARALLEL = "병렬 실행"
+
+@dataclass
+class ActionContext:
+    """후속 작업 액션에 전달되는 컨텍스트"""
+    collector: Dict[str, Any]
+    args: List[str]
+    mode: str
+    run_type: str
+    all_collectors: List[Dict[str, Any]]
+    last_args: Optional[List[str]] = None
+    last_mode: Optional[str] = None
 
 ALLOWED_TABLES = {'schools', 'meals', 'timetable', 'schedule', 'staff'}
 
@@ -177,10 +190,17 @@ def select_run_type() -> Union[str, MenuResult]:
     print(f"{RED}잘못된 선택입니다.{RESET}")
     return MenuResult.RETRY
 
-def select_mode(collector: Dict[str, Any]) -> Union[str, MenuResult]:
+def select_mode(collector: Dict[str, Any]) -> Union[CollectionMode, MenuResult]:
     """수집 방식 선택 메뉴"""
     print(f"\n{YELLOW}수집 방식을 선택하세요 ({collector['description']}):{RESET}")
     modes = collector.get('modes', ['통합', 'odd 샤드', 'even 샤드', '병렬 실행'])
+    # modes 리스트를 CollectionMode에 매핑 (순서 중요)
+    mode_map = {
+        1: CollectionMode.INTEGRATED,
+        2: CollectionMode.SHARD_ODD,
+        3: CollectionMode.SHARD_EVEN,
+        4: CollectionMode.PARALLEL,
+    }
     for i, mode in enumerate(modes, 1):
         print(f"  {i}) {mode}")
     print()  # 빈 줄
@@ -191,8 +211,9 @@ def select_mode(collector: Dict[str, Any]) -> Union[str, MenuResult]:
     if choice.isdigit():
         val = int(choice)
         if 1 <= val <= len(modes):
-            logger.info(f"수집 방식 선택: {modes[val-1]}")
-            return modes[val-1]
+            selected = mode_map[val]
+            logger.info(f"수집 방식 선택: {selected.value}")
+            return selected
         elif val == 11:
             return MenuResult.BACK
         elif val == 22:
@@ -242,7 +263,7 @@ def validate_region_input(regions: str) -> bool:
     """지역 코드 입력 형식 검증 (예: B10,C10,J10)"""
     return bool(re.match(r'^[A-Z]\d{2}(,[A-Z]\d{2})*$', regions.strip()))
 
-def menu_advanced_mode() -> Tuple[Optional[List[str]], bool]:
+def menu_advanced_mode() -> Tuple[Optional[List[str]], bool, Optional[MenuResult]]:
     """고급 모드 메뉴형 옵션 선택"""
     args = []
     print(f"\n{YELLOW}[고급 모드 메뉴형] 옵션을 선택하세요.{RESET}")
@@ -276,10 +297,11 @@ def menu_advanced_mode() -> Tuple[Optional[List[str]], bool]:
                 args.extend(['--shard', 'none'])
                 is_parallel = False
                 logger.info("샤드 모드: 통합")
+            return args, is_parallel, None
         elif val == 11:
-            return None, False
+            return None, False, MenuResult.BACK
         elif val == 22:
-            return [INPUT_RESTART], False
+            return None, False, MenuResult.RESTART
         elif val == 33:
             logger.info("종료 선택")
             sys.exit(0)
@@ -307,9 +329,9 @@ def menu_advanced_mode() -> Tuple[Optional[List[str]], bool]:
         args.append('--debug')
         logger.info("디버그 모드 ON")
 
-    return args, is_parallel
+    return args, is_parallel, None
 
-def direct_advanced_mode() -> Optional[List[str]]:
+def direct_advanced_mode() -> Union[List[str], MenuResult, None]:
     """고급 모드 직접 입력 옵션"""
     print(f"\n{YELLOW}[고급 모드 직접 입력] 원하는 옵션을 한 줄로 입력하세요.{RESET}")
     print("예시: --shard odd --regions B10 --limit 50 --debug")
@@ -321,9 +343,9 @@ def direct_advanced_mode() -> Optional[List[str]]:
     if custom.isdigit():
         val = int(custom)
         if val == 11:
-            return None
+            return MenuResult.BACK
         elif val == 22:
-            return [INPUT_RESTART]
+            return MenuResult.RESTART
         elif val == 33:
             logger.info("종료 선택")
             sys.exit(0)
@@ -417,31 +439,31 @@ def get_table_count(db_path: str, table_name: str) -> Optional[int]:
         logger.error(f"DB 조회 실패 {db_path}: {e}")
         return None
 
-def execute_collection(collector: Dict[str, Any], args: List[str], mode: str, run_type: str) -> bool:
+def execute_collection(collector: Dict[str, Any], args: List[str], mode: CollectionMode, run_type: str) -> bool:
     """선택된 모드에 따라 수집 실행"""
     is_dry_run = (run_type == '6')
     timeout = collector.get('timeout_seconds')
     parallel_timeout = collector.get('parallel_timeout_seconds')
 
-    if mode == "통합":
+    if mode == CollectionMode.INTEGRATED:
         full_args = args + ['--shard', 'none']
         if is_dry_run:
             return dry_run_cmd("collector_cli.py", [collector['name']] + full_args)
         else:
             return run_collector(collector['name'], full_args, timeout)
-    elif "odd" in mode:
+    elif mode == CollectionMode.SHARD_ODD:
         full_args = args + ['--shard', 'odd']
         if is_dry_run:
             return dry_run_cmd("collector_cli.py", [collector['name']] + full_args)
         else:
             return run_collector(collector['name'], full_args, timeout)
-    elif "even" in mode:
+    elif mode == CollectionMode.SHARD_EVEN:
         full_args = args + ['--shard', 'even']
         if is_dry_run:
             return dry_run_cmd("collector_cli.py", [collector['name']] + full_args)
         else:
             return run_collector(collector['name'], full_args, timeout)
-    elif "병렬" in mode:
+    elif mode == CollectionMode.PARALLEL:
         parallel_script = collector.get('parallel_script')
         if is_dry_run:
             if parallel_script:
@@ -464,10 +486,11 @@ def execute_collection(collector: Dict[str, Any], args: List[str], mode: str, ru
         return False
 
 # ====== 후속 작업 기능별 분리 ======
-def check_data_integrity(collector: Dict[str, Any], **kwargs) -> MenuResult:
+def check_data_integrity(ctx: ActionContext) -> MenuResult:
     """데이터 무결성 확인"""
     logger.info("데이터 무결성 확인 선택")
     print(f"\n{BLUE}📊 데이터 무결성 확인{RESET}")
+    collector = ctx.collector
     db_path = collector.get('db_path')
     table = collector['table_name']
     total_db = None
@@ -501,11 +524,12 @@ def check_data_integrity(collector: Dict[str, Any], **kwargs) -> MenuResult:
             print(f"{YELLOW}   통합 DB가 없어 비교 불가{RESET}")
     elif odd_count is not None or even_count is not None:
         print(f"{YELLOW}   하나의 샤드만 존재합니다.{RESET}")
-    return MenuResult.CONTINUE
+    return MenuResult.STAY
 
-def execute_merge(collector: Dict[str, Any], **kwargs) -> MenuResult:
+def execute_merge(ctx: ActionContext) -> MenuResult:
     """병합 실행"""
     logger.info("병합 실행 선택")
+    collector = ctx.collector
     merge_script = collector.get('merge_script')
     if merge_script and os.path.exists(merge_script):
         merge_timeout = collector.get('merge_timeout_seconds', 1800)
@@ -526,9 +550,9 @@ def execute_merge(collector: Dict[str, Any], **kwargs) -> MenuResult:
     else:
         logger.warning("병합 스크립트 없음")
         print(f"{RED}❌ 병합 스크립트가 없습니다.{RESET}")
-    return MenuResult.CONTINUE
+    return MenuResult.STAY
 
-def export_data(collector: Dict[str, Any], **kwargs) -> MenuResult:
+def export_data(ctx: ActionContext) -> MenuResult:
     """데이터 내보내기"""
     logger.info("데이터 내보내기 선택")
     print(f"\n{BLUE}📤 데이터 내보내기{RESET}")
@@ -537,7 +561,7 @@ def export_data(collector: Dict[str, Any], **kwargs) -> MenuResult:
     except ImportError:
         logger.error("exporters 모듈을 찾을 수 없습니다.")
         print(f"{RED}❌ 내보내기 모듈이 없습니다. exporters/ 디렉토리를 생성하고 필요한 파일을 넣어주세요.{RESET}")
-        return MenuResult.CONTINUE
+        return MenuResult.STAY
 
     print("\n내보낼 지역을 선택하세요 (기본: 전체):")
     for code, name in get_all_regions():
@@ -554,6 +578,7 @@ def export_data(collector: Dict[str, Any], **kwargs) -> MenuResult:
     format_map = {'1': 'excel', '2': 'json', '3': 'csv', '4': 'text'}
     report_format = format_map.get(format_choice, 'json')
 
+    collector = ctx.collector
     try:
         db_path = collector.get('db_path')
         table_name = collector['table_name']
@@ -586,14 +611,15 @@ def export_data(collector: Dict[str, Any], **kwargs) -> MenuResult:
     except Exception as e:
         logger.error(f"내보내기 중 오류: {e}", exc_info=True)
         print(f"{RED}❌ 내보내기 실패: {e}{RESET}")
-    return MenuResult.CONTINUE
+    return MenuResult.STAY
 
-def generate_single_metrics(collector: Dict[str, Any], **kwargs) -> MenuResult:
+def generate_single_metrics(ctx: ActionContext) -> MenuResult:
     """단일 수집기 메트릭 생성"""
+    collector = ctx.collector
     logger.info(f"{collector['name']} 메트릭 생성 선택")
     if not collector.get('metrics_config', {}).get('enabled', False):
         print(f"{YELLOW}⚠️ {collector['name']}의 메트릭 생성이 비활성화되어 있습니다.{RESET}")
-        return MenuResult.CONTINUE
+        return MenuResult.STAY
     backup_date = datetime.now().strftime("%Y%m%d_%H%M")
     metrics_dir = BASE_DIR / "metrics"
     domain_config = {
@@ -624,15 +650,15 @@ def generate_single_metrics(collector: Dict[str, Any], **kwargs) -> MenuResult:
     except Exception as e:
         logger.error(f"메트릭 생성 중 예외: {e}", exc_info=True)
         print(f"{RED}❌ 메트릭 생성 실패: {e}{RESET}")
-    return MenuResult.CONTINUE
+    return MenuResult.STAY
 
-def generate_all_metrics(collector: Dict[str, Any], all_collectors: List[Dict[str, Any]], **kwargs) -> MenuResult:
+def generate_all_metrics(ctx: ActionContext) -> MenuResult:
     """모든 수집기 메트릭 일괄 생성"""
     logger.info("모든 수집기 메트릭 일괄 생성 선택")
-    enabled_collectors = [c for c in all_collectors if c.get('metrics_config', {}).get('enabled', False)]
+    enabled_collectors = [c for c in ctx.all_collectors if c.get('metrics_config', {}).get('enabled', False)]
     if not enabled_collectors:
         print(f"{YELLOW}⚠️ 활성화된 메트릭 생성 수집기가 없습니다.{RESET}")
-        return MenuResult.CONTINUE
+        return MenuResult.STAY
     domain_config = {}
     for c in enabled_collectors:
         domain_config[c['name']] = {
@@ -665,34 +691,34 @@ def generate_all_metrics(collector: Dict[str, Any], all_collectors: List[Dict[st
     except Exception as e:
         logger.error(f"전체 메트릭 생성 중 예외: {e}", exc_info=True)
         print(f"{RED}❌ 전체 메트릭 생성 실패: {e}{RESET}")
-    return MenuResult.CONTINUE
+    return MenuResult.STAY
 
-def view_logs(collector: Dict[str, Any], **kwargs) -> MenuResult:
-    """수집기 로그 확인"""
+def view_logs(ctx: ActionContext) -> MenuResult:
+    """수집기 로그 확인 (크로스 플랫폼 호환)"""
     logger.info("로그 확인 선택")
-    log_file = Path("logs") / f"{collector['name']}.log"
+    log_file = Path("logs") / f"{ctx.collector['name']}.log"
     if log_file.exists():
         print(f"\n{BLUE}📄 로그 파일: {log_file}{RESET}")
         try:
-            # 최근 50줄 출력
-            result = subprocess.run(['tail', '-n', '50', str(log_file)], capture_output=True, text=True)
-            print(result.stdout)
+            with open(log_file, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                print(''.join(lines[-50:]))  # 최근 50줄
         except Exception as e:
             print(f"{RED}로그 읽기 실패: {e}{RESET}")
     else:
         print(f"{YELLOW}⚠️ 로그 파일이 없습니다: {log_file}{RESET}")
-    return MenuResult.CONTINUE
+    return MenuResult.STAY
 
-def debug_rerun(collector: Dict[str, Any], args: List[str], mode: str, run_type: str, **kwargs) -> Tuple[MenuResult, Optional[List[str]]]:
-    """디버그 모드 재실행"""
+def debug_rerun(ctx: ActionContext) -> Tuple[MenuResult, Optional[List[str]]]:
+    """디버그 모드 재실행 (args 업데이트 후 DEBUG 반환)"""
     logger.info("디버그 모드로 재실행 선택")
-    if args is None or mode is None:
+    if ctx.args is None or ctx.mode is None:
         print(f"{RED}❌ 재실행에 필요한 정보가 없습니다.{RESET}")
-        return MenuResult.CONTINUE, args
+        return MenuResult.STAY, ctx.args
     print(f"\n{GREEN}🔧 디버그 모드로 재실행합니다...{RESET}")
-    if '--debug' not in args:
-        args.append('--debug')
-    return MenuResult.DEBUG, args  # DEBUG 결과를 반환하여 실행 루프에서 재실행 처리
+    if '--debug' not in ctx.args:
+        ctx.args.append('--debug')
+    return MenuResult.DEBUG, ctx.args
 
 # 후속 작업 매핑
 POST_RUN_ACTIONS = {
@@ -725,26 +751,32 @@ def post_run_menu(collector: Dict[str, Any], all_collectors: List[Dict[str, Any]
         if choice.isdigit():
             val = int(choice)
             if 1 <= val <= 7:
+                # ActionContext 생성
+                ctx = ActionContext(
+                    collector=collector,
+                    args=last_args if last_args is not None else [],
+                    mode=last_mode if last_mode is not None else "",
+                    run_type="1",  # run_type은 여기서 사용되지 않지만 일단 채움
+                    all_collectors=all_collectors,
+                    last_args=last_args,
+                    last_mode=last_mode
+                )
                 # 각 기능별 함수 호출
                 if val == 7:
-                    result, new_args = debug_rerun(collector, last_args, last_mode, None)
+                    result, new_args = debug_rerun(ctx)
                     if result == MenuResult.DEBUG:
                         return result, new_args
                 else:
-                    # 일반 기능 실행
-                    if val == 5:
-                        result = POST_RUN_ACTIONS[val](collector, all_collectors=all_collectors)
-                    else:
-                        result = POST_RUN_ACTIONS[val](collector)
-                    if result != MenuResult.CONTINUE:
+                    result = POST_RUN_ACTIONS[val](ctx)
+                    if result != MenuResult.STAY:
                         return result, last_args
-                # CONTINUE면 루프 계속
+                # STAY면 루프 계속
             elif val == 11:
                 logger.info("뒤로 가기 선택")
                 return MenuResult.BACK, last_args
             elif val == 22:
                 logger.info("처음으로 (수집기 선택) 선택")
-                return MenuResult.CONTINUE, last_args  # 여기서는 CONTINUE지만 상위에서 처리
+                return MenuResult.GO_TO_COLLECTOR, last_args
             elif val == 33:
                 logger.info("프로그램 종료 선택")
                 return MenuResult.EXIT, last_args
@@ -790,29 +822,35 @@ def main():
                     print(f"{CYAN}📋 드라이 런 모드입니다. 실제 실행하지 않습니다.{RESET}")
 
                 if run_type == '4':
-                    args, is_parallel = menu_advanced_mode()
-                    if args is None:
-                        break  # 뒤로 가기
-                    if args == [INPUT_RESTART]:
-                        break  # 처음으로
+                    args, is_parallel, special = menu_advanced_mode()
+                    if special is not None:
+                        if special == MenuResult.BACK:
+                            break  # 뒤로 가기 (실행 유형 선택으로)
+                        if special == MenuResult.RESTART:
+                            break  # 처음으로
                     if is_parallel:
-                        mode = "병렬"
+                        mode = CollectionMode.PARALLEL
                     else:
                         if '--shard' in args:
                             idx = args.index('--shard')
                             shard_val = args[idx+1] if idx+1 < len(args) else 'none'
-                            mode = f"{shard_val} 샤드"
+                            if shard_val == 'odd':
+                                mode = CollectionMode.SHARD_ODD
+                            elif shard_val == 'even':
+                                mode = CollectionMode.SHARD_EVEN
+                            else:
+                                mode = CollectionMode.INTEGRATED
                         else:
-                            mode = "통합"
+                            mode = CollectionMode.INTEGRATED
                     last_args = args
-                    last_mode = mode
+                    last_mode = mode.value
                     success = execute_collection(collector, args, mode, run_type)
                     if not success and not is_dry_run:
                         logger.warning("수집 실패 또는 부분 실패")
                     result, new_args = post_run_menu(collector, collectors, last_args, last_mode)
                     if result == MenuResult.EXIT:
                         sys.exit(0)
-                    elif result == MenuResult.CONTINUE:
+                    elif result == MenuResult.GO_TO_COLLECTOR:
                         break
                     elif result == MenuResult.BACK:
                         continue
@@ -821,36 +859,43 @@ def main():
                         success = execute_collection(collector, new_args, mode, run_type)
                         if not success and not is_dry_run:
                             logger.warning("수집 실패 또는 부분 실패")
-                        result, new_args2 = post_run_menu(collector, collectors, new_args, mode)
+                        result, new_args2 = post_run_menu(collector, collectors, new_args, last_mode)
                         if result == MenuResult.EXIT:
                             sys.exit(0)
-                        elif result == MenuResult.CONTINUE:
+                        elif result == MenuResult.GO_TO_COLLECTOR:
                             break
                         elif result == MenuResult.BACK:
                             continue
 
                 elif run_type == '5':
-                    args = direct_advanced_mode()
-                    if args is None:
-                        break  # 뒤로 가기
-                    if args == [INPUT_RESTART]:
-                        break  # 처음으로
+                    res = direct_advanced_mode()
+                    if isinstance(res, MenuResult):
+                        if res == MenuResult.BACK:
+                            break
+                        if res == MenuResult.RESTART:
+                            break
+                    args = res  # type: ignore
                     if args:
                         if '--shard' in args:
                             idx = args.index('--shard')
                             shard_val = args[idx+1] if idx+1 < len(args) else 'none'
-                            mode = f"{shard_val} 샤드"
+                            if shard_val == 'odd':
+                                mode = CollectionMode.SHARD_ODD
+                            elif shard_val == 'even':
+                                mode = CollectionMode.SHARD_EVEN
+                            else:
+                                mode = CollectionMode.INTEGRATED
                         else:
-                            mode = "통합"
+                            mode = CollectionMode.INTEGRATED
                         last_args = args
-                        last_mode = mode
+                        last_mode = mode.value
                         success = execute_collection(collector, args, mode, run_type)
                         if not success and not is_dry_run:
                             logger.warning("수집 실패")
                         result, new_args = post_run_menu(collector, collectors, last_args, last_mode)
                         if result == MenuResult.EXIT:
                             sys.exit(0)
-                        elif result == MenuResult.CONTINUE:
+                        elif result == MenuResult.GO_TO_COLLECTOR:
                             break
                         elif result == MenuResult.BACK:
                             continue
@@ -858,10 +903,10 @@ def main():
                             success = execute_collection(collector, new_args, mode, run_type)
                             if not success and not is_dry_run:
                                 logger.warning("수집 실패")
-                            result, new_args2 = post_run_menu(collector, collectors, new_args, mode)
+                            result, new_args2 = post_run_menu(collector, collectors, new_args, last_mode)
                             if result == MenuResult.EXIT:
                                 sys.exit(0)
-                            elif result == MenuResult.CONTINUE:
+                            elif result == MenuResult.GO_TO_COLLECTOR:
                                 break
                             elif result == MenuResult.BACK:
                                 continue
@@ -869,24 +914,27 @@ def main():
                 else:
                     base_args = get_basic_options(run_type)
                     while True:
-                        mode = select_mode(collector)
-                        if mode == MenuResult.BACK:
-                            break  # 실행 유형 선택으로
-                        if mode == MenuResult.RETRY:
-                            continue
-                        if mode == MenuResult.EXIT:
-                            sys.exit(0)
-                        if mode == MenuResult.RESTART:
-                            break  # 처음으로
+                        mode_res = select_mode(collector)
+                        if isinstance(mode_res, MenuResult):
+                            if mode_res == MenuResult.BACK:
+                                break
+                            if mode_res == MenuResult.RETRY:
+                                continue
+                            if mode_res == MenuResult.EXIT:
+                                sys.exit(0)
+                            if mode_res == MenuResult.RESTART:
+                                break
+                        else:
+                            mode = mode_res  # CollectionMode
                         last_args = base_args
-                        last_mode = mode
+                        last_mode = mode.value
                         success = execute_collection(collector, base_args, mode, run_type)
                         if not success and not is_dry_run:
                             logger.warning("수집 실패 또는 부분 실패")
                         result, new_args = post_run_menu(collector, collectors, last_args, last_mode)
                         if result == MenuResult.EXIT:
                             sys.exit(0)
-                        elif result == MenuResult.CONTINUE:
+                        elif result == MenuResult.GO_TO_COLLECTOR:
                             break
                         elif result == MenuResult.BACK:
                             break
@@ -894,10 +942,10 @@ def main():
                             success = execute_collection(collector, new_args, mode, run_type)
                             if not success and not is_dry_run:
                                 logger.warning("수집 실패 또는 부분 실패")
-                            result, new_args2 = post_run_menu(collector, collectors, new_args, mode)
+                            result, new_args2 = post_run_menu(collector, collectors, new_args, last_mode)
                             if result == MenuResult.EXIT:
                                 sys.exit(0)
-                            elif result == MenuResult.CONTINUE:
+                            elif result == MenuResult.GO_TO_COLLECTOR:
                                 break
                             elif result == MenuResult.BACK:
                                 break

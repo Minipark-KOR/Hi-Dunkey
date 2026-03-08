@@ -204,7 +204,9 @@ class BaseCollector(ABC):
                     if region:
                         self.record_collect_failure(region, year, str(e))
                     break
-                time.sleep(2 ** retry_count)
+                # 지터가 포함된 지수 백오프 (최대 30초)
+                sleep_time = min(2 ** retry_count, 30) + random.uniform(0, 1)
+                time.sleep(sleep_time)
 
         return all_items
 
