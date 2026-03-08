@@ -3,7 +3,8 @@
 시간표 파서
 """
 from typing import Dict, Any
-from core.filters import TextFilter, SubjectNameFilter
+from core.filters import TextFilter
+from core.text_filter import SubjectNameFilter  # ✅ 올바른 임포트
 from core.id_generator import IDGenerator
 from constants.codes import DAY_OF_WEEK
 
