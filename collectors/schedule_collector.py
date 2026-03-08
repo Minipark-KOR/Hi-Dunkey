@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
+# collectors/schedule_collector.py
 # 개발 가이드: docs/developer_guide.md 참조
-"""
-학사일정 수집기 - 학년도 전체 버전
-"""
+
 from datetime import date, timedelta
 from pathlib import Path
 from typing import List

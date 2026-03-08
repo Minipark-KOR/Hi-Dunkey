@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# master_collectors.py
 # 개발 가이드: docs/developer_guide.md 참조
 """
 마스터 수집기 - 실행 유형과 수집 방식을 계층적으로 선택
@@ -500,7 +501,7 @@ def check_data_integrity(collector: Dict[str, Any], **kwargs) -> MenuResult:
             print(f"{YELLOW}   통합 DB가 없어 비교 불가{RESET}")
     elif odd_count is not None or even_count is not None:
         print(f"{YELLOW}   하나의 샤드만 존재합니다.{RESET}")
-    return MenuResult.CONTINUE  # 후속 메뉴 유지
+    return MenuResult.CONTINUE
 
 def execute_merge(collector: Dict[str, Any], **kwargs) -> MenuResult:
     """병합 실행"""
@@ -788,20 +789,12 @@ def main():
                 if is_dry_run:
                     print(f"{CYAN}📋 드라이 런 모드입니다. 실제 실행하지 않습니다.{RESET}")
 
-                # run_type 4,5, else 분기
-                if run_type == '4':  # 고급 모드 메뉴형
+                if run_type == '4':
                     args, is_parallel = menu_advanced_mode()
                     if args is None:
                         break  # 뒤로 가기
                     if args == [INPUT_RESTART]:
                         break  # 처음으로
-                    mode = "병렬" if is_parallel else "통합"  # 실제 모드는 execute_collection에서 결정
-                    # mode는 execute_collection에서 다시 결정되므로 여기서는 임시
-                    # execute_collection에 전달할 args와 mode
-                    # mode는 execute_collection에서 결정되므로 여기서는 빈 값?
-                    # execute_collection이 args를 보고 mode를 결정하게 하려면?
-                    # 현재 execute_collection은 mode를 인자로 받으므로, mode를 계산해서 넘겨야 함.
-                    # mode 계산 로직 복원
                     if is_parallel:
                         mode = "병렬"
                     else:
@@ -824,11 +817,10 @@ def main():
                     elif result == MenuResult.BACK:
                         continue
                     elif result == MenuResult.DEBUG:
-                        # 디버그 재실행: args는 이미 new_args에 업데이트됨
+                        # 디버그 재실행: new_args에 업데이트된 args가 들어있음
                         success = execute_collection(collector, new_args, mode, run_type)
                         if not success and not is_dry_run:
                             logger.warning("수집 실패 또는 부분 실패")
-                        # 다시 후속 메뉴로
                         result, new_args2 = post_run_menu(collector, collectors, new_args, mode)
                         if result == MenuResult.EXIT:
                             sys.exit(0)
@@ -837,7 +829,7 @@ def main():
                         elif result == MenuResult.BACK:
                             continue
 
-                elif run_type == '5':  # 고급 모드 직접 입력
+                elif run_type == '5':
                     args = direct_advanced_mode()
                     if args is None:
                         break  # 뒤로 가기
@@ -874,7 +866,7 @@ def main():
                             elif result == MenuResult.BACK:
                                 continue
 
-                else:  # 기본 실행 유형 (1,2,3)
+                else:
                     base_args = get_basic_options(run_type)
                     while True:
                         mode = select_mode(collector)

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
+# collectors/timetable_collector.py
 # 개발 가이드: docs/developer_guide.md 참조
-"""
-시간표 수집기 - 학년도 전체 버전
-"""
+
 import time
 import random
 from typing import List

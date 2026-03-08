@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
+# collectors/neis_info_collector.py
 # 개발 가이드: docs/developer_guide.md 참조
-"""
-학교 기본정보 수집기 (Diff 기반 좌표 갱신)
-- GeoCollector 통합으로 캐시 및 API 사용량 추적
-- 기본 모드에서도 지역별 좌표 현황 출력
-- 전체 수집 완료 후 누적 통계 표시 (성공률 포함)
-- GitHub Actions 환경에서는 자동으로 quiet 모드
-- 지번 주소 (jibun_address) 추출 및 저장
-"""
+
 import os
 import sys
 import time
@@ -378,45 +372,45 @@ if __name__ == "__main__":
     parser.add_argument("--quiet", action="store_true", help="출력 최소화 (GitHub Actions 등)")
     parser.add_argument("--limit", type=int, default=None, help="수집할 학교 수 제한 (테스트용)")
     args = parser.parse_args()
-    
+
     if is_github_actions and not args.quiet:
         args.quiet = True
-    
+
     collector = NeisInfoCollector(
         shard=args.shard,
         debug_mode=args.debug,
         quiet_mode=args.quiet
     )
-    
+
     print(f"📂 DB 경로: {collector.db_path}")
-    
+
     if args.regions == "ALL":
         regions = ALL_REGIONS
     else:
         regions = [r.strip() for r in args.regions.split(",") if r.strip()]
-    
+
     if not args.quiet:
         print(f"\n🚀 학교 정보 수집 시작 (샤드: {args.shard}, 지역: {len(regions)}개, limit: {args.limit or '전체'})")
         print("=" * 70)
-    
+
     for region in regions:
         collector.fetch_region(region, limit=args.limit)
         if args.limit:
             break
-    
+
     if not args.quiet:
         print("\n⏳ 남은 데이터 처리 중...")
-    
+
     collector.flush()
     time.sleep(2)
     collector.close()
-    
+
     if os.path.exists(collector.db_path):
         count = sqlite3.connect(collector.db_path).execute("SELECT COUNT(*) FROM schools;").fetchone()[0]
         print(f"📊 DB 저장 완료: {count}건 (파일: {collector.db_path})")
     else:
         print(f"❌ DB 파일 없음: {collector.db_path}")
-    
+
     if not args.quiet:
         total = collector.total_new + collector.total_failed + collector.total_skipped
         success_rate = (collector.total_new / total * 100) if total > 0 else 0

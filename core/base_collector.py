@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
+# core/base_collector.py
 # 개발 가이드: docs/developer_guide.md 참조
-"""
-수집기 베이스 클래스 - 공통 기능 통합
-"""
+
 import os
 import sqlite3
 import queue
@@ -247,7 +246,7 @@ class BaseCollector(ABC):
                     except queue.Empty:
                         break
 
-                if self.debug_mode:
+                if hasattr(self, 'debug_mode') and self.debug_mode:
                     print(f"🔍 [writer_loop] 배치 수집 완료: {len(batch)}개")
 
                 try:
@@ -364,3 +363,4 @@ class BaseCollector(ABC):
         self.logger.info(f"🔄 {self.name} flush 시작...")
         self.q.join()
         self.logger.info(f"✅ {self.name} flush 완료")
+        

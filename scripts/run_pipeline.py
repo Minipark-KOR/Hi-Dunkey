@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
+# scripts/run_pipeline.py
 # 개발 가이드: docs/developer_guide.md 참조
 """
 병렬 샤드 실행기 + 자동 병합 + 연도 프롬프트 + 로그 정리 (collector_cli.py 기반)
-여러 region에 대해 odd/even 샤드를 병렬로 실행합니다.
-사용법:
-    python scripts/run_pipeline.py <collector_name> [--year YYYY] [--timeout 초] [--regions REGIONS] [--quiet] [추가 인자...]
-예:
-    python scripts/run_pipeline.py neis_info --regions ALL
-    python scripts/run_pipeline.py neis_info --year 2025 --regions B10,C10 --debug
+여러 region에 대해 odd/even 샤드를 병렬로 실행하며, rich를 사용한 실시간 멀티바 진행률을 표시합니다.
 """
 import sys
 import subprocess
@@ -23,6 +19,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 프로젝트 루트를 sys.path에 추가
 sys.path.append(str(Path(__file__).parent.parent))
+
+try:
+    from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, SpinnerColumn
+    from rich.console import Console
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
+    # 폴백: 간단한 텍스트 진행률
+    def simple_progress(completed, total):
+        print(f"\r📊 진행: {completed}/{total} ({(completed/total*100):.1f}%)", end='', flush=True)
 
 from core.kst_time import KST, now_kst
 
@@ -104,7 +110,7 @@ def signal_handler(sig, frame):
         getattr(signal, 'SIGHUP', None): 'SIGHUP',
     }
     sig_name = signal_names.get(sig, f'SIG{sig}')
-    
+
     print(f"\n[{sig_name}] 종료 신호 수신. 자식 프로세스 정리 중...")
     with lock:
         procs = processes[:]
@@ -174,6 +180,7 @@ def run_merge(collector: str, year: int, log_dir: Path, timeout: Optional[int] =
 
 def run_shard(region: str, shard: str, collector: str, extra_args: List[str], year: int, timeout: Optional[int] = None) -> Tuple[str, str, int]:
     """collector_cli.py를 통해 단일 지역-샤드 실행"""
+    # 로그 파일을 지역별, 샤드별로 분리
     log_file = Path("logs") / f"{collector}_{region}_{shard}.log"
     cmd = [
         sys.executable, "collector_cli.py", collector,
@@ -182,8 +189,9 @@ def run_shard(region: str, shard: str, collector: str, extra_args: List[str], ye
         "--year", str(year)
     ] + extra_args
 
-    print(f"🚀 {region} {shard} 시작 (로그: {log_file})")
-    start_time = time.time()
+    # 디버그 모드이면 추가 옵션? extra_args에 --debug 포함 여부는 이미 extra_args에 들어있음.
+    # 디버그 모드에서는 로그에 --debug가 포함되어 실행됨.
+
     proc = None
     ret_code = 1
 
@@ -221,17 +229,7 @@ def run_shard(region: str, shard: str, collector: str, extra_args: List[str], ye
                 if proc in processes:
                     processes.remove(proc)
 
-    elapsed = time.time() - start_time
-    status = "✅ 성공" if ret_code == 0 else f"❌ 실패(코드 {ret_code})"
-    print(f"  {region} {shard} 완료 ({elapsed:.1f}초) {status}")
     return region, shard, ret_code
-
-def print_progress(completed: int, total: int, bar_length: int = 10):
-    """10칸 진행률 바 출력 (같은 줄에 덮어쓰기)"""
-    percent = completed / total
-    filled = int(bar_length * percent)
-    bar = '█' * filled + '░' * (bar_length - filled)
-    print(f"\r📊 전체 진행: [{bar}] {completed}/{total} ({percent*100:.1f}%)", end='', flush=True)
 
 def main():
     signal.signal(signal.SIGINT, signal_handler)
@@ -294,27 +292,54 @@ def main():
         for shard in ("odd", "even"):
             tasks.append((region, shard))
 
+    total_tasks = len(tasks)
     if not args.quiet:
-        print(f"🚀 총 {len(tasks)}개 작업을 병렬로 실행합니다.")
+        print(f"🚀 총 {total_tasks}개 작업을 병렬로 실행합니다.")
 
-    # ThreadPoolExecutor로 병렬 실행
+    # Rich progress bar 설정
+    if RICH_AVAILABLE and not args.quiet:
+        progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeElapsedColumn(),
+            console=Console(),
+            transient=False,
+        )
+        progress.start()
+        # 각 지역-샤드 조합에 대한 작업 생성
+        task_ids = {}
+        for region, shard in tasks:
+            desc = f"{region}-{shard}"
+            task_ids[(region, shard)] = progress.add_task(desc, total=100)
+    else:
+        progress = None
+        task_ids = None
+
+    # 병렬 실행
     with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as executor:
         future_to_task = {
             executor.submit(run_shard, region, shard, args.collector, extra_args, year, args.timeout): (region, shard)
             for region, shard in tasks
         }
         completed = 0
-        total = len(tasks)
         for future in as_completed(future_to_task):
             region, shard, ret_code = future.result()
             completed += 1
-            if not args.quiet:
-                print_progress(completed, total)
+            if progress and task_ids:
+                # 작업 완료 시 해당 바를 100%로 업데이트
+                progress.update(task_ids[(region, shard)], completed=100)
+            elif not args.quiet and not RICH_AVAILABLE:
+                # 폴백: 단순 텍스트 진행률
+                simple_progress(completed, total_tasks)
             with lock:
                 results[(region, shard)] = ret_code
 
-    if not args.quiet:
-        print()  # 진행률 줄바꿈
+    if progress:
+        progress.stop()
+    elif not args.quiet and not RICH_AVAILABLE:
+        print()  # 줄바꿈
 
     # 결과 집계
     failed = [(r, s) for (r, s), code in results.items() if code != 0]

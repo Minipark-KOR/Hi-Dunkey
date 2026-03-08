@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""
-Collector 공통 CLI 진입점
-"""
+# collector_cli.py
+# 개발 가이드: docs/developer_guide.md 참조
+
 import sys
 import argparse
 import os

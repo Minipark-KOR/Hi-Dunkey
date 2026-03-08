@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""
-급식 수집기 공통 베이스 (daily / annual 공통 로직)
-- meta_batch 패턴 사용 (writer 스레드에서 일괄 저장)
-"""
+# core/base_meal_collector.py
+# 개발 가이드: docs/developer_guide.md 참조
+
 import re
 from typing import List, Optional
 import sqlite3
@@ -43,7 +42,6 @@ class BaseMealCollector(BaseCollector):
         )
 
     def _init_db(self):
-        """새로운 meal_meta 테이블 구조 (비즈니스 키에 UNIQUE 제약)"""
         with get_db_connection(self.db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS meal (
@@ -163,7 +161,6 @@ class BaseMealCollector(BaseCollector):
         return results
 
     def _do_save_batch(self, conn: sqlite3.Connection, batch: List[dict]):
-        """BaseCollector._save_batch에서 호출됨"""
         all_meta = []
         for it in batch:
             all_meta.extend(it.pop('_meta_batch', []))
@@ -177,10 +174,8 @@ class BaseMealCollector(BaseCollector):
             "INSERT OR REPLACE INTO meal VALUES (?,?,?,?,?,?,?,?,?)", meal_data
         )
         if all_meta:
-            # UNIQUE(school_id, meal_date, meal_type, menu_id) 제약 조건에 따라
-            # INSERT OR REPLACE로 최신 meta_id로 덮어씀
             conn.executemany(
                 "INSERT OR REPLACE INTO meal_meta (school_id, meal_date, meal_type, menu_id, meta_id) VALUES (?,?,?,?,?)",
                 all_meta
             )
-                
+            

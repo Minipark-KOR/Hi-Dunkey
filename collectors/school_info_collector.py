@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
+# collectors/school_info_collector.py
 # 개발 가이드: docs/developer_guide.md 참조
-"""
-학교알리미 오픈서비스 수집기 (BaseCollector 기반)
-- NEIS 학교알리미 API (schoolInfo) 활용
-- 학년도 필터링, 샤드 저장 지원
-- collector_cli.py와 완전히 통합됨
-"""
+
 import sys
 from pathlib import Path
 
