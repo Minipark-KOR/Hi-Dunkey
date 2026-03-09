@@ -37,7 +37,6 @@ NEIS_URL = NEIS_ENDPOINTS['school']
 # ANSI 색상 코드
 GREEN, RED, YELLOW, RESET = "\033[92m", "\033[91m", "\033[93m", "\033[0m"
 
-
 class NeisInfoCollector(BaseCollector):
     # ----- 메타데이터 -----
     description = "학교 기본정보 (NEIS)"
