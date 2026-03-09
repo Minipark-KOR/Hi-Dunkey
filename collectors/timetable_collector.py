@@ -24,8 +24,7 @@ from constants.codes import (
 )
 from core.kst_time import now_kst
 from core.school_year import get_current_school_year
-from constants.paths import ACTIVE_DIR, GLOBAL_VOCAB_PATH
-
+from constants.paths import ACTIVE_DIR, GLOBAL_VOCAB_DB_PATH
 
 class AnnualFullTimetableCollector(BaseCollector):
     # ----- 메타데이터 -----
@@ -52,7 +51,7 @@ class AnnualFullTimetableCollector(BaseCollector):
         self.debug_mode = debug_mode
         self.run_ay = get_current_school_year(now_kst())
         self.meta_vocab = self.register_resource(
-            MetaVocabManager(GLOBAL_VOCAB_PATH, debug_mode)
+            MetaVocabManager(GLOBAL_VOCAB_DB_PATH, debug_mode)
         )
         self.subject_cache = {}
         self._load_subject_cache()

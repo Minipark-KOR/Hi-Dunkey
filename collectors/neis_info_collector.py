@@ -27,11 +27,11 @@ from core.filters import AddressFilter
 from core.kst_time import now_kst
 from core.school_year import get_current_school_year
 from constants.codes import NEIS_ENDPOINTS, ALL_REGIONS, REGION_NAMES
-from constants.paths import NEIS_INFO_DB_PATH as MASTER_DB, FAILURES_DB_PATH, MASTER_DIR
+from constants.paths import NEIS_INFO_DB_PATH as MASTER_DB, FAILURES_DB_PATH, MASTER_DIR, GLOBAL_VOCAB_DB_PATH
 from collectors.geo_collector import GeoCollector
 
 BASE_DIR = str(MASTER_DIR)
-GLOBAL_VOCAB_PATH = str(MASTER_DIR.parent / "active" / "global_vocab.db")
+GLOBAL_VOCAB_DB_PATH = str(MASTER_DIR.parent / "active" / "global_vocab.db")
 NEIS_URL = NEIS_ENDPOINTS['school']
 
 # ANSI 색상 코드
@@ -79,11 +79,11 @@ class NeisInfoCollector(BaseCollector):
         self.run_date = now_kst().strftime("%Y%m%d")
 
         self.meta_vocab = self.register_resource(
-            MetaVocabManager(GLOBAL_VOCAB_PATH, debug_mode)
+            MetaVocabManager(GLOBAL_VOCAB_DB_PATH, debug_mode)
         )
         self.geo_collector = self.register_resource(
             GeoCollector(
-                global_db_path=GLOBAL_VOCAB_PATH,
+                global_db_path=GLOBAL_VOCAB_DB_PATH,
                 school_db_path=self.db_path,
                 failures_db_path=str(FAILURES_DB_PATH),
                 debug_mode=debug_mode,
