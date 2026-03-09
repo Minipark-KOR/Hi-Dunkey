@@ -10,9 +10,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.retry import RetryManager
 from core.logger import build_logger
+from constants.paths import LOG_DIR   # 추가
 from core.kst_time import now_kst
 
-logger = build_logger("deadline_notifier", "logs/deadline_notifier.log")
+logger = build_logger("deadline_notifier", str(LOG_DIR / "deadline_notifier.log"))
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO")

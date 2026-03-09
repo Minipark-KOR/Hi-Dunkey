@@ -1,12 +1,16 @@
 # config/config.yaml
 # 프로젝트 설정 파일 (환경별로 분기 가능)
+# config/config.yaml
 paths:
-  master_dir: "data/master"
-  active_dir: "data/active"
-  global_vocab: "data/active/global_vocab.db"
-  unknown_db: "data/active/unknown_patterns.db"
+  active_dir: "active"
+  master_dir: "master"
   logs_dir: "logs"
   metrics_dir: "metrics"
+  temp_dir: "temp"
+  cache_dir: "cache"
+  export_dir: "export"
+  queries_dir: "queries"
+  ga4_dir: "ga4"
 
 collectors:
   neis_info:

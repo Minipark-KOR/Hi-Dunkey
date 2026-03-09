@@ -17,6 +17,7 @@ from datetime import datetime
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from constants.paths import LOG_DIR   # 추가
 from core.search_stats import SearchStats
 
 
@@ -287,7 +288,7 @@ def monitoring_example():
             log_msg += f"  - {w}\n"
         
         # 파일로 저장
-        with open("logs/health_monitor.log", "a", encoding='utf-8') as f:
+        with open(LOG_DIR / "health_monitor.log", "a", encoding='utf-8') as f:
             f.write(log_msg)
         
         # 심각한 문제면 표준 출력에도 표시 (크론 메일로 전송됨)
@@ -297,7 +298,7 @@ def monitoring_example():
         return False
     
     # 정상이면 간단한 로그만 남김
-    with open("logs/health_monitor.log", "a", encoding='utf-8') as f:
+    with open(LOG_DIR / "health_monitor.log", "a", encoding='utf-8') as f:
         f.write(f"[{timestamp}] ✅ 시스템 정상 (캐시효율: {cache_efficiency:.1f}%)\n")
     
     return True

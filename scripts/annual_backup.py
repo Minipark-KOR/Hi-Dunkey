@@ -54,8 +54,7 @@ COLLECTOR_CLASSES = {
     "schedule":  ScheduleCollector,
 }
 
-METRICS_DIR = str(BASE_DIR / "data" / "metrics")
-
+from constants.paths import METRICS_DIR
 
 class YearlyBackup:
     # ... (클래스 내용은 동일, 변경 없음)
@@ -75,7 +74,7 @@ class YearlyBackup:
     def _setup_logger(self):
         self.logger = logging.getLogger("yearly_backup")
         self.logger.setLevel(logging.INFO)
-        fh  = logging.FileHandler(f"{self.log_dir}/yearly_backup.log", encoding="utf-8")
+        fh  = logging.FileHandler(LOG_DIR/"yearly_backup.log", encoding="utf-8")
         ch  = logging.StreamHandler()
         fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
         fh.setFormatter(fmt)

@@ -18,8 +18,9 @@ from core.meta_vocab import MetaVocabManager
 from core.filters import AddressFilter
 from core.retry import RetryManager
 from core.logger import build_logger
+from constants.paths import LOG_DIR 
 
-logger = build_logger("geo_collector", "logs/geo_collector.log")
+logger = build_logger("geo_collector", str(LOG_DIR / "geo_collector.log"))
 
 try:
     from core.database import get_db_connection

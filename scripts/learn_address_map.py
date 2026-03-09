@@ -4,8 +4,9 @@ import json
 from collections import Counter
 from pathlib import Path
 from typing import Dict, List
+from constants.paths import LOG_DIR   # 추가
 
-LOG_FILE = "logs/address_mapping.log"
+LOG_FILE = str(LOG_DIR / "address_mapping.log")
 OUTPUT_FILE = "address_mapping_stats.txt"
 
 

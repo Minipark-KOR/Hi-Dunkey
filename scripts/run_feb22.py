@@ -10,12 +10,12 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.logger import build_logger
+from constants.paths import LOG_DIR   # 추가
 from core.kst_time import now_kst
 from core.backup import vacuum_into, move_files_by_age, cleanup_files_older_than
 
-logger = build_logger("feb22", "../logs/feb22.log")
+logger = build_logger("feb22", str(LOG_DIR / "feb22.log"))   # 수정
 
-# ✅ 절대 경로로 변경
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 프로젝트 루트
 ACTIVE = os.path.join(BASE_DIR, "data", "active")
 BACKUP = os.path.join(BASE_DIR, "data", "backup")

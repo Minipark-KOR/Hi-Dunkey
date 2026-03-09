@@ -14,9 +14,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.retry import RetryManager
 from core.kst_time import now_kst
 from core.logger import build_logger
+from constants.paths import LOG_DIR   # 추가
 
-logger = build_logger("seed_failures", "logs/seed_failures.log")
-
+logger = build_logger("seed_failures", str(LOG_DIR / "seed_failures.log"))
 
 def seed_missing_schools(
     neis_info_db_path: str = "data/master/neis_info.db",

@@ -3,8 +3,9 @@ import os
 from core.logger import build_logger
 from core.backup import cleanup_files_older_than
 from run_feb22 import update_archive_merged
+from constants.paths import LOG_DIR   # 추가
 
-logger = build_logger("april15", "../logs/april15.log")
+logger = build_logger("april15", str(LOG_DIR / "april15.log"))   # 수정
 
 def main():
     logger.info("="*60)

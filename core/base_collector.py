@@ -25,7 +25,7 @@ from .kst_time import now_kst
 from .data_guard import DataGuard, DataDropException
 from .collect_log import CollectLog
 from constants.codes import NEIS_API_KEY
-from constants.paths import MASTER_DB_PATH as MASTER_DB
+from constants.paths import MASTER_DB_PATH as MASTER_DB, LOG_DIR
 from core.retry import RetryManager
 
 
@@ -68,8 +68,10 @@ class BaseCollector(ABC):
             self.db_path = str(self.base_dir / f"{name}_{shard}{range_suffix}.db")
 
         self.total_db_path = str(self.base_dir / f"{name}_total.db")
-        self.logger = build_logger(name, str(self.base_dir / f"{name}.log"))
-        print(f"📝 로그 파일: {self.base_dir / f'{name}.log'}")
+        
+        # ✅ 로그 파일은 LOG_DIR에 저장
+        self.logger = build_logger(name, str(LOG_DIR / f"{name}.log"))
+        print(f"📝 로그 파일: {LOG_DIR / f'{name}.log'}")
 
         self.session = build_session()
 

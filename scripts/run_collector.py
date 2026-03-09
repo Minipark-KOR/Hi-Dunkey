@@ -14,11 +14,12 @@ import time
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from core.logger import build_logger
+from constants.paths import LOG_DIR   # 추가
 from core.kst_time import now_kst, get_kst_time
 from core.school_year import get_current_school_year
 from baskets.update_hot import get_hot_schools
 
-logger = build_logger("run_collector", "../logs/run_collector.log")
+logger = build_logger("run_collector", str(LOG_DIR / "run_collector.log"))   # 수정
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 

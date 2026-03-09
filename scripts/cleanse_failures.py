@@ -11,8 +11,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.retry import RetryManager
 from core.filters import AddressFilter
 from core.logger import build_logger
+from constants.paths import LOG_DIR   # 추가
 
-logger = build_logger("cleanse_failures", "logs/cleanse_failures.log")
+logger = build_logger("cleanse_failures", str(LOG_DIR / "cleanse_failures.log"))
 
 DB_PATH = "data/failures.db"
 NEIS_DB = "data/master/NEIS_info.db"

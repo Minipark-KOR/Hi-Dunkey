@@ -697,7 +697,7 @@ def generate_all_metrics(ctx: ActionContext) -> MenuResult:
 def view_logs(ctx: ActionContext) -> MenuResult:
     """수집기 로그 확인 (크로스 플랫폼 호환)"""
     logger.info("로그 확인 선택")
-    log_file = Path("logs") / f"{ctx.collector['name']}.log"
+    log_file = LOG_DIR / f"{ctx.collector['name']}.log"
     if log_file.exists():
         print(f"\n{BLUE}📄 로그 파일: {log_file}{RESET}")
         try:

@@ -16,6 +16,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, List, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from constants.paths import LOG_DIR   # 추가
 
 # 프로젝트 루트를 sys.path에 추가
 sys.path.append(str(Path(__file__).parent.parent))
@@ -32,6 +33,7 @@ except ImportError:
 
 from core.kst_time import KST, now_kst
 
+log_dir = LOG_DIR
 # 도메인별 병합 스크립트 매핑
 MERGE_SCRIPT_MAP = {
     "neis_info": "merge_neis_info_dbs.py",
@@ -282,7 +284,7 @@ def main():
         print("❌ collector_cli.py 파일을 찾을 수 없습니다. (프로젝트 루트에 있어야 함)")
         sys.exit(1)
 
-    log_dir = Path("logs")
+    log_dir = LOG_DIR
     log_dir.mkdir(exist_ok=True)
     cleanup_old_logs(log_dir, args.collector, days=7)
 

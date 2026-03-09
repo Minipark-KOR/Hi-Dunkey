@@ -7,8 +7,9 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.logger import build_logger
 from core.kst_time import now_kst
+from constants.paths import LOG_DIR   # 추가
 
-logger = build_logger("vacuum", "logs/vacuum.log")
+logger = build_logger("vacuum", str(LOG_DIR / "vacuum.log"))   # 수정
 
 def vacuum_db(db_path: str, days: int = 30):
     if not os.path.exists(db_path):

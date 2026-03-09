@@ -35,7 +35,7 @@ app.add_middleware(
 
 # ✅ 절대 경로로 변경
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 프로젝트 루트
-DATA_DIR = os.path.join(BASE_DIR, "data", "active")
+from constants.paths import ACTIVE_DIR
 MASTER_DB = MASTER_DB_PATH   # ✅ 수정: 올바른 DB 파일 경로
 
 # =====================[ 유틸리티 함수 ]=====================

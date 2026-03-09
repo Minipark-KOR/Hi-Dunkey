@@ -55,9 +55,8 @@ def run_collector(args: Tuple[str, str, str | None, str, bool]) -> int:
         cmd.append("--debug")
 
     # 로그 파일 생성
-    log_dir = "logs"
+    log_dir = LOG_DIR   # LOG_DIR 사용
     os.makedirs(log_dir, exist_ok=True)
-    range_suffix = f"_{school_range}" if school_range else ""
     log_file = os.path.join(log_dir, f"meal_{region}_{shard}{range_suffix}.log")
 
     with open(log_file, "w") as f:
