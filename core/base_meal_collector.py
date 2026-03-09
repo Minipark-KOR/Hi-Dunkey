@@ -13,7 +13,7 @@ from core.meta_vocab import MetaVocabManager
 from core.meal_extractor import MealMetaExtractor
 from core.filters import TextFilter
 from parsers.meal_parser import parse_meal_html, normalize_allergy_info
-from constants.paths import GLOBAL_VOCAB_PATH, UNKNOWN_DB_PATH
+from constants.paths import GLOBAL_VOCAB_DB_PATH, UNKNOWN_DB_PATH
 from core.kst_time import now_kst
 
 
@@ -31,11 +31,11 @@ class BaseMealCollector(BaseCollector):
             re.sub(r'[★☆◆◇]', '', TextFilter.normalize_for_id(x))
         )
         self.menu_vocab = self.register_resource(
-            VocabManager(GLOBAL_VOCAB_PATH, 'meal',
+            VocabManager(GLOBAL_VOCAB_DB_PATH, 'meal',
                          normalize_func=meal_normalizer, debug_mode=debug_mode)
         )
         self.meta_vocab = self.register_resource(
-            MetaVocabManager(GLOBAL_VOCAB_PATH, debug_mode)
+            MetaVocabManager(GLOBAL_VOCAB_DB_PATH, debug_mode)
         )
         self.meta_extractor = self.register_resource(
             MealMetaExtractor(UNKNOWN_DB_PATH, batch_size=100)
