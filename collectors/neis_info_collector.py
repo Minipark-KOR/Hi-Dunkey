@@ -27,7 +27,7 @@ from core.filters import AddressFilter
 from core.kst_time import now_kst
 from core.school_year import get_current_school_year
 from constants.codes import NEIS_ENDPOINTS, ALL_REGIONS, REGION_NAMES
-from constants.paths import MASTER_DB_PATH as MASTER_DB, FAILURES_DB_PATH, MASTER_DIR
+from constants.paths import NEIS_INFO_DB_PATH as MASTER_DB, FAILURES_DB_PATH, MASTER_DIR
 from collectors.geo_collector import GeoCollector
 
 BASE_DIR = str(MASTER_DIR)
