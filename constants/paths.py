@@ -6,6 +6,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # data/ 아래 모든 디렉토리 정의
 DATA_DIR = PROJECT_ROOT / "data"
+BACKUP_DIR = DATA_DIR / "backup"
+ARCHIVE_DIR = DATA_DIR / "archive"
+LOG_DIR = DATA_DIR / "logs" 
+ACTIVE_DIR = DATA_DIR / "active" 
 
 # 설정 파일에서 경로를 읽되, 없으면 기본값 사용
 ACTIVE_DIR = DATA_DIR / config.get('paths', 'active_dir', default='active')

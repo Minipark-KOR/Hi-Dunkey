@@ -4,7 +4,7 @@ import os
 import yaml
 from pathlib import Path
 from typing import Any, Dict, Optional
-from constants.paths import GLOBAL_VOCAB_DB_PATH, UNKNOWN_DB_PATH
+from constants.paths import GLOBAL_VOCAB_DB_PATH, UNKNOWN_DB_PATH, MASTER_DIR, ACTIVE_DIR
 
 class Config:
     _instance = None
@@ -30,8 +30,8 @@ class Config:
     def _default_config(self):
         return {
             "paths": {
-                "master_dir": "data/master",
-                "active_dir": "data/active",
+                "master_dir": str(MASTER_DIR),   # 문자열이 필요한 경우 str() 변환
+                "active_dir": str(ACTIVE_DIR),
                 "global_vocab": str(GLOBAL_VOCAB_DB_PATH),
                 "unknown_db": str(UNKNOWN_DB_PATH),
                 "logs_dir": "logs",

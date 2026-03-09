@@ -35,6 +35,7 @@ except ImportError:
 from core.kst_time import now_kst
 from core.metrics import generate_and_save_metrics, cleanup_old_metrics
 from constants.domains import DOMAIN_CONFIG, GLOBAL_DBS
+from constants.paths import DATA_DIR, BACKUP_DIR, ARCHIVE_DIR, LOG_DIR, BACKUP_DIR
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -58,8 +59,8 @@ from constants.paths import METRICS_DIR
 
 class YearlyBackup:
     # ... (클래스 내용은 동일, 변경 없음)
-    def __init__(self, base_dir: str = "data", backup_dir: str = "data/backup",
-                 archive_dir: str = "data/archive", log_dir: str = "logs"):
+    def __init__(self, base_dir: str = str(DATA_DIR), backup_dir: str = str(BACKUP_DIR),
+                archive_dir: str = str(ARCHIVE_DIR), log_dir: str = str(LOG_DIR)):
         self.base_dir    = base_dir
         self.backup_dir  = backup_dir
         self.archive_dir = archive_dir
