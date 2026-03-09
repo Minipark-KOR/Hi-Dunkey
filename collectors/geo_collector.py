@@ -18,7 +18,7 @@ from core.meta_vocab import MetaVocabManager
 from core.filters import AddressFilter
 from core.retry import RetryManager
 from core.logger import build_logger
-from constants.paths import LOG_DIR 
+from constants.paths import NEIS_INFO_DB_PATH, FAILURES_DB_PATH, LOG_DIR # 추가 
 
 logger = build_logger("geo_collector", str(LOG_DIR / "geo_collector.log"))
 

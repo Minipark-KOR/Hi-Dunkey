@@ -10,8 +10,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.retry import RetryManager
 from core.logger import build_logger
-from constants.paths import LOG_DIR   # 추가
 from core.kst_time import now_kst
+from constants.paths import NEIS_INFO_DB_PATH, FAILURES_DB_PATH, LOG_DIR # 추가
 
 logger = build_logger("deadline_notifier", str(LOG_DIR / "deadline_notifier.log"))
 
@@ -41,7 +41,7 @@ def send_github_issue(failures):
 
 
 def main():
-    rm = RetryManager(db_path="data/failures.db")
+    rm = RetryManager(db_path=str(FAILURES_DB_PATH))
     now = now_kst().replace(tzinfo=None)
     today_3pm = datetime.combine(now.date(), time(15, 0))
     if now < today_3pm:

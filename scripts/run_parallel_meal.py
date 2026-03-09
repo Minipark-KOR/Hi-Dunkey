@@ -9,6 +9,7 @@ import sys
 import os
 from multiprocessing import Pool
 from typing import List, Tuple
+from constants.paths import NEIS_INFO_DB_PATH, FAILURES_DB_PATH, LOG_DIR # 추가
 
 # 실행할 조합 정의: (region, shard, school_range)
 # region: 교육청 코드 (예: "J10", "B10", "ALL" 등)
@@ -55,9 +56,10 @@ def run_collector(args: Tuple[str, str, str | None, str, bool]) -> int:
         cmd.append("--debug")
 
     # 로그 파일 생성
-    log_dir = LOG_DIR   # LOG_DIR 사용
+    log_dir = LOG_DIR
     os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, f"meal_{region}_{shard}{range_suffix}.log")
+    range_suffix = f"_{school_range}" if school_range else ""
+    log_file = log_dir / f"meal_{region}_{shard}{range_suffix}.log"   # ✅ Path 객체
 
     with open(log_file, "w") as f:
         proc = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT)

@@ -16,7 +16,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, List, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from constants.paths import LOG_DIR   # 추가
+from constants.paths import NEIS_INFO_DB_PATH, FAILURES_DB_PATH, LOG_DIR # 추가
 
 # 프로젝트 루트를 sys.path에 추가
 sys.path.append(str(Path(__file__).parent.parent))
@@ -183,7 +183,7 @@ def run_merge(collector: str, year: int, log_dir: Path, timeout: Optional[int] =
 def run_shard(region: str, shard: str, collector: str, extra_args: List[str], year: int, timeout: Optional[int] = None) -> Tuple[str, str, int]:
     """collector_cli.py를 통해 단일 지역-샤드 실행"""
     # 로그 파일을 지역별, 샤드별로 분리
-    log_file = Path("logs") / f"{collector}_{region}_{shard}.log"
+    log_file = LOG_DIR / f"{collector}_{region}_{shard}.log"   # ✅ Path 객체 사용
     cmd = [
         sys.executable, "collector_cli.py", collector,
         "--regions", region,

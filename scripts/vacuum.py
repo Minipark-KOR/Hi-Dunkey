@@ -7,7 +7,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.logger import build_logger
 from core.kst_time import now_kst
-from constants.paths import LOG_DIR   # 추가
+from constants.paths import NEIS_INFO_DB_PATH, FAILURES_DB_PATH, LOG_DIR # 추가
 
 logger = build_logger("vacuum", str(LOG_DIR / "vacuum.log"))   # 수정
 
@@ -27,5 +27,5 @@ def vacuum_db(db_path: str, days: int = 30):
     logger.info(f"VACUUM 완료: {db_path} ({deleted}개 삭제)")
 
 if __name__ == "__main__":
-    vacuum_db("data/failures.db")
+    vacuum_db(str(FAILURES_DB_PATH))
     

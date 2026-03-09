@@ -14,13 +14,13 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.retry import RetryManager
 from core.kst_time import now_kst
 from core.logger import build_logger
-from constants.paths import LOG_DIR   # 추가
+from constants.paths import NEIS_INFO_DB_PATH, FAILURES_DB_PATH, LOG_DIR # 추가
 
 logger = build_logger("seed_failures", str(LOG_DIR / "seed_failures.log"))
 
 def seed_missing_schools(
-    neis_info_db_path: str = "data/master/neis_info.db",
-    failures_db_path: str = "data/failures.db",
+    neis_info_db_path: str = str(NEIS_INFO_DB_PATH),      # ✅ 상수 사용
+    failures_db_path: str = str(FAILURES_DB_PATH),       # ✅ 상수 사용
     verbose: bool = True
 ) -> dict:
     result = {

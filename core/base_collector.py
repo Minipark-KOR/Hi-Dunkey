@@ -27,7 +27,7 @@ from .collect_log import CollectLog
 from constants.codes import NEIS_API_KEY
 from constants.paths import MASTER_DB_PATH as MASTER_DB, LOG_DIR
 from core.retry import RetryManager
-
+from constants.paths import NEIS_INFO_DB_PATH, FAILURES_DB_PATH
 
 class BaseCollector(ABC):
     # ----- 메타데이터 (하위 클래스에서 오버라이드) -----
@@ -121,7 +121,7 @@ class BaseCollector(ABC):
             self.logger.warning("school_info.db 없음. 캐시 없이 동작")
             return
         try:
-            with sqlite3.connect(MASTER_DB) as conn:
+            with sqlite3.connect(str(NEIS_INFO_DB_PATH)) as conn:
                 cur = conn.execute("""
                     SELECT sc_code, atpt_code, school_id, sc_name, sc_kind,
                            CASE WHEN sc_kind LIKE '%초등%' THEN '초'

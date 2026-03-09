@@ -18,13 +18,22 @@ EXPORT_DIR = DATA_DIR / config.get('paths', 'export_dir', default='export')
 QUERIES_DIR = DATA_DIR / config.get('paths', 'queries_dir', default='queries')
 GA4_DIR = DATA_DIR / config.get('paths', 'ga4_dir', default='ga4')
 
-# DB 파일 경로
-GLOBAL_VOCAB_PATH = str(ACTIVE_DIR / "global_vocab.db")
-UNKNOWN_DB_PATH = str(ACTIVE_DIR / "unknown_patterns.db")
-MASTER_DB_PATH = str(MASTER_DIR / "neis_info.db")
+# 각 collector별 DB 파일 경로 (Path 객체) - 통일!
+NEIS_INFO_DB_PATH = MASTER_DIR / "neis_info.db"
+SCHOOL_INFO_DB_PATH = MASTER_DIR / "school_info.db"
+MEAL_DB_PATH = ACTIVE_DIR / "meal.db"
+SCHEDULE_DB_PATH = ACTIVE_DIR / "schedule.db"
+TIMETABLE_DB_PATH = ACTIVE_DIR / "timetable.db"
 
-# 모든 디렉토리 생성 (필요시)
+# 공통 DB (Path 객체)
+FAILURES_DB_PATH = DATA_DIR / "failures.db"
+GLOBAL_VOCAB_DB_PATH = ACTIVE_DIR / "global_vocab.db"
+UNKNOWN_DB_PATH = ACTIVE_DIR / "unknown_patterns.db"
+
+# (선택) 하위 호환성을 위해 문자열 버전이 필요하면 별도 정의
+# MASTER_DB_PATH_STR = str(NEIS_INFO_DB_PATH)
+
+# 모든 디렉토리 생성
 for d in [ACTIVE_DIR, MASTER_DIR, LOG_DIR, METRICS_DIR, 
           TEMP_DIR, CACHE_DIR, EXPORT_DIR, QUERIES_DIR, GA4_DIR]:
     d.mkdir(parents=True, exist_ok=True)
-    
