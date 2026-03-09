@@ -4,6 +4,7 @@ import os
 import yaml
 from pathlib import Path
 from typing import Any, Dict, Optional
+from constants.paths import GLOBAL_VOCAB_DB_PATH, UNKNOWN_DB_PATH
 
 class Config:
     _instance = None
@@ -31,8 +32,8 @@ class Config:
             "paths": {
                 "master_dir": "data/master",
                 "active_dir": "data/active",
-                "global_vocab": "data/active/global_vocab.db",
-                "unknown_db": "data/active/unknown_patterns.db",
+                "global_vocab": str(GLOBAL_VOCAB_DB_PATH),
+                "unknown_db": str(UNKNOWN_DB_PATH),
                 "logs_dir": "logs",
                 "metrics_dir": "metrics",
             },

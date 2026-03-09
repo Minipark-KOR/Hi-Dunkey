@@ -63,7 +63,7 @@ def get_geo_collector() -> GeoCollector:
     global _GEO_COLLECTOR
     if _GEO_COLLECTOR is None:
         _GEO_COLLECTOR = GeoCollector(
-            global_db_path="data/global_vocab.db",
+            global_db_path=str(GLOBAL_VOCAB_DB_PATH),
             neis_info_db_path=_NEIS_INFO_DB,
             failures_db_path=_FAILURES_DB,
             debug_mode=False,
