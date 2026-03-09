@@ -14,6 +14,7 @@ import threading
 import time
 import sqlite3
 from pathlib import Path
+from constants.paths import NEIS_INFO_ODD_DB_PATH, NEIS_INFO_EVEN_DB_PATH
 
 # ANSI 색상
 GREEN = "\033[92m"
@@ -71,8 +72,8 @@ def main():
 
     odd_count = 0
     even_count = 0
-    odd_db = Path("data/master/neis_info_odd.db")
-    even_db = Path("data/master/neis_info_even.db")
+    odd_db = NEIS_INFO_ODD_DB_PATH
+    even_db = NEIS_INFO_EVEN_DB_PATH
     if odd_db.exists():
         try:
             conn = sqlite3.connect(str(odd_db))

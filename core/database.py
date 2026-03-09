@@ -5,7 +5,7 @@
 import sqlite3
 from contextlib import contextmanager
 from typing import Optional, Generator
-
+from constants.paths import MASTER_DIR
 
 @contextmanager
 def get_db_connection(
@@ -61,7 +61,7 @@ def get_db_reader(
 
 def attach_master_db(
     conn: sqlite3.Connection,
-    master_path: str = "../data/master/school_master.db"
+    master_path: str = str(MASTER_DIR / "school_master.db")
 ) -> None:
     """학교 마스터 DB 연결"""
     conn.execute(f"ATTACH DATABASE '{master_path}' AS master_db")

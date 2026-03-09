@@ -7,6 +7,7 @@ from pathlib import Path
 from contextlib import contextmanager
 from core.kst_time import now_kst
 from core.logger import build_logger
+from constants.paths import FAILURES_DB_PATH
 
 logger = build_logger("retry", "logs/retry.log")
 
@@ -14,7 +15,7 @@ logger = build_logger("retry", "logs/retry.log")
 class RetryManager:
     def __init__(
         self,
-        db_path: str = "data/failures.db",
+        db_path: str = str(FAILURES_DB_PATH),
         max_retries: Optional[int] = None,
         base_delay: int = 60,
         backoff_factor: int = 2,

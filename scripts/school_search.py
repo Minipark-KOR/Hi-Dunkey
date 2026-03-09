@@ -17,7 +17,7 @@ from datetime import datetime
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from constants.paths import LOG_DIR   # 추가
+from constants.paths import NEIS_INFO_DB_PATH, LOG_DIR
 from core.search_stats import SearchStats
 
 
@@ -55,7 +55,7 @@ class LightSchoolSearch:
     """초경량 학교 검색 with 성능 통계 & health check"""
     
     def __init__(self, index_path: str = "data/school_light.json", 
-                 detail_db: str = "data/master/neis_info.db"):
+                 detail_db: str = str(NEIS_INFO_DB_PATH)
         """
         Args:
             index_path: 인덱스 파일 경로

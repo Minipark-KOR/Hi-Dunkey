@@ -27,7 +27,7 @@ from .collect_log import CollectLog
 from constants.codes import NEIS_API_KEY
 from constants.paths import MASTER_DB_PATH as MASTER_DB, LOG_DIR
 from core.retry import RetryManager
-from constants.paths import NEIS_INFO_DB_PATH, FAILURES_DB_PATH
+from constants.paths import FAILURES_DB_PATH
 
 class BaseCollector(ABC):
     # ----- 메타데이터 (하위 클래스에서 오버라이드) -----
@@ -89,7 +89,7 @@ class BaseCollector(ABC):
         self._closeable_resources = []
         self.data_guard = DataGuard()
         self.collect_log = CollectLog()
-        self.retry_mgr = RetryManager(db_path="data/failures.db")
+        self.retry_mgr = RetryManager(db_path=str(FAILURES_DB_PATH))
 
         self._init_db()
         self.completed_items: set = set()

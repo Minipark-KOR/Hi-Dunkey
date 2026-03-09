@@ -18,7 +18,7 @@ from core.meta_vocab import MetaVocabManager
 from core.filters import AddressFilter
 from core.retry import RetryManager
 from core.logger import build_logger
-from constants.paths import NEIS_INFO_DB_PATH, FAILURES_DB_PATH, LOG_DIR # 추가 
+from constants.paths import GLOBAL_VOCAB_DB_PATH, NEIS_INFO_DB_PATH, FAILURES_DB_PATH
 
 logger = build_logger("geo_collector", str(LOG_DIR / "geo_collector.log"))
 
@@ -58,9 +58,9 @@ class GeoCollector:
 
     def __init__(
         self,
-        global_db_path: str = "data/global_vocab.db",
-        school_db_path: str = "data/master/neis_info.db",
-        failures_db_path: str = "data/failures.db",
+        global_db_path: str = str(GLOBAL_VOCAB_DB_PATH),
+        school_db_path: str = str(NEIS_INFO_DB_PATH),
+        failures_db_path: str = str(FAILURES_DB_PATH),
         debug_mode: bool = False,
         api_limit: Optional[int] = None,
     ):

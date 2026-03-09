@@ -10,6 +10,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent))
 from core.database import get_db_connection
+from constants.paths import SCHOOL_INFO_ODD_DB_PATH, SCHOOL_INFO_EVEN_DB_PATH, SCHOOL_INFO_DB_PATH
 
 def merge_shards(shard_files, output_db):
     if not shard_files:
@@ -52,9 +53,9 @@ def merge_shards(shard_files, output_db):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--odd", default="data/master/school_info_odd.db")
-    parser.add_argument("--even", default="data/master/school_info_even.db")
-    parser.add_argument("--output", default="data/master/school_info.db")
+    parser.add_argument("--odd", default=str(SCHOOL_INFO_ODD_DB_PATH))
+    parser.add_argument("--even", default=str(SCHOOL_INFO_EVEN_DB_PATH))
+    parser.add_argument("--output", default=str(SCHOOL_INFO_DB_PATH))
     args = parser.parse_args()
 
     shard_files = []

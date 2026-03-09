@@ -5,8 +5,8 @@ unknown 패턴 자동 분석 - GitHub Actions용
 import os
 import sqlite3
 from core.meal_extractor import UnknownPatternAnalyzer
+from constants.paths import UNKNOWN_DB_PATH
 
-UNKNOWN_DB_PATH = "data/active/unknown_patterns.db"
 REPORT_PATH = "unknown_patterns_report.md"
 
 

@@ -8,9 +8,10 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.retry import RetryManager
+from constants.paths import NEIS_INFO_DB_PATH
 
 rm = RetryManager()
-conn = sqlite3.connect("data/master/neis_info.db")
+conn = sqlite3.connect(str(NEIS_INFO_DB_PATH))
 conn.row_factory = sqlite3.Row
 
 cur = conn.execute("SELECT sc_code, address, atpt_code FROM schools WHERE latitude IS NULL")

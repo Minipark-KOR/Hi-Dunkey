@@ -23,7 +23,7 @@ from core.filters import AddressFilter
 from core.error_classifier import classify_error
 from core.geo import VWorldGeocoder
 from collectors.geo_collector import GeoCollector
-from constants.paths import NEIS_INFO_DB_PATH, FAILURES_DB_PATH, LOG_DIR # 추가
+from constants.paths import GLOBAL_VOCAB_DB_PATH, NEIS_INFO_DB_PATH, SCHOOL_INFO_DB_PATH, FAILURES_DB_PATH, LOG_DIR
 
 logger = build_logger("retry_worker", str(LOG_DIR / "retry_worker.log"))
 address_mapping_logger = build_logger("address_mapping", str(LOG_DIR / "address_mapping.log"))
@@ -33,6 +33,7 @@ TASK_HANDLERS: Dict[tuple, Callable[[Dict[str, Any]], HandlerResult]] = {}
 
 _GEO_COLLECTOR: Optional[GeoCollector] = None
 _VWORLD_GEOCODER: Optional[VWorldGeocoder] = None
+global_db_path=str(GLOBAL_VOCAB_DB_PATH),
 _NEIS_INFO_DB = str(NEIS_INFO_DB_PATH)
 _SCHOOLINFO_DB = str(SCHOOL_INFO_DB_PATH)
 _FAILURES_DB = str(FAILURES_DB_PATH)

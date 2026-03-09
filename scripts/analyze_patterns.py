@@ -10,9 +10,7 @@ import sys
 import sqlite3
 from typing import Dict, Any
 from core.meal_extractor import UnknownPatternAnalyzer
-
-UNKNOWN_DB_PATH = "data/active/unknown_patterns.db"
-GLOBAL_VOCAB_PATH = "data/active/global_vocab.db"
+from constants.paths import UNKNOWN_DB_PATH, GLOBAL_VOCAB_DB_PATH
 
 
 def analyze_patterns(min_frequency: int = 10, limit: int = 50):

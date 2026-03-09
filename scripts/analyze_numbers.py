@@ -3,9 +3,10 @@ import sqlite3
 import json
 from collections import Counter
 import re
+from constants.paths import MASTER_DIR
 
 def analyze_school_numbers():
-    db_path = "../data/master/school_master.db"
+    db_path = str(MASTER_DIR / "school_master.db")   # 필요시 상수 추가
     
     print(f"🔍 학교 DB 분석: {db_path}")
     

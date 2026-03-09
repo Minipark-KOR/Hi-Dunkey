@@ -181,8 +181,8 @@ def check_db_size(neis_info_db_path: str, failures_db_path: str):
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="누락 학교를 실패 큐에 등록")
-    parser.add_argument("--neis-info-db", default="data/master/neis_info.db")
-    parser.add_argument("--failures-db", default="data/failures.db")
+    parser.add_argument("--neis-info-db", default=str(NEIS_INFO_DB_PATH))
+    parser.add_argument("--failures-db", default=str(FAILURES_DB_PATH))
     parser.add_argument("-q", "--quiet", action="store_true")
     parser.add_argument("-m", "--menu", action="store_true")
     args = parser.parse_args()

@@ -113,9 +113,9 @@ def merge_shards(shard_files, output_db, verbose=True):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="neis_info 샤드 DB 병합")
-    parser.add_argument("--odd", default="data/master/neis_info_odd.db", help="odd 샤드 파일 경로")
-    parser.add_argument("--even", default="data/master/neis_info_even.db", help="even 샤드 파일 경로")
-    parser.add_argument("--output", default="data/master/neis_info_total.db", help="출력 통합 DB 경로")
+    rser.add_argument("--odd", default=str(NEIS_INFO_ODD_DB_PATH))
+    parser.add_argument("--even", default=str(NEIS_INFO_EVEN_DB_PATH))
+    parser.add_argument("--output", default=str(NEIS_INFO_TOTAL_DB_PATH))
     parser.add_argument("--quiet", action="store_true", help="출력 최소화")
     parser.add_argument("--year", type=int, help="학년도 (사용되지 않음)")  # 추가
     args = parser.parse_args()
