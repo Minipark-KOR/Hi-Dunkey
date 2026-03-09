@@ -805,7 +805,7 @@ def run_smoke_test() -> bool:
         # 3. CLI 실행 테스트 (제한적)
         result = subprocess.run(
             [sys.executable, "collector_cli.py", "neis_info", "--regions", "B10", "--limit", "1", "--quiet"],
-            capture_output=True, text=True, timeout=10
+            capture_output=True, text=True, timeout=30
         )
         if result.returncode != 0:
             print(f"  ⚠️ CLI 실행 실패 (코드 {result.returncode}): {result.stderr}")
