@@ -198,7 +198,7 @@ class NeisInfoCollector(BaseCollector):
             return 0
             
     def _update_schools_with_diff(self, new_rows: List[dict], region_code: str, limit: Optional[int] = None) -> Tuple[int, int, int]:
-        # ✅ 1. 함수 시작에서 region_name 정의 (가장 중요!)
+        # ✅ 1. 함수 시작에서 region_name 을 가장 먼저 정의 (필수!)
         region_name = REGION_NAMES.get(region_code, region_code)
 
         # ✅ 2. 디버그 출력 (원래 로직 유지)
@@ -207,7 +207,7 @@ class NeisInfoCollector(BaseCollector):
             if new_rows:
                 self.print(f"🔍 sample keys: {list(new_rows[0].keys())}")
 
-        # ✅ 3. 기존 데이터 조회 로직
+        # ✅ 3. 기존 데이터 조회 로직 (변경 없음)
         existing = {}
         if os.path.exists(self.db_path):
             try:
@@ -344,10 +344,12 @@ class NeisInfoCollector(BaseCollector):
 
             # 진행률 출력 (일정 시간 간격 또는 마지막에)
             if time.time() - last_update >= 0.2 or i == total_items:
-                self.print_progress(i, total_items, prefix=f"[{region_name}]")  # ✅ region_name 은 함수 시작에서 정의됨
+                self.print_progress(i, total_items, prefix=f"[{region_name}]")
                 last_update = time.time()
 
-        # region_name = REGION_NAMES.get(region_code, region_code)
+        # ✅ 4. 함수 끝의 중복 정의 제거 (주석 처리 또는 삭제)
+        # region_name = REGION_NAMES.get(region_code, region_code)  # ← 이 줄 삭제/주석
+        
         self.logger.info(f"[{region_name}] 좌표 갱신: {len(new_coords)}개 / 완료")
         return len(new_coords), failed_count, skipped_count
 
