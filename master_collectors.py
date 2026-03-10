@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Union, Tuple
+from constants.paths import LOG_DIR
 
 # ANSI 색상 (Windows 호환 처리)
 if sys.platform == "win32":
@@ -44,8 +45,7 @@ else:
     RESET = "\033[0m"
 
 BASE_DIR = Path(__file__).parent
-LOG_DIR = BASE_DIR / "logs"
-LOG_DIR.mkdir(exist_ok=True)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 from core.address import parse_region_input   # ← 추가
 
