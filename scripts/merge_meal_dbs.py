@@ -12,12 +12,12 @@ from typing import List
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MEAL_DIR = os.path.join(BASE_DIR, "data", "active", "meal")
-GLOBAL_VOCAB_PATH = os.path.join(BASE_DIR, "data", "active", "global_vocab.db")
+from constants.paths import ACTIVE_DIR, GLOBAL_VOCAB_DB_PATH
+
+MEAL_DIR = os.path.join(ACTIVE_DIR, "meal")  # meal 하위 디렉토리?
 
 def consolidate_vocab(shard_dbs: List[str]):
-    conn_global = sqlite3.connect(GLOBAL_VOCAB_PATH)
+    conn_global = sqlite3.connect(GLOBAL_VOCAB_DB_PATH)
     conn_global.execute("PRAGMA journal_mode=WAL")
     conn_global.execute("""
         CREATE TABLE IF NOT EXISTS vocab_meal (
@@ -68,8 +68,9 @@ def consolidate_vocab(shard_dbs: List[str]):
 
 def merge_databases(do_consolidate_vocab: bool = False):
     start_time = time.time()
-    total_db_path = os.path.join(MEAL_DIR, "meal.db")
-    shard_dbs = [db for db in glob.glob(os.path.join(MEAL_DIR, "meal_*.db")) if "total" not in db]
+    total_db_path = os.path.join(ACTIVE_DIR, "meal.db")
+    # meal 하위 디렉토리에 샤드 파일이 있다면 경로 수정
+    shard_dbs = [db for db in glob.glob(os.path.join(ACTIVE_DIR, "meal_*.db")) if "total" not in db]
     print(f"🔍 발견된 샤드 DB: {len(shard_dbs)}개")
     if not shard_dbs:
         print("❌ 병합할 샤드 데이터 없음")

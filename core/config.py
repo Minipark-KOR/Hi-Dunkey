@@ -23,16 +23,16 @@ class Config:
         else:
             with open(config_path, 'r', encoding='utf-8') as f:
                 self._config = yaml.safe_load(f)
-        # 환경변수로 오버라이드 가능하게 (예: PATHS__MASTER_DIR)
+        # 환경변수로 오버라이드 가능하게 (예: CONFIG__PATHS__MASTER_DIR)
         self._override_from_env()
 
     def _default_config(self):
+        # 주의: MASTER_DIR, ACTIVE_DIR 등은 constants.paths에서 정의되므로
+        # 여기서는 기본값만 제공 (실제 경로는 paths.py에서 관리)
         return {
             "paths": {
-                "master_dir": str(MASTER_DIR),   # 문자열이 필요한 경우 str() 변환
-                "active_dir": str(ACTIVE_DIR),
-                "global_vocab": str(GLOBAL_VOCAB_DB_PATH),
-                "unknown_db": str(UNKNOWN_DB_PATH),
+                "master_dir": "data/master",
+                "active_dir": "data/active",
                 "logs_dir": "logs",
                 "metrics_dir": "metrics",
             },
@@ -66,6 +66,17 @@ class Config:
     def get_collector_config(self, name: str) -> Dict[str, Any]:
         """특정 수집기의 설정 반환 (없으면 빈 딕셔너리)"""
         return self._config.get("collectors", {}).get(name, {})
+
+    def get_api_key(self, name: str) -> str:
+        """
+        API 키 조회.
+        설정 파일의 api 섹션에서 '{name}_api_key_env'에 해당하는 환경변수명을 찾아 값을 반환.
+        예: get_api_key('neis') → config['api']['neis_api_key_env'] 환경변수 값
+        """
+        env_var = self.get('api', f'{name}_api_key_env')
+        if env_var:
+            return os.environ.get(env_var, '').strip()
+        return ''
 
 
 # 싱글톤 인스턴스

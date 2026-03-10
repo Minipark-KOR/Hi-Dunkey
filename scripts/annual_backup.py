@@ -35,27 +35,25 @@ except ImportError:
 from core.kst_time import now_kst
 from core.metrics import generate_and_save_metrics, cleanup_old_metrics
 from constants.domains import DOMAIN_CONFIG, GLOBAL_DBS
-from constants.paths import DATA_DIR, BACKUP_DIR, ARCHIVE_DIR, LOG_DIR, BACKUP_DIR
+from constants.paths import DATA_DIR, BACKUP_DIR, ARCHIVE_DIR, LOG_DIR, METRICS_DIR
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
-# ✅ 수정: SchoolMasterCollector -> NeisInfoCollector
+# ✅ 올바른 collector 클래스 임포트
 from collectors.neis_info_collector import NeisInfoCollector
 from collectors.meal_collector import MealCollector
-from collectors.timetable_collector import TimetableCollector
-from collectors.schedule_collector import ScheduleCollector
+from collectors.timetable_collector import AnnualFullTimetableCollector as TimetableCollector
+from collectors.schedule_collector import AnnualFullScheduleCollector as ScheduleCollector
 from constants.codes import ALL_REGIONS
 
 COLLECTOR_CLASSES = {
-    "school":    NeisInfoCollector,      # ✅ 수정
+    "school":    NeisInfoCollector,
     "meal":      MealCollector,
     "timetable": TimetableCollector,
     "schedule":  ScheduleCollector,
 }
-
-from constants.paths import METRICS_DIR
 
 class YearlyBackup:
     # ... (클래스 내용은 동일, 변경 없음)
@@ -84,7 +82,7 @@ class YearlyBackup:
         self.logger.addHandler(ch)
 
     # ──────────────────────────────────────────
-    # Public API
+    # Public API (변경 없음)
     # ──────────────────────────────────────────
 
     def run_full_backup(self, year: Optional[int] = None,
@@ -492,7 +490,7 @@ class YearlyBackup:
 
 
 # ──────────────────────────────────────────
-# CLI
+# CLI (변경 없음)
 # ──────────────────────────────────────────
 
 def main():
@@ -539,3 +537,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    

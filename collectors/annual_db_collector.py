@@ -55,10 +55,10 @@ def clear_checkpoint(step: str, region: str):
     CHECKPOINT_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2))
 
 
-def _run_step(label, collector_cls, fetch_fn, regions, **kwargs) -> list:
+def _run_step(label, collector_cls, fetch_fn, regions, debug=False, **kwargs) -> list:
     print(f"\n🚀 {label} 시작")
     failed = []
-    collector = collector_cls()
+    collector = collector_cls(debug_mode=debug)  # debug_mode 전달
     try:
         for region in regions:
             try:
@@ -74,7 +74,7 @@ def _run_step(label, collector_cls, fetch_fn, regions, **kwargs) -> list:
     return failed
 
 
-def full_collect(year, regions, skip_school=False, retry_failed=False) -> int:
+def full_collect(year, regions, skip_school=False, retry_failed=False, debug=False) -> int:
     total_failed = []
 
     if retry_failed:
@@ -82,16 +82,16 @@ def full_collect(year, regions, skip_school=False, retry_failed=False) -> int:
             failed_regions = load_failed_regions(step)
             if failed_regions:
                 print(f"🔄 [{step}] 실패 지역 재시도: {failed_regions}")
-                total_failed.extend(_run_step(step, cls, fn, failed_regions, year=year))
+                total_failed.extend(_run_step(step, cls, fn, failed_regions, debug=debug, year=year))
         return len(total_failed)
 
     if not skip_school:
         cls, fn = STEP_MAP["학교 기본정보"]
-        total_failed.extend(_run_step("학교 기본정보", cls, fn, regions))
+        total_failed.extend(_run_step("학교 기본정보", cls, fn, regions, debug=debug))
 
     for label in ["급식", "시간표 1학기", "시간표 2학기", "학사일정"]:
         cls, fn = STEP_MAP[label]
-        total_failed.extend(_run_step(label, cls, fn, regions, year=year))
+        total_failed.extend(_run_step(label, cls, fn, regions, debug=debug, year=year))
 
     return len(total_failed)
 
@@ -102,11 +102,14 @@ def main():
     parser.add_argument("--regions", default="ALL")
     parser.add_argument("--skip_school", action="store_true")
     parser.add_argument("--retry_failed", action="store_true")
+    parser.add_argument("--debug", action="store_true", help="디버그 모드 활성화")
     args = parser.parse_args()
 
     regions = parse_regions(args.regions)
-    print(f"🎯 수집 시작 | 학년도={args.year} | 교육청={len(regions)}개" + (" | 재시도 모드" if args.retry_failed else ""))
-    fail_count = full_collect(args.year, regions, args.skip_school, args.retry_failed)
+    print(f"🎯 수집 시작 | 학년도={args.year} | 교육청={len(regions)}개" +
+          (" | 재시도 모드" if args.retry_failed else "") +
+          (" | 디버그 모드" if args.debug else ""))
+    fail_count = full_collect(args.year, regions, args.skip_school, args.retry_failed, args.debug)
 
     if fail_count > 0:
         print(f"\n❌ 총 {fail_count}건 실패", file=sys.stderr)

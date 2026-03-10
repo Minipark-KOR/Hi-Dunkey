@@ -243,16 +243,14 @@ def get_basic_options(run_type: str) -> List[str]:
         logger.info("디버그 모드: --debug")
         print(f"{YELLOW}디버그 모드: --debug 적용{RESET}")
 
-    regions_input = input("지역 (예: 서울,경기 또는 B10,C10): ").strip()
-    if regions_input:
-        codes = parse_region_input(regions_input)
-        if codes:
-            regions_str = ','.join(codes)
-            base_args.extend(['--regions', regions_str])
-            logger.info(f"지역 옵션: {regions_str}")
+    regions = input("지역 코드 (기본 전체, 여러 개는 쉼표, 예: B10,C10): ").strip()
+    if regions:
+        if validate_region_input(regions):
+            base_args.extend(['--regions', regions])
+            logger.info(f"지역 옵션: {regions}")
         else:
-            logger.warning(f"유효한 지역이 없음: {regions_input}")
-            print(f"{YELLOW}⚠️ 유효한 지역이 없어 무시합니다.{RESET}")
+            logger.warning(f"잘못된 지역 형식: {regions}")
+            print(f"{YELLOW}⚠️ 잘못된 형식, 무시합니다.{RESET}")
 
     limit = input("수집 제한 개수 (기본: 전체): ").strip()
     if limit.isdigit():
@@ -263,6 +261,10 @@ def get_basic_options(run_type: str) -> List[str]:
         base_args.extend(['--limit', limit])
         logger.info(f"제한 개수: {limit}")
     return base_args
+
+def validate_region_input(regions: str) -> bool:
+    """지역 코드 입력 형식 검증 (예: B10,C10,J10)"""
+    return bool(re.match(r'^[A-Z]\d{2}(,[A-Z]\d{2})*$', regions.strip()))
 
 def menu_advanced_mode() -> Tuple[Optional[List[str]], bool, Optional[MenuResult]]:
     """고급 모드 메뉴형 옵션 선택"""
@@ -311,17 +313,14 @@ def menu_advanced_mode() -> Tuple[Optional[List[str]], bool, Optional[MenuResult
         is_parallel = False
         logger.info("샤드 모드: 통합")
 
-    # [변경] 지역 입력 처리
-    regions_input = input("\n지역 (예: 서울,경기 또는 B10,C10): ").strip()
-    if regions_input:
-        codes = parse_region_input(regions_input)
-        if codes:
-            regions_str = ','.join(codes)
-            args.extend(['--regions', regions_str])
-            logger.info(f"지역: {regions_str}")
+    regions = input("\n지역 코드 (기본 전체, 여러 개는 쉼표, 예: B10,C10): ").strip()
+    if regions:
+        if validate_region_input(regions):
+            args.extend(['--regions', regions])
+            logger.info(f"지역: {regions}")
         else:
-            logger.warning(f"유효한 지역이 없음: {regions_input}")
-            print(f"{YELLOW}⚠️ 유효한 지역이 없어 무시합니다.{RESET}")
+            logger.warning(f"잘못된 지역 형식: {regions}")
+            print(f"{YELLOW}⚠️ 잘못된 형식, 무시합니다.{RESET}")
 
     limit = input("수집 제한 개수 (기본 전체): ").strip()
     if limit.isdigit():

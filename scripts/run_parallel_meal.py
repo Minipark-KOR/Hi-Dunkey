@@ -9,7 +9,13 @@ import sys
 import os
 from multiprocessing import Pool
 from typing import List, Tuple
-from constants.paths import NEIS_INFO_DB_PATH, FAILURES_DB_PATH, LOG_DIR # 추가
+from pathlib import Path
+
+# 프로젝트 루트를 sys.path에 추가
+sys.path.append(str(Path(__file__).parent.parent))
+
+from constants.paths import LOG_DIR
+from core.config import config
 
 # 실행할 조합 정의: (region, shard, school_range)
 # region: 교육청 코드 (예: "J10", "B10", "ALL" 등)
@@ -33,11 +39,12 @@ COMBINATIONS: List[Tuple[str, str, str | None]] = [
     # 대구 (D10) - 2개 조합
     ("D10", "odd", None),
     ("D10", "even", None),
-    # 필요에 따라 추가 (광주, 대전, 울산, 세종, 강원, 충북, 충남, 전북, 전남, 경북, 경남, 제주)
+    # 필요에 따라 추가
 ]
 
-YEAR = "2025"      # 수집할 학년도 (원하는 연도로 변경)
-DEBUG = True       # 디버그 모드
+# 설정 또는 환경변수에서 학년도 가져오기
+DEFAULT_YEAR = str(config.get('pipeline', 'default_year', default='2025'))
+DEBUG = True  # 디버그 모드
 
 
 def run_collector(args: Tuple[str, str, str | None, str, bool]) -> int:
@@ -45,7 +52,7 @@ def run_collector(args: Tuple[str, str, str | None, str, bool]) -> int:
     region, shard, school_range, year, debug = args
     cmd = [
         sys.executable,
-        "collectors/annual_full_meal_collector.py",
+        "collectors/monthly_meal_collector.py",  # ✅ 수정됨
         "--regions", region,
         "--year", year,
         "--shard", shard,
@@ -59,7 +66,7 @@ def run_collector(args: Tuple[str, str, str | None, str, bool]) -> int:
     log_dir = LOG_DIR
     os.makedirs(log_dir, exist_ok=True)
     range_suffix = f"_{school_range}" if school_range else ""
-    log_file = log_dir / f"meal_{region}_{shard}{range_suffix}.log"   # ✅ Path 객체
+    log_file = log_dir / f"meal_{region}_{shard}{range_suffix}.log"
 
     with open(log_file, "w") as f:
         proc = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT)
@@ -67,8 +74,14 @@ def run_collector(args: Tuple[str, str, str | None, str, bool]) -> int:
 
 
 def main():
-    print(f"🚀 급식 병렬 수집 시작: {len(COMBINATIONS)}개 작업")
-    tasks = [(r, s, rg, YEAR, DEBUG) for r, s, rg in COMBINATIONS]
+    # 명령행 인자로 학년도 받기 (선택 사항)
+    import argparse
+    parser = argparse.ArgumentParser(description="급식 병렬 수집")
+    parser.add_argument("--year", default=DEFAULT_YEAR, help="수집할 학년도")
+    args = parser.parse_args()
+
+    print(f"🚀 급식 병렬 수집 시작: {len(COMBINATIONS)}개 작업 (학년도: {args.year})")
+    tasks = [(r, s, rg, args.year, DEBUG) for r, s, rg in COMBINATIONS]
 
     with Pool(processes=len(tasks)) as pool:
         results = pool.map(run_collector, tasks)
@@ -88,3 +101,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    

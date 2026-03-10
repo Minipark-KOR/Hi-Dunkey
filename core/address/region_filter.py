@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
 """지역 코드 필터링 유틸리티"""
-from typing import List, Optional
+from typing import List
 
-# 지역 코드 ↔ 이름 매핑 (수집기와 공유)
-REGION_CODES = {
-    "B10": "서울", "C10": "부산", "D10": "대구", "E10": "인천",
-    "F10": "광주", "G10": "대전", "H10": "울산", "I10": "세종",
-    "J10": "경기", "K10": "강원", "L10": "충북", "M10": "충남",
-    "N10": "전북", "O10": "전남", "P10": "경북", "Q10": "경남",
-    "R10": "제주", "S10": "외국"
-}
+from constants.codes import REGION_NAMES
+
+REGION_CODES = REGION_NAMES.copy()
+REGION_NAMES_TO_CODE = {name: code for code, name in REGION_NAMES.items()}
 
 def parse_region_input(region_input: str) -> List[str]:
     """
@@ -22,9 +18,8 @@ def parse_region_input(region_input: str) -> List[str]:
     result = []
     for item in region_input.split(','):
         item = item.strip()
-        if item in REGION_CODES.values():
-            code = [k for k, v in REGION_CODES.items() if v == item][0]
-            result.append(code)
+        if item in REGION_NAMES_TO_CODE:
+            result.append(REGION_NAMES_TO_CODE[item])
         elif item in REGION_CODES:
             result.append(item)
         else:
@@ -33,9 +28,9 @@ def parse_region_input(region_input: str) -> List[str]:
 
 def get_region_name(code: str) -> str:
     """지역 코드 → 이름"""
-    return REGION_CODES.get(code, code)
+    return REGION_NAMES.get(code, code)
 
 def get_all_regions() -> List[tuple]:
     """모든 지역 (코드, 이름) 리스트"""
-    return list(REGION_CODES.items())
+    return list(REGION_NAMES.items())
     

@@ -12,13 +12,16 @@ except ImportError:
     logging.warning("pandas 가 없습니다. Excel 내보내기 기능이 제한됩니다.")
 
 from .base_exporter import BaseExporter
+from constants.paths import EXCEL_DIR
+from constants.codes import REGION_NAMES
 
 logger = logging.getLogger(__name__)
+
 
 class ExcelExporter(BaseExporter):
     """SQLite DB → Excel 내보내기"""
 
-    def __init__(self, output_dir: str = "reports/excel", filename_prefix: str = "school_export"):
+    def __init__(self, output_dir: str = str(EXCEL_DIR), filename_prefix: str = "school_export"):
         super().__init__(output_dir, filename_prefix)
 
     def export_from_db(self, db_path: str, table_name: str,
@@ -63,7 +66,7 @@ class ExcelExporter(BaseExporter):
             params.extend(school_types)
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-        columns_sql = ', '.join(f"`{c}`" for c in columns)  # SQL 인젝션 방어
+        columns_sql = ', '.join(f"`{c}`" for c in columns)
 
         query = f"SELECT {columns_sql} FROM `{table_name}` {where_sql} ORDER BY region_name, school_name"
 
@@ -89,7 +92,8 @@ class ExcelExporter(BaseExporter):
         }
         df = df.rename(columns={k: v for k, v in column_names_kr.items() if k in df.columns})
 
-        filename = self._generate_filename("xlsx", regions[0] if regions and len(regions)==1 else None)
+        region_suffix = regions[0] if regions and len(regions) == 1 else None
+        filename = self._generate_filename("xlsx", region_suffix)
         output_path = self.output_dir / filename
 
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
@@ -110,7 +114,8 @@ class ExcelExporter(BaseExporter):
 
         import pandas as pd
         df = pd.DataFrame(data)
-        filename = self._generate_filename("xlsx", metadata.get('region') if metadata else None)
+        region_suffix = metadata.get('region') if metadata else None
+        filename = self._generate_filename("xlsx", region_suffix)
         output_path = self.output_dir / filename
         df.to_excel(output_path, index=False)
         logger.info(f"Excel 내보내기 완료: {output_path} ({len(df)} 건)")

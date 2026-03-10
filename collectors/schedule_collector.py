@@ -25,26 +25,28 @@ NEIS_URL = NEIS_ENDPOINTS['schedule']
 
 
 class AnnualFullScheduleCollector(BaseCollector):
-    # ----- 메타데이터 -----
+    # ----- 메타데이터 (클래스 변수) -----
     description = "학사일정"
     table_name = "schedule"
     merge_script = "scripts/merge_schedule_dbs.py"
-    
+
     _cfg = config.get_collector_config("schedule")
     timeout_seconds = _cfg.get("timeout_seconds", 3600)
     parallel_timeout_seconds = _cfg.get("parallel_timeout_seconds", 7200)
     merge_timeout_seconds = _cfg.get("merge_timeout_seconds", 3600)
+    parallel_script = _cfg.get("parallel_script", "scripts/run_pipeline.py")
+    modes = _cfg.get("modes", ["통합", "odd 샤드", "even 샤드", "병렬 실행"])
     metrics_config = _cfg.get("metrics_config", {"enabled": True})
-    parallel_config = {
-        "max_workers": _cfg.get("max_workers", 4),
-        "cpu_factor": _cfg.get("cpu_factor", 1.0),
-        "max_by_api": _cfg.get("max_by_api", 10),
-        "absolute_max": _cfg.get("absolute_max", 16),
-    }
-    # ---------------------
+    parallel_config = _cfg.get("parallel_config", {
+        "max_workers": 4,
+        "cpu_factor": 1.0,
+        "max_by_api": 10,
+        "absolute_max": 16,
+    })
+    # ------------------------------------
 
-    def __init__(self, shard="none", school_range=None, debug_mode=False):
-        super().__init__("schedule", str(ACTIVE_DIR), shard, school_range)
+    def __init__(self, shard="none", school_range=None, debug_mode=False, **kwargs):
+        super().__init__("schedule", str(ACTIVE_DIR), shard, school_range, **kwargs)
         self.api_context = 'schedule'
         self.debug_mode = debug_mode
         self.run_ay = get_current_school_year(now_kst())
@@ -112,6 +114,10 @@ class AnnualFullScheduleCollector(BaseCollector):
         self.fetch_year(region, year)
 
     def fetch_year(self, region: str, year: int):
+        # ✅ 디버그 출력 추가
+        if self.debug_mode:
+            self.print(f"📡 [{region}] 학년도 {year} 학사일정 수집 시작", level="debug")
+
         date_from = f"{year}0301"
         date_to = (date(year + 1, 3, 1) - timedelta(days=1)).strftime("%Y%m%d")
         self._fetch_schools_range(region, date_from, date_to)
@@ -176,31 +182,35 @@ class AnnualFullScheduleCollector(BaseCollector):
             })
         return results
 
-    def _save_batch(self, batch: List[dict]):
-        with get_db_connection(self.db_path) as conn:
-            vocab_data = list({it['ev_id']: (it['ev_id'], it['ev_nm'], it['ev_date'])
-                               for it in batch}.values())
-            conn.executemany(
-                "INSERT OR IGNORE INTO vocab_event VALUES (?,?,?)",
-                vocab_data
+    # ✅ BaseCollector의 저장 훅 구현
+    def _do_save_batch(self, conn, batch: List[dict]):
+        """실제 DB 저장 로직"""
+        # vocab_event 저장 (중복 무시)
+        vocab_data = list({it['ev_id']: (it['ev_id'], it['ev_nm'], it['ev_date'])
+                           for it in batch}.values())
+        conn.executemany(
+            "INSERT OR IGNORE INTO vocab_event VALUES (?,?,?)",
+            vocab_data
+        )
+
+        # schedule 데이터 저장 (충돌 시 업데이트)
+        sched_data = [
+            (
+                it['school_id'], it['ev_date'], it['ev_id'], it['ay'],
+                it['is_special'], it['grade_disp'], it['grade_raw'], it['grade_code'],
+                it['sub_yn'], it['sub_code'], it['dn_yn'], it['ev_content'], it['load_dt']
             )
-            sched_data = [
-                (
-                    it['school_id'], it['ev_date'], it['ev_id'], it['ay'],
-                    it['is_special'], it['grade_disp'], it['grade_raw'], it['grade_code'],
-                    it['sub_yn'], it['sub_code'], it['dn_yn'], it['ev_content'], it['load_dt']
-                )
-                for it in batch
-            ]
-            conn.executemany("""
-                INSERT INTO schedule VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT DO UPDATE SET
-                    ev_content = excluded.ev_content,
-                    sub_yn     = excluded.sub_yn,
-                    sub_code   = excluded.sub_code,
-                    dn_yn      = excluded.dn_yn,
-                    load_dt    = excluded.load_dt
-            """, sched_data)
+            for it in batch
+        ]
+        conn.executemany("""
+            INSERT INTO schedule VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT DO UPDATE SET
+                ev_content = excluded.ev_content,
+                sub_yn     = excluded.sub_yn,
+                sub_code   = excluded.sub_code,
+                dn_yn      = excluded.dn_yn,
+                load_dt    = excluded.load_dt
+        """, sched_data)
 
 
 if __name__ == "__main__":

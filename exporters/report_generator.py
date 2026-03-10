@@ -8,13 +8,16 @@ import logging
 import sqlite3
 
 from .base_exporter import BaseExporter
+from constants.paths import STATS_DIR
+from constants.codes import REGION_NAMES
 
 logger = logging.getLogger(__name__)
+
 
 class ReportGenerator(BaseExporter):
     """통계 리포트 생성기"""
 
-    def __init__(self, output_dir: str = "reports/stats", filename_prefix: str = "school_stats"):
+    def __init__(self, output_dir: str = str(STATS_DIR), filename_prefix: str = "school_stats"):
         super().__init__(output_dir, filename_prefix)
 
     def generate_from_db(self, db_path: str, table_name: str,
@@ -55,29 +58,49 @@ class ReportGenerator(BaseExporter):
 
             # 2. 지역별 분포 (region_distribution)
             cursor.execute(f"""
-                SELECT region_name, COUNT(*) as cnt 
+                SELECT region_code, COUNT(*) as cnt 
                 FROM `{table_name}` 
                 {where_sql}
-                GROUP BY region_code, region_name 
+                GROUP BY region_code 
                 ORDER BY cnt DESC
             """, params)
+            region_counts = cursor.fetchall()
             stats["summary"]["by_region"] = [
-                {"region": row["region_name"], "count": row["cnt"]}
-                for row in cursor.fetchall()
+                {"region": REGION_NAMES.get(row["region_code"], row["region_code"]),
+                 "code": row["region_code"],
+                 "count": row["cnt"]}
+                for row in region_counts
             ]
 
             # 3. 학교급별 분포 (school_type_distribution)
-            cursor.execute(f"""
-                SELECT school_type_name, COUNT(*) as cnt 
-                FROM `{table_name}` 
-                {where_sql}
-                GROUP BY school_type 
-                ORDER BY cnt DESC
-            """, params)
-            stats["summary"]["by_type"] = [
-                {"type": row["school_type_name"], "count": row["cnt"]}
-                for row in cursor.fetchall()
-            ]
+            # school_type_name 컬럼이 있을 경우 사용, 없으면 school_type 코드로 대체
+            try:
+                cursor.execute(f"""
+                    SELECT school_type_name, COUNT(*) as cnt 
+                    FROM `{table_name}` 
+                    {where_sql}
+                    GROUP BY school_type_name 
+                    ORDER BY cnt DESC
+                """, params)
+                type_counts = cursor.fetchall()
+                stats["summary"]["by_type"] = [
+                    {"type": row["school_type_name"] or "기타", "count": row["cnt"]}
+                    for row in type_counts
+                ]
+            except sqlite3.OperationalError:
+                # school_type_name 컬럼 없으면 school_type 코드로 그룹화
+                cursor.execute(f"""
+                    SELECT school_type, COUNT(*) as cnt 
+                    FROM `{table_name}` 
+                    {where_sql}
+                    GROUP BY school_type 
+                    ORDER BY cnt DESC
+                """, params)
+                type_counts = cursor.fetchall()
+                stats["summary"]["by_type"] = [
+                    {"type": row["school_type"] or "알 수 없음", "count": row["cnt"]}
+                    for row in type_counts
+                ]
 
             # 4. 좌표 보유율 (geo_coverage) - 데이터 품질 지표
             cursor.execute(f"""
@@ -104,14 +127,15 @@ class ReportGenerator(BaseExporter):
             conn.close()
 
         # 파일 저장
+        region_suffix = regions[0] if regions and len(regions) == 1 else None
         if report_format == 'json':
-            filename = self._generate_filename("json", regions[0] if regions and len(regions)==1 else None)
+            filename = self._generate_filename("json", region_suffix)
             output_path = self.output_dir / filename
             with open(output_path, 'w', encoding='utf-8') as f:
                 json.dump(stats, f, ensure_ascii=False, indent=2)
 
         elif report_format == 'csv':
-            filename = self._generate_filename("csv", regions[0] if regions and len(regions)==1 else None)
+            filename = self._generate_filename("csv", region_suffix)
             output_path = self.output_dir / filename
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write("지표,값,상세\n")
@@ -125,7 +149,7 @@ class ReportGenerator(BaseExporter):
                     f.write(f"좌표보유율,{geo['coverage_rate']}%,{geo['with_coordinates']}건\n")
 
         else:  # text
-            filename = self._generate_filename("txt", regions[0] if regions and len(regions)==1 else None)
+            filename = self._generate_filename("txt", region_suffix)
             output_path = self.output_dir / filename
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(f"📊 학교 정보 통계 리포트\n")

@@ -9,7 +9,6 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 import time
-import random
 from typing import List
 
 from core.base_collector import BaseCollector
@@ -19,34 +18,36 @@ from core.id_generator import IDGenerator
 from core.config import config
 from parsers.timetable_parser import parse_timetable_row
 from constants.codes import (
-    TIMETABLE_ENDPOINTS, GRADE_RANGES, API_CONFIG,
-    NEIS_API_KEY, ALL_REGIONS
+    TIMETABLE_ENDPOINTS, GRADE_RANGES, API_CONFIG
 )
 from core.kst_time import now_kst
 from core.school_year import get_current_school_year
 from constants.paths import ACTIVE_DIR, GLOBAL_VOCAB_DB_PATH
 
+
 class AnnualFullTimetableCollector(BaseCollector):
-    # ----- 메타데이터 -----
+    # ----- 메타데이터 (클래스 변수) -----
     description = "시간표"
     table_name = "timetable"
     merge_script = "scripts/merge_timetable_dbs.py"
-    
+
     _cfg = config.get_collector_config("timetable")
     timeout_seconds = _cfg.get("timeout_seconds", 3600)
     parallel_timeout_seconds = _cfg.get("parallel_timeout_seconds", 7200)
     merge_timeout_seconds = _cfg.get("merge_timeout_seconds", 3600)
+    parallel_script = _cfg.get("parallel_script", "scripts/run_pipeline.py")
+    modes = _cfg.get("modes", ["통합", "odd 샤드", "even 샤드", "병렬 실행"])
     metrics_config = _cfg.get("metrics_config", {"enabled": True})
-    parallel_config = {
-        "max_workers": _cfg.get("max_workers", 4),
-        "cpu_factor": _cfg.get("cpu_factor", 1.0),
-        "max_by_api": _cfg.get("max_by_api", 10),
-        "absolute_max": _cfg.get("absolute_max", 16),
-    }
-    # ---------------------
+    parallel_config = _cfg.get("parallel_config", {
+        "max_workers": 4,
+        "cpu_factor": 1.0,
+        "max_by_api": 10,
+        "absolute_max": 16,
+    })
+    # ------------------------------------
 
-    def __init__(self, shard="none", school_range=None, debug_mode=False):
-        super().__init__("timetable", str(ACTIVE_DIR), shard, school_range)
+    def __init__(self, shard="none", school_range=None, debug_mode=False, **kwargs):
+        super().__init__("timetable", str(ACTIVE_DIR), shard, school_range, **kwargs)
         self.api_context = 'timetable'
         self.debug_mode = debug_mode
         self.run_ay = get_current_school_year(now_kst())
@@ -217,29 +218,31 @@ class AnnualFullTimetableCollector(BaseCollector):
             "load_dt":        now_kst().isoformat(),
         }]
 
-    def _save_batch(self, batch: List[dict]):
-        with get_db_connection(self.db_path) as conn:
-            subj_set = {
-                (it['subject_id'], it['subject_name'], it['normalized_key'], it['level'])
-                for it in batch if it.get('subject_id')
-            }
-            if subj_set:
-                conn.executemany(
-                    "INSERT OR IGNORE INTO vocab_subject"
-                    " (subject_id, subject_name, normalized_key, level) VALUES (?,?,?,?)",
-                    list(subj_set)
-                )
-            tt_data = [
-                (
-                    it['school_id'], it['ay'], it['semester'], it['grade'], it['class_nm'],
-                    it['day_of_week'], it['period'], it['subject_id'], it['load_dt']
-                )
-                for it in batch
-            ]
+    def _do_save_batch(self, conn, batch: List[dict]):
+        """실제 DB 저장 로직 (BaseCollector의 저장 훅)"""
+        # 과목 vocab 저장
+        subj_set = {
+            (it['subject_id'], it['subject_name'], it['normalized_key'], it['level'])
+            for it in batch if it.get('subject_id')
+        }
+        if subj_set:
             conn.executemany(
-                "INSERT OR REPLACE INTO timetable VALUES (?,?,?,?,?,?,?,?,?)",
-                tt_data
+                "INSERT OR IGNORE INTO vocab_subject"
+                " (subject_id, subject_name, normalized_key, level) VALUES (?,?,?,?)",
+                list(subj_set)
             )
+        # 시간표 데이터 저장
+        tt_data = [
+            (
+                it['school_id'], it['ay'], it['semester'], it['grade'], it['class_nm'],
+                it['day_of_week'], it['period'], it['subject_id'], it['load_dt']
+            )
+            for it in batch
+        ]
+        conn.executemany(
+            "INSERT OR REPLACE INTO timetable VALUES (?,?,?,?,?,?,?,?,?)",
+            tt_data
+        )
 
 
 if __name__ == "__main__":

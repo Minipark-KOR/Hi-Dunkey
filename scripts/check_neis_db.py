@@ -8,8 +8,9 @@ import sqlite3
 import time
 import shutil
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MASTER_DIR = os.path.join(BASE_DIR, "data", "master")
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from constants.paths import MASTER_DIR
 
 def check_and_backup():
     total_db_path = os.path.join(MASTER_DIR, "neis_info.db")
@@ -46,17 +47,14 @@ def check_and_backup():
             conn = sqlite3.connect(total_db_path)
             cursor = conn.cursor()
             
-            # 테이블 확인
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
             tables = [t[0] for t in cursor.fetchall()]
             print(f"   📋 테이블: {', '.join(tables)}")
             
-            # 레코드 수 확인
             if 'schools' in tables:
                 count = cursor.execute("SELECT COUNT(*) FROM schools").fetchone()[0]
                 print(f"   📊 schools 레코드: {count:,}건")
                 
-                # 샘플 데이터
                 sample = cursor.execute("SELECT sc_code, sc_name FROM schools LIMIT 3").fetchall()
                 print(f"   📝 샘플: {sample}")
             conn.close()

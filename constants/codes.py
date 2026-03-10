@@ -1,27 +1,30 @@
 #!/usr/bin/env python3
+# constants/codes.py
 """
 공통 상수 (API 키, 엔드포인트, 지역 코드, 배치 설정 등)
 """
-import os
 import json
 from pathlib import Path
 from typing import Dict, List
-from dotenv import load_dotenv
 
-env_path = Path(__file__).parent.parent / '.env'
-load_dotenv(dotenv_path=env_path)
+# 설정 로드 (core.config)
+from core.config import config
 
 __version__ = '2.0.0'
 __last_updated__ = '2026-03-01'
 
-# =====================[ API Keys ]=====================
-NEIS_API_KEY = os.environ.get("NEIS_API_KEY", "")
-SCHOOL_INFO_API_KEY = os.environ.get("SCHOOL_INFO_API_KEY", "")
-KASI_API_KEY = os.environ.get("KASI_API_KEY", "")
-VWORLD_API_KEY = os.environ.get("VWORLD_API_KEY", "")
+# =====================[ API Keys from config ]=====================
+NEIS_API_KEY = config.get_api_key('neis') or ""
+SCHOOL_INFO_API_KEY = config.get_api_key('school_info') or ""
+KASI_API_KEY = config.get_api_key('kasi') or ""
+VWORLD_API_KEY = config.get_api_key('vworld') or ""
+KAKAO_API_KEY = config.get_api_key('kakao') or ""
 
-# NEIS 멀티키 JSON 파싱
-NEIS_KEYS_JSON = os.environ.get("NEIS_KEYS_JSON")
+# NEIS 멀티키 JSON 파싱 (환경변수명은 config에 정의)
+NEIS_KEYS_JSON_ENV = config.get('api', 'neis_keys_json_env', default='NEIS_KEYS_JSON')
+import os
+NEIS_KEYS_JSON = os.environ.get(NEIS_KEYS_JSON_ENV)
+
 if NEIS_KEYS_JSON:
     try:
         _data = json.loads(NEIS_KEYS_JSON)
@@ -163,9 +166,6 @@ API_CONFIG = {
 
 LIFECYCLE_DATE = "0222"
 
-# MASTER_DB 경로는 paths.py에서 관리하도록 통일 (여기서는 삭제)
-# from constants.paths import MASTER_DB
-
 def check_api_keys() -> Dict[str, bool]:
     required_keys = {
         'NEIS': NEIS_API_KEY,
@@ -177,12 +177,11 @@ def check_api_keys() -> Dict[str, bool]:
     if not all(status.values()):
         missing = [k for k, v in status.items() if not v]
         print(f"⚠️ 누락된 API 키: {', '.join(missing)}")
-        print(f"   .env 파일 위치: {env_path}")
+        print(f"   .env 파일 또는 config.yaml에서 설정하세요.")
     return status
 
 if __name__ == "__main__":
     print(f"📋 NEIS Collector v{__version__}")
-    print(f"📁 .env 파일 위치: {env_path}")
     print("\n🔑 API 키 상태:")
     for name, present in check_api_keys().items():
         status = "✅" if present else "❌"

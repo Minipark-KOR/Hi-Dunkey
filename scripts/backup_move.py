@@ -11,13 +11,9 @@ from datetime import datetime, timedelta
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.kst_time import now_kst
 from core.logger import build_logger
+from constants.paths import BACKUP_DIR, ARCHIVE_DIR, LOG_DIR
 
-logger = build_logger("move_feb22", "../logs/move_feb22.log")
-
-BASE_DIR    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BACKUP_DIR  = os.path.join(BASE_DIR, "data", "backup")
-ARCHIVE_DIR = os.path.join(BASE_DIR, "data", "archive")
-
+logger = build_logger("move_feb22", str(LOG_DIR / "move_feb22.log"))
 
 def move_old_backups(cutoff_years: int = 3):
     os.makedirs(ARCHIVE_DIR, exist_ok=True)
@@ -66,3 +62,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    

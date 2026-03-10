@@ -14,10 +14,9 @@ import argparse
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.logger import build_logger
+from constants.paths import ARCHIVE_DIR, LOG_DIR
 
-logger  = build_logger("merge_decade", "../logs/merge_decade.log")
-BASE_DIR    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ARCHIVE_DIR = os.path.join(BASE_DIR, "data", "archive")
+logger  = build_logger("merge_decade", str(LOG_DIR / "merge_decade.log"))
 
 DOMAIN_CONFIG = {
     "meal": {
@@ -257,3 +256,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    

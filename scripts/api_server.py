@@ -16,12 +16,13 @@ from typing import List, Optional
 import uvicorn
 
 from core.database import get_db_connection
-from constants.paths import NEIS_INFO_DB_PATH
+from constants.paths import PROJECT_ROOT, NEIS_INFO_DB_PATH, ACTIVE_DIR
 
-# ✅ 1. FastAPI 앱 생성 (먼저!)
+# ✅ DATA_DIR 정의
+DATA_DIR = PROJECT_ROOT / "data"
+
 app = FastAPI(title="NEIS 데이터 API", description="급식, 학사일정, 시간표 API")
 
-# ✅ 2. CORS 미들웨어 추가 (app 생성 후!)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -33,14 +34,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ 절대 경로로 변경
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 프로젝트 루트
-from constants.paths import ACTIVE_DIR
-MASTER_DB = NEIS_INFO_DB_PATH   # (또는 그대로 MASTER_DB 변수 사용)
+MASTER_DB = NEIS_INFO_DB_PATH
 
-# =====================[ 유틸리티 함수 ]=====================
 def get_school_id(school_code: str) -> Optional[int]:
-    """학교 코드로 school_id 조회 (master DB 사용)"""
     if not os.path.exists(MASTER_DB):
         return None
     with get_db_connection(MASTER_DB) as conn:
@@ -49,7 +45,6 @@ def get_school_id(school_code: str) -> Optional[int]:
     return row[0] if row else None
 
 def get_shard(school_code: str) -> str:
-    """학교 코드로 샤드 결정"""
     try:
         last_digit = int(school_code[-1])
         return "even" if last_digit % 2 == 0 else "odd"
@@ -62,7 +57,6 @@ def get_schedule(
     school_code: str = Query(..., description="학교 코드"),
     year: int = Query(..., description="학년도")
 ):
-    """학사일정 조회"""
     school_id = get_school_id(school_code)
     if not school_id:
         raise HTTPException(status_code=404, detail="School not found")
@@ -104,7 +98,6 @@ def get_meal(
     school_code: str = Query(..., description="학교 코드"),
     date: str = Query(..., description="날짜 (YYYYMMDD)")
 ):
-    """급식 조회 (특정 날짜)"""
     school_id = get_school_id(school_code)
     if not school_id:
         raise HTTPException(status_code=404, detail="School not found")
@@ -142,7 +135,6 @@ def get_timetable(
     grade: int = Query(..., description="학년"),
     class_nm: str = Query(..., description="반")
 ):
-    """시간표 조회"""
     school_id = get_school_id(school_code)
     if not school_id:
         raise HTTPException(status_code=404, detail="School not found")
@@ -179,7 +171,6 @@ def get_timetable(
 def search_schools(
     query: str = Query(..., min_length=2, description="검색어 (학교명 또는 코드)")
 ):
-    """학교 검색 (원인 파악용 디버그 로그 추가)"""
     print(f"\n========== 🔍 SEARCH DEBUG ==========")
     print(f"1. 브라우저가 보낸 검색어: '{query}'")
     print(f"2. 서버가 인식한 DB 경로: {MASTER_DB}")
@@ -191,12 +182,10 @@ def search_schools(
     with get_db_connection(MASTER_DB) as conn:
         conn.row_factory = sqlite3.Row
         
-        # 4. DB 전체 데이터 개수 확인
         count_cur = conn.execute("SELECT COUNT(*) FROM schools")
         total_schools = count_cur.fetchone()[0]
         print(f"4. DB에 들어있는 전체 학교 수: {total_schools}개")
         
-        # 5. 실제 검색 수행
         cur = conn.execute("""
             SELECT sc_code, sc_name, atpt_code
             FROM schools

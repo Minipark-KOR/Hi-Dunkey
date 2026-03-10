@@ -21,7 +21,7 @@ from core.logger import build_logger
 from core.kst_time import now_kst
 from core.filters import AddressFilter
 from core.error_classifier import classify_error
-from core.geo import VWorldGeocoder
+from core.address.address_filter import AddressFilter   # ← 변경
 from collectors.geo_collector import GeoCollector
 from constants.paths import GLOBAL_VOCAB_DB_PATH, NEIS_INFO_DB_PATH, SCHOOL_INFO_DB_PATH, FAILURES_DB_PATH, LOG_DIR
 

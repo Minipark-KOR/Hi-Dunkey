@@ -27,15 +27,16 @@ from core.filters import AddressFilter
 from core.kst_time import now_kst
 from core.school_year import get_current_school_year
 from constants.codes import NEIS_ENDPOINTS, ALL_REGIONS, REGION_NAMES
-from constants.paths import NEIS_INFO_DB_PATH as MASTER_DB, FAILURES_DB_PATH, MASTER_DIR, GLOBAL_VOCAB_DB_PATH
+from constants.paths import NEIS_INFO_DB_PATH as MASTER_DB, MASTER_DIR, FAILURES_DB_PATH
 from collectors.geo_collector import GeoCollector
 
 BASE_DIR = str(MASTER_DIR)
-GLOBAL_VOCAB_DB_PATH = str(MASTER_DIR.parent / "active" / "global_vocab.db")
+GLOBAL_VOCAB_DB_PATH = MASTER_DIR.parent / "active" / "global_vocab.db"
 NEIS_URL = NEIS_ENDPOINTS['school']
 
-# ANSI 색상 코드
+# ANSI 색상 코드 (BaseCollector의 print에서는 사용하지 않지만, 필요시 유지)
 GREEN, RED, YELLOW, RESET = "\033[92m", "\033[91m", "\033[93m", "\033[0m"
+
 
 class NeisInfoCollector(BaseCollector):
     # ----- 메타데이터 -----
@@ -79,11 +80,11 @@ class NeisInfoCollector(BaseCollector):
         self.run_date = now_kst().strftime("%Y%m%d")
 
         self.meta_vocab = self.register_resource(
-            MetaVocabManager(GLOBAL_VOCAB_DB_PATH, debug_mode)
+            MetaVocabManager(str(GLOBAL_VOCAB_DB_PATH), debug_mode)
         )
         self.geo_collector = self.register_resource(
             GeoCollector(
-                global_db_path=GLOBAL_VOCAB_DB_PATH,
+                global_db_path=str(GLOBAL_VOCAB_DB_PATH),
                 school_db_path=self.db_path,
                 failures_db_path=str(FAILURES_DB_PATH),
                 debug_mode=debug_mode,
@@ -96,7 +97,7 @@ class NeisInfoCollector(BaseCollector):
         self._counter_lock = threading.Lock()
 
         if not quiet_mode:
-            print(f"🏫 NeisInfoCollector 초기화 완료 (샤드: {shard})")
+            self.print(f"🏫 NeisInfoCollector 초기화 완료 (샤드: {shard})")
         self.logger.info(f"🏫 NeisInfoCollector 초기화 완료 (샤드: {shard})")
 
     def _init_db(self):
@@ -146,12 +147,11 @@ class NeisInfoCollector(BaseCollector):
     def _get_target_key(self) -> str:
         return self.run_date
 
-    def fetch_region(self, region_code: str, limit: Optional[int] = None, year: Optional[int] = None, **kwargs):
+    def fetch_region(self, region_code: str, limit: Optional[int] = None, year: Optional[int] = None, **kwargs) -> int:
         if year is None:
             year = get_current_school_year(now_kst())
         region_name = REGION_NAMES.get(region_code, region_code)
-        if self.debug_mode and not self.quiet_mode:
-            print(f"\n📡 [{region_name}({region_code})] 학년도 {year} 데이터 수집 시작...")
+        self.print(f"\n📡 [{region_name}({region_code})] 학년도 {year} 데이터 수집 시작...", level="debug")
         base_params = {"ATPT_OFCDC_SC_CODE": region_code}
         rows = self._fetch_paginated(
             NEIS_URL, base_params, 'schoolInfo',
@@ -160,16 +160,15 @@ class NeisInfoCollector(BaseCollector):
             year=year
         )
         if self.debug_mode:
-            print(f"🔍 {region_code} rows length: {len(rows)}")
+            self.print(f"🔍 {region_code} rows length: {len(rows)}")
 
         if not rows:
             self.logger.error(f"[{region_name}] 수집된 데이터 없음")
-            if self.debug_mode and not self.quiet_mode:
-                print(f"❌ [{region_name}] 수집된 데이터 없음")
-            return
+            self.print(f"❌ [{region_name}] 수집된 데이터 없음", level="debug")
+            return 0
+
         self.logger.info(f"[{region_name}] 전체 {len(rows)}건 수집")
-        if self.debug_mode and not self.quiet_mode:
-            print(f"📋 [{region_name}] 전체 {len(rows)}건 수집")
+        self.print(f"📋 [{region_name}] 전체 {len(rows)}건 수집", level="debug")
         new, failed, skipped = self._update_schools_with_diff(rows, region_code, limit=limit)
 
         with self._counter_lock:
@@ -177,17 +176,18 @@ class NeisInfoCollector(BaseCollector):
             self.total_failed += failed
             self.total_skipped += skipped
 
-        if not self.quiet_mode:
-            print(f"  📊 [{region_name}] 신규성공={new}, 실패={failed}, 스킵={skipped}")
+        self.print(f"  📊 [{region_name}] 신규성공={new}, 실패={failed}, 스킵={skipped}")
 
-        if self.debug_mode and not self.quiet_mode:
-            print(f"✅ [{region_name}] 처리 완료")
+        if self.debug_mode:
+            self.print(f"✅ [{region_name}] 처리 완료")
+
+        return new
 
     def _update_schools_with_diff(self, new_rows: List[dict], region_code: str, limit: Optional[int] = None) -> Tuple[int, int, int]:
         if self.debug_mode:
-            print(f"🔍 _update_schools_with_diff: new_rows length = {len(new_rows)}")
+            self.print(f"🔍 _update_schools_with_diff: new_rows length = {len(new_rows)}")
             if new_rows:
-                print(f"🔍 sample keys: {list(new_rows[0].keys())}")
+                self.print(f"🔍 sample keys: {list(new_rows[0].keys())}")
 
         existing = {}
         if os.path.exists(self.db_path):
@@ -221,13 +221,16 @@ class NeisInfoCollector(BaseCollector):
         if limit and len(row_meta) > limit:
             row_meta = dict(list(row_meta.items())[:limit])
             if self.debug_mode:
-                print(f"🔍 limit 적용: {len(row_meta)}개만 처리")
+                self.print(f"🔍 limit 적용: {len(row_meta)}개만 처리")
 
         new_coords: Dict[str, Tuple[float, float]] = {}
         failed_count = 0
         skipped_count = 0
+        start_time = time.time()
+        last_update = start_time
+        total_items = len(row_meta)
 
-        for sc_code, meta in row_meta.items():
+        for i, (sc_code, meta) in enumerate(row_meta.items(), 1):
             if meta["old"].get("hash") != meta["new_hash"] and meta["full_address"]:
                 cleaned = AddressFilter.clean(meta["full_address"], level=self.LEVEL_GEOCODING)
                 jibun = AddressFilter.extract_jibun(meta["full_address"])
@@ -237,7 +240,7 @@ class NeisInfoCollector(BaseCollector):
                     coords = self.geo_collector._geocode(cleaned)
                 except Exception as e:
                     if not self.quiet_mode:
-                        print(f"\n⚠️ [{sc_code}] 예외: {type(e).__name__}")
+                        self.print(f"\n⚠️ [{sc_code}] 예외: {type(e).__name__}")
                     self.logger.warning(f"지오코딩 예외 {sc_code}: {e}")
                     coords = None
 
@@ -281,7 +284,7 @@ class NeisInfoCollector(BaseCollector):
                     self.logger.error(f"주소 변환 실패 {sc_code}: {e}")
 
             if self.debug_mode and not self.quiet_mode:
-                print(f"🔁 enqueue 호출: {sc_code}")
+                self.print(f"🔁 enqueue 호출: {sc_code}")
 
             try:
                 school_id = create_school_id(atpt_code, sc_code)
@@ -320,6 +323,11 @@ class NeisInfoCollector(BaseCollector):
                 "kakao_address": None,
             }])
 
+            # 진행률 출력 (일정 시간 간격 또는 마지막에)
+            if time.time() - last_update >= 0.2 or i == total_items:
+                self.print_progress(i, total_items, prefix=f"[{region_name}]")
+                last_update = time.time()
+
         region_name = REGION_NAMES.get(region_code, region_code)
         self.logger.info(f"[{region_name}] 좌표 갱신: {len(new_coords)}개 / 완료")
         return len(new_coords), failed_count, skipped_count
@@ -329,7 +337,7 @@ class NeisInfoCollector(BaseCollector):
 
     def _do_save_batch(self, conn: sqlite3.Connection, batch: List[dict]):
         if self.debug_mode and not self.quiet_mode:
-            print(f"🔍 [_do_save_batch] 실행, 배치 크기: {len(batch)}")
+            self.print(f"🔍 [_do_save_batch] 실행, 배치 크기: {len(batch)}")
         sql = """
             INSERT OR REPLACE INTO schools
             (sc_code, school_id, sc_name, eng_name, sc_kind, atpt_code,
@@ -354,13 +362,13 @@ class NeisInfoCollector(BaseCollector):
         try:
             conn.executemany(sql, rows)
             if self.debug_mode and not self.quiet_mode:
-                print(f"✅ [_do_save_batch] executemany 성공, 영향받은 행: {conn.total_changes}")
-                print(f"💾 배치 저장 완료: {len(batch)}개")
+                self.print(f"✅ [_do_save_batch] executemany 성공, 영향받은 행: {conn.total_changes}")
+                self.print(f"💾 배치 저장 완료: {len(batch)}개")
         except Exception as e:
             self.logger.error(f"배치 저장 실패: {e}")
             if self.debug_mode and not self.quiet_mode:
-                print(f"❌ [_do_save_batch] 예외: {e}")
-                print(f"   첫 번째 레코드 샘플: {batch[0] if batch else '없음'}")
+                self.print(f"❌ [_do_save_batch] 예외: {e}")
+                self.print(f"   첫 번째 레코드 샘플: {batch[0] if batch else '없음'}")
             raise
 
 

@@ -1,3 +1,4 @@
+## school_info_collector.py 최종 수정본 (BaseCollector 공통 출력 적용)
 #!/usr/bin/env python3
 # collectors/school_info_collector.py
 # 개발 가이드: docs/developer_guide.md 참조
@@ -46,6 +47,7 @@ class SchoolInfoCollector(BaseCollector):
     def __init__(self, shard: str = "none", school_range: Optional[str] = None, debug_mode: bool = False):
         super().__init__("school_info", str(MASTER_DIR), shard, school_range)
         self.debug_mode = debug_mode
+        self.quiet_mode = False  # quiet_mode는 BaseCollector에 이미 있지만, CLI에서 전달되지 않을 경우를 대비
         
         # NEIS validator 상태 확인
         neis_count = len(neis_validator.get_all())
@@ -87,27 +89,35 @@ class SchoolInfoCollector(BaseCollector):
         region_code: str, 
         year: Optional[int] = None, 
         date: Optional[str] = None
-    ) -> None:
+    ) -> int:
+        """
+        지역별 학교 정보 수집
+        Returns: 처리된 학교 수 (항상 0, 호환성 위해 반환)
+        """
         if year is None:
             year = get_current_school_year(now_kst())
         region_name = REGION_NAMES.get(region_code, region_code)
 
-        if self.debug_mode:
-            print(f"📡 [{region_name}] 학년도 {year} 수집 시작 (샤드: {self.shard})")
+        # ✅ 디버그 출력을 self.print로 변경
+        self.print(f"📡 [{region_name}] 학년도 {year} 수집 시작 (샤드: {self.shard})", level="debug")
 
         params = {"ATPT_OFCDC_SC_CODE": region_code}
         rows = self._fetch_paginated(API_URL, params, "schoolInfo", region=region_code, year=year)
 
         if not rows:
             self.logger.warning(f"[{region_name}] 수집된 데이터 없음")
-            return
+            return 0
 
+        school_count = 0
         for row in rows:
             school_code = row.get("SD_SCHUL_CODE")
             if not school_code or not should_include_school(self.shard, self.school_range, school_code):
                 continue
 
             self.enqueue([self._transform_row(row, region_code)])
+            school_count += 1
+
+        return school_count  # 처리된 학교 수 반환 (호환성)
 
     def _transform_row(self, row: Dict[str, Any], region_code: str) -> Dict[str, Any]:
         now = now_kst().isoformat()
@@ -221,4 +231,3 @@ if __name__ == "__main__":
         _fetch,
         "학교알리미 수집기",
     )
-    

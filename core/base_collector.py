@@ -48,7 +48,9 @@ class BaseCollector(ABC):
         name: str,
         base_dir: str,
         shard: str = "none",
-        school_range: Optional[str] = None
+        school_range: Optional[str] = None,
+        quiet_mode: bool = False,          # ✅ quiet_mode 추가
+        **kwargs                            # ✅ 추가 인자 수용
     ):
         VALID_SHARDS = {"odd", "even", "none"}
         if shard not in VALID_SHARDS:
@@ -60,6 +62,8 @@ class BaseCollector(ABC):
         self.shard = shard
         self.school_range = school_range
         self.api_context = 'common'
+        self.quiet_mode = quiet_mode        # ✅ 저장
+        # kwargs는 필요시 self.kwargs = kwargs 로 저장하거나 무시
 
         if shard == "none":
             self.db_path = str(self.base_dir / f"{name}.db")
@@ -71,7 +75,8 @@ class BaseCollector(ABC):
         
         # ✅ 로그 파일은 LOG_DIR에 저장
         self.logger = build_logger(name, str(LOG_DIR / f"{name}.log"))
-        print(f"📝 로그 파일: {LOG_DIR / f'{name}.log'}")
+        if not self.quiet_mode:
+            print(f"📝 로그 파일: {LOG_DIR / f'{name}.log'}")
 
         self.session = build_session()
 
@@ -80,7 +85,8 @@ class BaseCollector(ABC):
             target=self._writer_loop, daemon=True, name=f"{name}_writer"
         )
         self.writer_thread.start()
-        print(f"🔁 writer_thread 시작: {self.writer_thread.name}")
+        if not self.quiet_mode:
+            print(f"🔁 writer_thread 시작: {self.writer_thread.name}")
 
         self.school_cache: Dict[str, Any] = {}
         self.school_by_id: Dict[str, Any] = {}
@@ -227,7 +233,8 @@ class BaseCollector(ABC):
         raise NotImplementedError
 
     def _writer_loop(self):
-        print("🔁 [writer_loop] started")
+        if not self.quiet_mode:
+            print("🔁 [writer_loop] started")
         try:
             while True:
                 item = self.q.get()
@@ -250,7 +257,7 @@ class BaseCollector(ABC):
                     except queue.Empty:
                         break
 
-                if hasattr(self, 'debug_mode') and self.debug_mode:
+                if hasattr(self, 'debug_mode') and self.debug_mode and not self.quiet_mode:
                     print(f"🔍 [writer_loop] 배치 수집 완료: {len(batch)}개")
 
                 try:
@@ -266,7 +273,8 @@ class BaseCollector(ABC):
                     for _ in range(items_processed):
                         self.q.task_done()
         except Exception as e:
-            print(f"💥 writer_loop 치명적 예외: {e}")
+            if not self.quiet_mode:
+                print(f"💥 writer_loop 치명적 예외: {e}")
             traceback.print_exc()
             raise
 
@@ -284,7 +292,7 @@ class BaseCollector(ABC):
         return [data]
 
     def enqueue(self, data: Union[dict, List[dict]]):
-        if hasattr(self, 'debug_mode') and self.debug_mode:
+        if hasattr(self, 'debug_mode') and self.debug_mode and not self.quiet_mode:
             print(f"🔍 [base_enqueue] 데이터 크기: {len(data) if isinstance(data, list) else 1}")
         self.q.put(data)
 
@@ -314,6 +322,32 @@ class BaseCollector(ABC):
             except ValueError:
                 continue
 
+    def print(self, *args, level: str = "info", **kwargs):
+        """
+        통합 출력 메서드.
+        - quiet 모드면 모든 출력 차단.
+        - level이 'debug'면 debug 모드에서만 출력.
+        - 그 외는 항상 출력 (quiet 모드가 아니면).
+        """
+        if self.quiet_mode:
+            return
+        if level == "debug" and not (hasattr(self, 'debug_mode') and self.debug_mode):
+            return
+        print(*args, **kwargs)
+
+    def print_progress(self, current: int, total: int, prefix: str = "", bar_length: int = 20):
+        """
+        간단한 진행률 바 출력 (디버그 모드 아닐 때만, quiet 모드면 미출력).
+        """
+        if self.quiet_mode:
+            return
+        percent = current / total
+        filled = int(bar_length * percent)
+        bar = '█' * filled + '░' * (bar_length - filled)
+        print(f"\r{prefix} [{bar}] {current}/{total} ({percent*100:.1f}%)", end='', flush=True)
+        if current == total:
+            print()  # 완료 시 줄바꿈
+
     @abstractmethod
     def _init_db(self):
         pass
@@ -334,11 +368,11 @@ class BaseCollector(ABC):
         pass
 
     def _save_batch(self, batch: List[dict]):
-        if self.debug_mode:
+        if hasattr(self, 'debug_mode') and self.debug_mode and not self.quiet_mode:
             print(f"🔍 [_save_batch] 저장 시도: {len(batch)}개, DB 경로: {self.db_path}")
         with get_db_connection(self.db_path) as conn:
             self._do_save_batch(conn, batch)
-        if self.debug_mode:
+        if hasattr(self, 'debug_mode') and self.debug_mode and not self.quiet_mode:
             print(f"✅ [_save_batch] 저장 완료")
 
     def _load_checkpoints(self):

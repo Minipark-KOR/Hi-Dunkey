@@ -5,6 +5,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Dict, List
 from constants.paths import LOG_DIR   # 추가
+from core.address.address_filter import AddressFilter
 
 LOG_FILE = str(LOG_DIR / "address_mapping.log")
 OUTPUT_FILE = "address_mapping_stats.txt"

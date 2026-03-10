@@ -20,8 +20,10 @@ from core.kst_time import now_kst
 class BaseMealCollector(BaseCollector):
     """급식 수집기 공통 베이스"""
 
-    def __init__(self, name: str, base_dir: str, shard: str, school_range, debug_mode: bool):
-        super().__init__(name, base_dir, shard, school_range)
+    def __init__(self, name: str, base_dir: str, shard: str, school_range,
+                 debug_mode: bool, **kwargs):
+        # BaseCollector에 quiet_mode 등 kwargs 전달
+        super().__init__(name, base_dir, shard, school_range, **kwargs)
         self.api_context = 'meal'
         self.debug_mode = debug_mode
         self.run_date = now_kst().strftime("%Y%m%d")

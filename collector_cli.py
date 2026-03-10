@@ -1,11 +1,21 @@
 #!/usr/bin/env python3
-# collector_cli.py
-# 개발 가이드: docs/developer_guide.md 참조
-
+"""
+Collector 공통 CLI 진입점
+"""
 import sys
 import argparse
 import os
 from typing import Optional
+
+# rich 라이브러리 임포트
+try:
+    from rich.console import Console
+    from rich.table import Table
+    from rich.live import Live
+    from rich import box
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
 
 from constants.codes import ALL_REGIONS, NEIS_API_KEY
 from core.kst_time import now_kst
@@ -27,7 +37,6 @@ COLLECTOR_MAP = {
     "timetable_collector": AnnualFullTimetableCollector,
 }
 
-
 def build_common_parser(description: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--regions", default="ALL", help="교육청 코드 (쉼표 구분, 기본: ALL)")
@@ -39,12 +48,42 @@ def build_common_parser(description: str) -> argparse.ArgumentParser:
     parser.add_argument("--quiet", action="store_true", help="출력 최소화")
     return parser
 
-
 def parse_regions(regions_arg: str):
     if regions_arg.upper() == "ALL":
         return ALL_REGIONS
     return [r.strip() for r in regions_arg.split(",") if r.strip()]
 
+def create_status_table(region_status: dict, current_idx: int, total: int) -> Table:
+    """진행 상황 테이블 생성"""
+    table = Table(
+        title=f"📊 수집 현황 [{current_idx}/{total}]",
+        box=box.ROUNDED,
+        show_header=True,
+        header_style="bold magenta"
+    )
+    table.add_column("지역", style="cyan", width=10)
+    table.add_column("교육청", style="green")
+    table.add_column("상태", justify="center")
+    table.add_column("처리건수", justify="right")
+
+    for region, info in region_status.items():
+        status_display = {
+            "waiting": "⏳ 대기",
+            "processing": "⚙️ 수집중",
+            "success": "✅ 완료",
+            "failed": "❌ 실패"
+        }.get(info["status"], info["status"])
+
+        processed = info.get("processed", 0)
+        processed_str = f"{processed:,}" if processed else "-"
+
+        table.add_row(
+            region,
+            info.get("name", region),
+            status_display,
+            processed_str
+        )
+    return table
 
 def run_collector(collector_name: str):
     """collector_name에 해당하는 수집기 실행"""
@@ -84,10 +123,57 @@ def run_collector(collector_name: str):
         quiet_mode=args.quiet
     )
 
+    # 지역별 상태 저장 (테이블용)
+    from constants.codes import REGION_NAMES
+    region_status = {
+        r: {
+            "status": "waiting",
+            "processed": 0,
+            "name": REGION_NAMES.get(r, r)
+        }
+        for r in regions
+    }
+
     failed = []
-    try:
+
+    # rich 테이블 표시 (quiet 모드가 아닐 때만)
+    if RICH_AVAILABLE and not args.quiet:
+        console = Console()
+        with Live(console=console, refresh_per_second=4, screen=False) as live:
+            for idx, region in enumerate(regions, 1):
+                region_status[region]["status"] = "processing"
+                live.update(create_status_table(region_status, idx, total_regions))
+
+                try:
+                    if collector_name == "meal_collector":
+                        processed = collector.fetch_daily(region, target_date)
+                    elif collector_name == "schedule_collector":
+                        processed = collector.fetch_year(region, year)
+                    elif collector_name == "timetable_collector":
+                        processed = collector.fetch_year(region, year, args.semester)
+                    elif collector_name in ["neis_info", "school_info"]:
+                        processed = collector.fetch_region(region, year=year, date=target_date)
+                    else:
+                        if hasattr(collector, 'fetch_region'):
+                            processed = collector.fetch_region(region, year=year, date=target_date)
+                        else:
+                            raise AttributeError(f"{collector_name}에 적절한 fetch 메서드가 없습니다.")
+
+                    region_status[region]["status"] = "success"
+                    region_status[region]["processed"] = processed if processed else 0
+
+                except Exception as e:
+                    region_status[region]["status"] = "failed"
+                    failed.append(region)
+                    print(f"❌ [{region}] 수집 실패: {e}", file=sys.stderr)
+
+                live.update(create_status_table(region_status, idx, total_regions))
+
+                if args.limit and idx >= args.limit:
+                    break
+    else:
+        # 기존 방식 (quiet 모드 또는 rich 미설치 시)
         for idx, region in enumerate(regions, 1):
-            # 지역 단위 진행률 출력 (quiet 모드가 아닐 때만)
             if not args.quiet:
                 print(f"\n📌 [{idx}/{total_regions}] {region} 수집 중...")
 
@@ -112,10 +198,7 @@ def run_collector(collector_name: str):
             if args.limit and idx >= args.limit:
                 break
 
-    except KeyboardInterrupt:
-        collector.logger.warning("⚠️ 수집 중단 (KeyboardInterrupt)")
-    finally:
-        collector.close()
+    collector.close()
 
     if failed:
         print(f"⚠️ 실패 지역: {', '.join(failed)}", file=sys.stderr)
@@ -124,7 +207,6 @@ def run_collector(collector_name: str):
     if not args.quiet:
         print("\n✅ 모든 지역 수집 완료")
     sys.exit(0)
-
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:

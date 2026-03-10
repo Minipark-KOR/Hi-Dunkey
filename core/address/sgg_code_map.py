@@ -1,9 +1,12 @@
+#!/usr/bin/env python3
+# utils/sgg_code_map.py
 # 개발 가이드: docs/developer_guide.md 참조
 """
 시군구 코드 제공자 모듈
 - 정적 파일 기반 / 행정안전부 API 기반 구현체 지원
 - 하드코딩된 기본 매핑 포함 (파일 없을 시 fallback)
 - 행정구역 개편 반영 (군위군: 27720, 대구 편입)
+- 설정은 core.config에서 로드
 """
 import json
 import logging
@@ -18,12 +21,16 @@ import urllib.request
 import urllib.error
 from collections import Counter
 
+# 프로젝트 설정 로드 (선택 사항, 없으면 환경변수나 기본값 사용)
+try:
+    from core.config import config
+except ImportError:
+    config = None
+
 logger = logging.getLogger(__name__)
 
 
 # ==================== 하드코딩된 기본 매핑 (fallback) ====================
-# 시군구 코드 → 한글명 매핑 (앞 2자리는 시도 코드)
-# 최신 행정구역 반영 (군위군: 27720, 대구 편입)
 SGG_NAMES = {
     # 서울특별시 (11)
     "11110": "종로구", "11140": "중구", "11170": "용산구", "11200": "성동구", "11215": "광진구",
@@ -119,82 +126,48 @@ SGG_NAMES = {
 }
 
 
-# ==================== 유틸리티 함수 (매핑 데이터 직접 접근용) ====================
+# ==================== 유틸리티 함수 ====================
 
 def get_sgg_name(code: str, default: Optional[str] = None) -> str:
     """
     시군구 코드를 한글 명칭으로 변환합니다.
-    
-    Args:
-        code: 5자리 시군구 코드 (예: "11110")
-        default: 코드가 없을 때 반환할 기본값 (None이면 "알 수 없는 지역")
-    
-    Returns:
-        시군구 이름 (예: "종로구")
     """
     code_str = str(code).strip()
     name = SGG_NAMES.get(code_str)
     if name is not None:
         return name
-    if default is not None:
-        return default
-    return "알 수 없는 지역"
+    return default if default is not None else "알 수 없는 지역"
 
 
 def get_sido_code(code: str) -> str:
-    """
-    시군구 코드에서 앞 2자리를 추출하여 시도 코드를 반환합니다.
-    
-    Args:
-        code: 5자리 시군구 코드
-    
-    Returns:
-        2자리 시도 코드 (예: "11")
-    """
+    """시군구 코드에서 앞 2자리 시도 코드 추출"""
     code_str = str(code).strip()
     return code_str[:2] if len(code_str) >= 2 else ""
 
 
 def is_valid_sgg(code: str) -> bool:
-    """
-    유효한 시군구 코드인지 확인합니다.
-    
-    Args:
-        code: 5자리 시군구 코드
-    
-    Returns:
-        True if code exists in SGG_NAMES
-    """
+    """유효한 시군구 코드인지 확인"""
     return str(code).strip() in SGG_NAMES
 
 
 def get_sgg_code(name: str, sido_code: Optional[str] = None) -> Optional[str]:
     """
     시군구 이름으로 코드를 찾습니다. (역방향 조회)
-    주의: 같은 이름의 구가 여러 시도에 존재할 수 있으므로 sido_code를 함께 제공하면 정확도가 높아집니다.
-    중복 발생 시 첫 번째 코드를 반환하고 경고를 로깅합니다.
-    
-    Args:
-        name: 시군구 이름 (예: "중구")
-        sido_code: 선택적 시도 코드 (예: "11")
-    
-    Returns:
-        시군구 코드 또는 None
+    중복 시 첫 번째 코드 반환 및 경고 로깅
     """
     candidates = []
     for code, n in SGG_NAMES.items():
         if n == name:
             if sido_code is None or code.startswith(sido_code):
                 candidates.append(code)
-    
     if not candidates:
         return None
     if len(candidates) > 1:
-        logger.warning(f"시군구명 '{name}'이(가) 중복됨: {candidates}. sido_code={sido_code}로 필터링했으나 여전히 다수. 첫 번째({candidates[0]}) 반환.")
+        logger.warning(
+            f"시군구명 '{name}' 중복: {candidates}. sido_code={sido_code}로 필터링했으나 다수. 첫 번째({candidates[0]}) 반환."
+        )
     return candidates[0]
 
-
-# ==================== 추가 편의 함수 ====================
 
 def get_sido_counts() -> Counter:
     """시도별 시군구 개수 반환 (통계용)"""
@@ -206,11 +179,11 @@ def search_sgg(keyword: str) -> List[tuple]:
     return [(code, name) for code, name in SGG_NAMES.items() if keyword in name]
 
 
-# ==================== 인터페이스 (SGGCodeProvider) ====================
+# ==================== 인터페이스 및 구현체 ====================
 
 class SGGCodeProvider(ABC):
     """시군구 코드 제공자 인터페이스"""
-    
+
     @abstractmethod
     def get_codes_by_sido(self, sido_code: str) -> List[Dict[str, str]]:
         """
@@ -218,15 +191,12 @@ class SGGCodeProvider(ABC):
         Returns: [{"sgg_code": "11110", "sgg_name": "종로구"}, ...]
         """
         pass
-    
+
     @abstractmethod
     def get_all_codes(self) -> Dict[str, str]:
-        """
-        전체 시군구 코드 매핑 조회
-        Returns: {"11110": "종로구", "11140": "중구", ...}
-        """
+        """전체 시군구 코드 매핑 조회"""
         pass
-    
+
     @abstractmethod
     def refresh(self) -> bool:
         """데이터 새로고침 (동적 소스용)"""
@@ -235,39 +205,35 @@ class SGGCodeProvider(ABC):
 
 class StaticSGGProvider(SGGCodeProvider):
     """정적 JSON 파일 기반 시군구 코드 제공자 (fallback 포함)"""
-    
+
     def __init__(self, filepath: str, auto_create: bool = False, use_fallback: bool = True):
         """
         Args:
             filepath: JSON 파일 경로
-            auto_create: 파일 없을 때 자동 생성 시도 여부 (Fallback 사용 시에도)
+            auto_create: 파일 없을 때 빈 파일 생성 여부
             use_fallback: 파일 없을 때 하드코딩된 기본 매핑 사용 여부
         """
         self.filepath = Path(filepath)
         self.use_fallback = use_fallback
         self._cache: Optional[Dict[str, str]] = None
         self._sido_index: Optional[Dict[str, List[str]]] = None
-        
-        # 파일이 없고 auto_create가 True이면 빈 파일 생성 (fallback 사용 시에도)
+
         if auto_create and not self.filepath.exists():
             self.filepath.parent.mkdir(exist_ok=True, parents=True)
             with open(self.filepath, 'w', encoding='utf-8') as f:
                 json.dump({}, f)
             logger.info(f"빈 매핑 파일 생성: {self.filepath}")
-        
-        # 파일이 없고 fallback을 사용한다면 기본 매핑으로 캐시 초기화
+
         if not self.filepath.exists() and self.use_fallback:
             logger.warning(f"매핑 파일 없음: {self.filepath}, fallback 사용")
             self._cache = SGG_NAMES.copy()
             self._build_sido_index()
             logger.info(f"Fallback 매핑 사용: {len(self._cache)} 개 코드")
-    
+
     def _load_data(self) -> Dict[str, str]:
-        """데이터 로드 (캐싱, 파일 우선, fallback 차선)"""
         if self._cache is not None:
             return self._cache
-        
-        # 파일이 존재하면 파일에서 로드
+
         if self.filepath.exists():
             try:
                 with open(self.filepath, 'r', encoding='utf-8') as f:
@@ -277,47 +243,39 @@ class StaticSGGProvider(SGGCodeProvider):
                 return self._cache
             except Exception as e:
                 logger.error(f"매핑 파일 로드 실패: {e}, fallback 시도")
-        
-        # 파일이 없거나 로드 실패 시 fallback 사용
+
         if self.use_fallback:
             logger.warning("파일 로드 실패, fallback 매핑 사용")
             self._cache = SGG_NAMES.copy()
             self._build_sido_index()
             return self._cache
-        
-        # fallback도 없으면 예외
+
         raise FileNotFoundError(f"시군구 매핑을 찾을 수 없음: {self.filepath}")
-    
+
     def _build_sido_index(self):
-        """시도별 시군구 코드 인덱스 생성"""
         self._sido_index = {}
         data = self._cache if self._cache is not None else {}
         for sgg_code, sgg_name in data.items():
             sido_code = sgg_code[:2]
-            if sido_code not in self._sido_index:
-                self._sido_index[sido_code] = []
-            self._sido_index[sido_code].append(sgg_code)
-    
+            self._sido_index.setdefault(sido_code, []).append(sgg_code)
+
     def get_codes_by_sido(self, sido_code: str) -> List[Dict[str, str]]:
         data = self._load_data()
-        # 인덱스가 없으면 생성 (이미 _load_data에서 생성했을 수 있지만, 안전장치)
         if self._sido_index is None:
             self._build_sido_index()
         sgg_codes = self._sido_index.get(sido_code, [])
         return [{"sgg_code": code, "sgg_name": data[code]} for code in sgg_codes]
-    
+
     def get_all_codes(self) -> Dict[str, str]:
         return self._load_data().copy()
-    
+
     def refresh(self) -> bool:
-        """파일이 존재하면 다시 로드, 없으면 fallback"""
         if self.filepath.exists():
             self._cache = None
             self._sido_index = None
             self._load_data()
             return True
         elif self.use_fallback:
-            # fallback 사용 중이면 캐시 초기화 후 재로드
             self._cache = None
             self._sido_index = None
             self._load_data()
@@ -328,10 +286,10 @@ class StaticSGGProvider(SGGCodeProvider):
 class APISGGProvider(SGGCodeProvider):
     """
     행정안전부 공공코드포털 API 기반 제공자
-    (실제 구현: https://www.code.go.kr/api/openapi.do)
+    (실제 구현: https://www.code.go.kr/code/api.do)
     """
     BASE_URL = "https://www.code.go.kr/code/api.do"
-    
+
     def __init__(self, api_key: str, config: Optional[Dict] = None):
         self.api_key = api_key
         self.config = config or {}
@@ -344,7 +302,7 @@ class APISGGProvider(SGGCodeProvider):
         self._cache_ttl = self.config.get('cache_ttl', 3600)
         if not api_key:
             logger.warning("행정안전부 API 키가 설정되지 않았습니다.")
-    
+
     def _rate_limit_wait(self):
         now = time.time()
         if self._last_fetch:
@@ -352,8 +310,8 @@ class APISGGProvider(SGGCodeProvider):
             min_interval = 1.0 / self.rate_limit
             if elapsed < min_interval:
                 time.sleep(min_interval - elapsed)
-        self._last_fetch = time.time()
-    
+        self._last_fetch = now
+
     def _fetch_with_retry(self, params: Dict[str, str]) -> Optional[Dict]:
         url = f"{self.BASE_URL}?{urlencode(params)}"
         for attempt in range(self.retry_max):
@@ -393,7 +351,7 @@ class APISGGProvider(SGGCodeProvider):
                     continue
                 return None
         return None
-    
+
     def _fetch_all_sgg(self) -> Dict[str, str]:
         params = {
             'apiKey': self.api_key,
@@ -413,7 +371,7 @@ class APISGGProvider(SGGCodeProvider):
             if len(code) == 5 and len(upper) == 2:
                 sgg_map[code] = name
         return sgg_map
-    
+
     def _load_cache(self) -> Dict[str, str]:
         now = time.time()
         if self._cache is not None and self._last_fetch and (now - self._last_fetch) < self._cache_ttl:
@@ -421,7 +379,7 @@ class APISGGProvider(SGGCodeProvider):
         self._cache = self._fetch_all_sgg()
         self._last_fetch = now
         return self._cache or {}
-    
+
     def get_codes_by_sido(self, sido_code: str) -> List[Dict[str, str]]:
         data = self._load_cache()
         result = []
@@ -429,10 +387,10 @@ class APISGGProvider(SGGCodeProvider):
             if code.startswith(sido_code):
                 result.append({"sgg_code": code, "sgg_name": name})
         return result
-    
+
     def get_all_codes(self) -> Dict[str, str]:
         return self._load_cache().copy()
-    
+
     def refresh(self) -> bool:
         self._cache = None
         self._last_fetch = None
@@ -441,8 +399,8 @@ class APISGGProvider(SGGCodeProvider):
 
 class HybridSGGProvider(SGGCodeProvider):
     """정적 파일 우선 + API 폴백 하이브리드 제공자"""
-    
-    def __init__(self, static_path: str, api_key: Optional[str] = None, 
+
+    def __init__(self, static_path: str, api_key: Optional[str] = None,
                  config: Optional[Dict] = None, use_fallback: bool = True,
                  save_static_on_refresh: bool = False):
         """
@@ -460,8 +418,7 @@ class HybridSGGProvider(SGGCodeProvider):
         self.save_static_on_refresh = save_static_on_refresh
         self._static: Optional[StaticSGGProvider] = None
         self._api: Optional[APISGGProvider] = None
-        
-        # 정적 프로바이더 초기화 (fallback 허용)
+
         try:
             self._static = StaticSGGProvider(static_path, use_fallback=use_fallback)
             self._static.get_all_codes()  # 로드 테스트
@@ -470,11 +427,11 @@ class HybridSGGProvider(SGGCodeProvider):
             logger.warning(f"정적 매핑 로드 실패: {e}, API 폴백 준비")
             if api_key:
                 self._api = APISGGProvider(api_key, config)
-    
+
     def _ensure_api(self):
         if self._api is None and self.api_key:
             self._api = APISGGProvider(self.api_key, self.config)
-    
+
     def get_codes_by_sido(self, sido_code: str) -> List[Dict[str, str]]:
         if self._static:
             try:
@@ -486,7 +443,7 @@ class HybridSGGProvider(SGGCodeProvider):
             return self._api.get_codes_by_sido(sido_code)
         logger.error("시군구 코드 조회 실패: 정적 파일도, API도 사용 불가")
         return []
-    
+
     def get_all_codes(self) -> Dict[str, str]:
         if self._static:
             try:
@@ -497,7 +454,7 @@ class HybridSGGProvider(SGGCodeProvider):
         if self._api:
             return self._api.get_all_codes()
         return {}
-    
+
     def refresh(self) -> bool:
         self._ensure_api()
         if self._api:
@@ -508,7 +465,7 @@ class HybridSGGProvider(SGGCodeProvider):
         elif self._static:
             return self._static.refresh()
         return False
-    
+
     def _save_to_static(self, data: Dict[str, str]):
         try:
             path = Path(self.static_path)
@@ -520,29 +477,51 @@ class HybridSGGProvider(SGGCodeProvider):
             logger.error(f"정적 파일 저장 실패: {e}")
 
 
-def create_provider(config: Dict[str, Any]) -> SGGCodeProvider:
-    """설정에 따라 적절한 제공자 생성"""
-    provider_type = config.get('type', 'static')
-    
+def create_provider(config_dict: Optional[Dict[str, Any]] = None) -> SGGCodeProvider:
+    """
+    설정에 따라 적절한 제공자 생성.
+    config_dict가 없으면 core.config에서 'sgg_code' 섹션을 읽음.
+    """
+    if config_dict is None:
+        if config is None:
+            raise RuntimeError("core.config를 사용할 수 없으며 config_dict도 제공되지 않았습니다.")
+        config_dict = config.get('sgg_code', {})
+
+    provider_type = config_dict.get('type', 'static')
+
     if provider_type == 'static':
+        # 파일 경로: 설정에서 가져오거나 기본값 사용
+        filepath = config_dict.get('filepath', 'config/sgg_codes.json')
+        # core.config의 paths 섹션에서 기준 경로를 가져올 수 있음
+        if config:
+            base_dir = config.get('paths', 'config_dir', default='config')
+            filepath = str(Path(base_dir) / Path(filepath).name)
         return StaticSGGProvider(
-            filepath=config.get('filepath', 'config/sgg_codes.json'),
-            auto_create=config.get('auto_create', False),
-            use_fallback=config.get('use_fallback', True)
+            filepath=filepath,
+            auto_create=config_dict.get('auto_create', False),
+            use_fallback=config_dict.get('use_fallback', True)
         )
     elif provider_type == 'api':
-        api_key = config.get('api_key') or os.getenv('ADMIN_API_KEY')
+        api_key = config_dict.get('api_key')
+        if not api_key and config:
+            api_key = config.get_api_key('admin')  # ADMIN_API_KEY 환경변수 사용
         if not api_key:
-            raise ValueError("API 제공자 사용을 위해서는 api_key 또는 ADMIN_API_KEY 환경변수가 필요합니다.")
-        return APISGGProvider(api_key, config.get('api_config', {}))
+            raise ValueError("API 제공자 사용을 위해서는 api_key 또는 ADMIN_API_KEY가 필요합니다.")
+        return APISGGProvider(api_key, config_dict.get('api_config', {}))
     elif provider_type == 'hybrid':
-        api_key = config.get('api_key') or os.getenv('ADMIN_API_KEY')
+        api_key = config_dict.get('api_key')
+        if not api_key and config:
+            api_key = config.get_api_key('admin')
+        static_path = config_dict.get('static_filepath', 'config/sgg_codes.json')
+        if config:
+            base_dir = config.get('paths', 'config_dir', default='config')
+            static_path = str(Path(base_dir) / Path(static_path).name)
         return HybridSGGProvider(
-            static_path=config.get('static_filepath', 'config/sgg_codes.json'),
+            static_path=static_path,
             api_key=api_key,
-            config=config.get('api_config', {}),
-            use_fallback=config.get('use_fallback', True),
-            save_static_on_refresh=config.get('save_static_on_refresh', False)
+            config=config_dict.get('api_config', {}),
+            use_fallback=config_dict.get('use_fallback', True),
+            save_static_on_refresh=config_dict.get('save_static_on_refresh', False)
         )
     else:
         raise ValueError(f"알 수 없는 provider_type: {provider_type}")

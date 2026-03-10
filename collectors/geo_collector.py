@@ -1,3 +1,4 @@
+# collectors/geo_collector.py (수정됨)
 #!/usr/bin/env python3
 # collectors/geo_collector.py
 # 개발 가이드: docs/developer_guide.md 참조
@@ -18,6 +19,7 @@ from core.meta_vocab import MetaVocabManager
 from core.filters import AddressFilter
 from core.retry import RetryManager
 from core.logger import build_logger
+from core.config import config  # 추가: 설정 로드
 from constants.paths import GLOBAL_VOCAB_DB_PATH, NEIS_INFO_DB_PATH, FAILURES_DB_PATH, LOG_DIR
 
 logger = build_logger("geo_collector", str(LOG_DIR / "geo_collector.log"))
@@ -29,6 +31,11 @@ except ImportError:
         return sqlite3.connect(path, timeout=30)
 
 def _get_vworld_key() -> str:
+    """VWorld API 키 로드 (config 우선, 환경변수 fallback)"""
+    key = config.get_api_key('vworld')  # config.yaml의 api.vworld_api_key_env 참조
+    if key:
+        return key
+    # 환경변수 직접 확인 (fallback)
     key = os.environ.get("VWORLD_API_KEY", "").strip()
     if key:
         return key
@@ -39,7 +46,10 @@ def _get_vworld_key() -> str:
         return ""
 
 def _get_kakao_key() -> str:
-    """Kakao API 키 로드 (환경변수 또는 constants.codes)"""
+    """Kakao API 키 로드 (config 우선, 환경변수 fallback)"""
+    key = config.get_api_key('kakao')
+    if key:
+        return key
     key = os.environ.get("KAKAO_API_KEY", "").strip()
     if key:
         return key
@@ -51,7 +61,6 @@ def _get_kakao_key() -> str:
 
 
 class GeoCollector:
-    # ✅ 수정: URL 끝 공백 제거
     GEOCODE_URL = "https://api.vworld.kr/req/address"
     KAKAO_GEOCODE_URL = "https://dapi.kakao.com/v2/local/search/address.json"
     DAILY_API_LIMIT = 50000
@@ -62,15 +71,19 @@ class GeoCollector:
         school_db_path: str = str(NEIS_INFO_DB_PATH),
         failures_db_path: str = str(FAILURES_DB_PATH),
         debug_mode: bool = False,
+        quiet: bool = False,          # 추가: quiet 모드 지원
         api_limit: Optional[int] = None,
     ):
         self.global_db_path = global_db_path
         self.school_db_path = school_db_path
         self.debug_mode = debug_mode
+        self.quiet = quiet
 
         self.vworld_key = _get_vworld_key()
         self.kakao_key = _get_kakao_key()
-        self.api_limit = api_limit if api_limit is not None else self.DAILY_API_LIMIT
+        # 설정에서 API 일일 제한 가져오기 (없으면 기본값)
+        cfg = config.get_collector_config("geo")  # geo 설정 섹션 (없으면 빈 dict)
+        self.api_limit = api_limit if api_limit is not None else cfg.get("daily_api_limit", self.DAILY_API_LIMIT)
 
         self.meta_vocab = MetaVocabManager(global_db_path, debug_mode)
         self.retry_mgr = RetryManager(db_path=failures_db_path)
@@ -86,10 +99,10 @@ class GeoCollector:
         self._load_cache()
         self._load_api_usage()
 
-        if self.debug_mode:
-            print(f"[GeoCollector] init: api_calls_today={self.api_calls_today}/{self.api_limit}")
-            print(f"  VWorld 키: {'✅' if self.vworld_key else '❌'}")
-            print(f"  Kakao 키:  {'✅' if self.kakao_key else '❌'}")
+        if self.debug_mode and not self.quiet:
+            logger.info(f"GeoCollector init: api_calls_today={self.api_calls_today}/{self.api_limit}")
+            logger.info(f"  VWorld 키: {'✅' if self.vworld_key else '❌'}")
+            logger.info(f"  Kakao 키:  {'✅' if self.kakao_key else '❌'}")
 
     def __del__(self):
         try:
@@ -142,12 +155,10 @@ class GeoCollector:
                 conn.execute("PRAGMA journal_mode=WAL;")
                 conn.execute("PRAGMA busy_timeout=30000;")
                 
-                # schools 테이블 존재 여부 확인
                 cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schools'")
                 if not cur.fetchone():
-                    # 테이블이 없으면 초기화 작업 건너뜀
-                    if self.debug_mode:
-                        print("[GeoCollector] schools 테이블 없음, 초기화 지연")
+                    if self.debug_mode and not self.quiet:
+                        logger.info("GeoCollector: schools 테이블 없음, 초기화 지연")
                     return
                 cur = conn.execute("PRAGMA table_info(schools)")
                 existing = [row[1] for row in cur.fetchall()]
@@ -196,11 +207,11 @@ class GeoCollector:
                 )
                 for addr, lon, lat in cur:
                     self.cache[self._hash_address(addr)] = (float(lon), float(lat))
-            if self.debug_mode:
-                print(f"[GeoCollector] cache loaded: {len(self.cache)}")
+            if self.debug_mode and not self.quiet:
+                logger.info(f"GeoCollector cache loaded: {len(self.cache)}")
         except Exception as e:
-            if self.debug_mode:
-                print(f"[GeoCollector] cache load failed: {e}")
+            if self.debug_mode and not self.quiet:
+                logger.info(f"GeoCollector cache load failed: {e}")
 
     def _load_api_usage(self):
         today = now_kst().strftime("%Y-%m-%d")
@@ -211,8 +222,8 @@ class GeoCollector:
                 row = cur.fetchone()
                 self.api_calls_today = int(row[0]) if row else 0
         except Exception as e:
-            if self.debug_mode:
-                print(f"[GeoCollector] api usage load failed: {e}")
+            if self.debug_mode and not self.quiet:
+                logger.info(f"GeoCollector api usage load failed: {e}")
             self.api_calls_today = 0
 
     def _persist_usage_if_needed(self, force: bool = False):
@@ -238,8 +249,8 @@ class GeoCollector:
                 )
             self._usage_dirty = 0
         except Exception as e:
-            if self.debug_mode:
-                print(f"[GeoCollector] api usage persist failed: {e}")
+            if self.debug_mode and not self.quiet:
+                logger.info(f"GeoCollector api usage persist failed: {e}")
 
     def _bump_api_usage(self, n: int = 1):
         self.api_calls_today += n
@@ -249,13 +260,12 @@ class GeoCollector:
 
     def _check_api_limit(self) -> bool:
         if self.api_calls_today >= self.api_limit:
-            if self.debug_mode:
-                print(f"[GeoCollector] API limit exceeded: {self.api_calls_today}/{self.api_limit}")
+            if self.debug_mode and not self.quiet:
+                logger.info(f"GeoCollector API limit exceeded: {self.api_calls_today}/{self.api_limit}")
             return False
         return True
 
     def _geocode_kakao(self, address: str) -> Optional[Tuple[float, float]]:
-        """Kakao API 를 통한 지오코딩 (VWorld 실패 시 폴백)"""
         if not self.kakao_key:
             logger.warning("KAKAO_API_KEY not set")
             return None
@@ -300,7 +310,6 @@ class GeoCollector:
         else:
             type_order = ["ROAD", "PARCEL", "JIBUN"]
 
-        # VWorld 시도
         for addr_type in type_order:
             if not self._check_api_limit():
                 break
@@ -354,12 +363,11 @@ class GeoCollector:
                 logger.error(f"VWorld API connection error for {addr_type}")
                 time.sleep(0.2)
             except Exception as e:
-                if self.debug_mode:
-                    print(f"[GeoCollector] geocode error({addr_type}): {e}")
+                if self.debug_mode and not self.quiet:
+                    logger.debug(f"GeoCollector geocode error({addr_type}): {e}")
                 logger.error(f"VWorld API unexpected error for {addr_type}: {e}")
                 time.sleep(0.2)
         
-        # VWorld 모두 실패 시 Kakao 폴백
         if self.kakao_key:
             logger.info(f"VWorld 실패, Kakao 폴백 시도: {address[:50]}")
             coords = self._geocode_kakao(address)
@@ -433,8 +441,8 @@ class GeoCollector:
             logger.error(f"VWorld API connection error for {addr_type}")
             return None
         except Exception as e:
-            if self.debug_mode:
-                print(f"[GeoCollector] geocode_with_type error({addr_type}): {e}")
+            if self.debug_mode and not self.quiet:
+                logger.debug(f"GeoCollector geocode_with_type error({addr_type}): {e}")
             logger.error(f"VWorld API unexpected error for {addr_type}: {e}")
             return None
 
@@ -480,7 +488,7 @@ class GeoCollector:
             self.pending_inserts.clear()
             self._persist_usage_if_needed(force=False)
         except Exception as e:
-            print(f"[GeoCollector] cache flush failed: {e}")
+            logger.error(f"GeoCollector cache flush failed: {e}")
 
     def _update_school_coords(self, sc_code: str, lon: float, lat: float, cleaned: str, addr_components: dict, kakao_address: Optional[str] = None):
         with sqlite3.connect(self.school_db_path, timeout=30) as conn:
@@ -594,18 +602,20 @@ class GeoCollector:
                 (limit,),
             ).fetchall()
 
-        print(f"처리할 학교: {len(schools)}개")
+        logger.info(f"처리할 학교: {len(schools)}개")
         success = 0
         for i, (sc_code, sc_name, address) in enumerate(schools, 1):
             result = self.save_location("school", sc_code, address)
             if result.get("coords"):
                 success += 1
-            print(f"\r{i}/{len(schools)} 성공:{success}", end="")
+            if not self.quiet:
+                print(f"\r{i}/{len(schools)} 성공:{success}", end="")
             time.sleep(0.2)
             if i % 10 == 0:
                 self.flush()
                 self.meta_vocab.flush()
-        print()
+        if not self.quiet:
+            print()
         self.flush()
         self.meta_vocab.flush()
         return success

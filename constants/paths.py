@@ -6,10 +6,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # data/ 아래 모든 디렉토리 정의
 DATA_DIR = PROJECT_ROOT / "data"
-BACKUP_DIR = DATA_DIR / "backup"
-ARCHIVE_DIR = DATA_DIR / "archive"
-LOG_DIR = DATA_DIR / "logs" 
-ACTIVE_DIR = DATA_DIR / "active" 
 
 # 설정 파일에서 경로를 읽되, 없으면 기본값 사용
 ACTIVE_DIR = DATA_DIR / config.get('paths', 'active_dir', default='active')
@@ -22,7 +18,14 @@ EXPORT_DIR = DATA_DIR / config.get('paths', 'export_dir', default='export')
 QUERIES_DIR = DATA_DIR / config.get('paths', 'queries_dir', default='queries')
 GA4_DIR = DATA_DIR / config.get('paths', 'ga4_dir', default='ga4')
 
-# 각 collector별 DB 파일 경로 (Path 객체) - 통일!
+# 추가: 리포트 및 바스켓 디렉토리
+REPORTS_DIR = DATA_DIR / config.get('paths', 'reports_dir', default='reports')
+STATS_DIR = REPORTS_DIR / "stats"
+EXCEL_DIR = REPORTS_DIR / "excel"
+BASKETS_DIR = DATA_DIR / "baskets"
+WARM_DIR = BASKETS_DIR / "warm"
+
+# 각 collector별 DB 파일 경로 (Path 객체)
 NEIS_INFO_DB_PATH = MASTER_DIR / "neis_info.db"
 SCHOOL_INFO_DB_PATH = MASTER_DIR / "school_info.db"
 MEAL_DB_PATH = ACTIVE_DIR / "meal.db"
@@ -38,6 +41,7 @@ UNKNOWN_DB_PATH = ACTIVE_DIR / "unknown_patterns.db"
 NEIS_INFO_ODD_DB_PATH = MASTER_DIR / "neis_info_odd.db"
 NEIS_INFO_EVEN_DB_PATH = MASTER_DIR / "neis_info_even.db"
 NEIS_INFO_TOTAL_DB_PATH = MASTER_DIR / "neis_info_total.db"
+
 # NEIS 급식 병합 DB
 MEAL_ODD_DB_PATH = ACTIVE_DIR / "meal_odd.db"
 MEAL_EVEN_DB_PATH = ACTIVE_DIR / "meal_even.db"
@@ -57,10 +61,9 @@ TIMETABLE_TOTAL_DB_PATH = ACTIVE_DIR / "timetable_total.db"
 SCHOOL_INFO_ODD_DB_PATH = MASTER_DIR / "school_info_odd.db"
 SCHOOL_INFO_EVEN_DB_PATH = MASTER_DIR / "school_info_even.db"
 
-# (선택) 하위 호환성을 위해 문자열 버전이 필요하면 별도 정의
-# MASTER_DB_PATH_STR = str(NEIS_INFO_DB_PATH)
-
 # 모든 디렉토리 생성
-for d in [ACTIVE_DIR, MASTER_DIR, LOG_DIR, METRICS_DIR, 
-          TEMP_DIR, CACHE_DIR, EXPORT_DIR, QUERIES_DIR, GA4_DIR]:
+for d in [ACTIVE_DIR, MASTER_DIR, LOG_DIR, METRICS_DIR, TEMP_DIR, CACHE_DIR,
+          EXPORT_DIR, QUERIES_DIR, GA4_DIR, REPORTS_DIR, STATS_DIR, EXCEL_DIR,
+          BASKETS_DIR, WARM_DIR]:
     d.mkdir(parents=True, exist_ok=True)
+    
