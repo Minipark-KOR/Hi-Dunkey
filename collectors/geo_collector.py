@@ -16,7 +16,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.kst_time import now_kst
 from core.meta_vocab import MetaVocabManager
-from core.filters import AddressFilter
+from core.address.address_filter import AddressFilter
 from core.retry import RetryManager
 from core.logger import build_logger
 from core.config import config  # 추가: 설정 로드

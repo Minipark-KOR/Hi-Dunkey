@@ -19,7 +19,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.retry import RetryManager
 from core.logger import build_logger
 from core.kst_time import now_kst
-from core.filters import AddressFilter
+from core.address.address_filter import AddressFilter
 from core.error_classifier import classify_error
 from core.address.address_filter import AddressFilter   # ← 변경
 from collectors.geo_collector import GeoCollector

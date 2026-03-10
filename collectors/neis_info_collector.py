@@ -23,7 +23,7 @@ from core.base_collector import BaseCollector
 from core.database import get_db_connection, get_db_reader
 from core.school_id import create_school_id
 from core.meta_vocab import MetaVocabManager
-from core.filters import AddressFilter
+from core.address.address_filter import AddressFilter
 from core.kst_time import now_kst
 from core.school_year import get_current_school_year
 from constants.codes import NEIS_ENDPOINTS, ALL_REGIONS, REGION_NAMES

@@ -9,7 +9,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.retry import RetryManager
-from core.filters import AddressFilter
+from core.address.address_filter import AddressFilter
 from core.logger import build_logger
 from constants.paths import NEIS_INFO_DB_PATH, FAILURES_DB_PATH, LOG_DIR # 추가
 
