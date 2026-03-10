@@ -148,41 +148,55 @@ class NeisInfoCollector(BaseCollector):
         return self.run_date
 
     def fetch_region(self, region_code: str, limit: Optional[int] = None, year: Optional[int] = None, **kwargs) -> int:
+        # ✅ 1. region_name 을 가장 먼저 정의 (예외 발생 전)
+        region_name = REGION_NAMES.get(region_code, region_code)
+        
         if year is None:
             year = get_current_school_year(now_kst())
-        region_name = REGION_NAMES.get(region_code, region_code)
-        self.print(f"\n📡 [{region_name}({region_code})] 학년도 {year} 데이터 수집 시작...", level="debug")
+        
+        self.print(f"📡 [{region_name}({region_code})] 학년도 {year} 데이터 수집 시작...", level="debug")
+        
         base_params = {"ATPT_OFCDC_SC_CODE": region_code}
-        rows = self._fetch_paginated(
-            NEIS_URL, base_params, 'schoolInfo',
-            page_size=100,
-            region=region_code,
-            year=year
-        )
-        if self.debug_mode:
-            self.print(f"🔍 {region_code} rows length: {len(rows)}")
-
-        if not rows:
-            self.logger.error(f"[{region_name}] 수집된 데이터 없음")
-            self.print(f"❌ [{region_name}] 수집된 데이터 없음", level="debug")
+        
+        try:
+            rows = self._fetch_paginated(
+                NEIS_URL, base_params, 'schoolInfo',
+                page_size=100,
+                region=region_code,
+                year=year
+            )
+            
+            if self.debug_mode:
+                self.print(f"🔍 {region_code} rows length: {len(rows)}")
+            
+            if not rows:
+                self.logger.error(f"[{region_name}] 수집된 데이터 없음")
+                self.print(f"❌ [{region_name}] 수집된 데이터 없음", level="debug")
+                return 0
+            
+            self.logger.info(f"[{region_name}] 전체 {len(rows)}건 수집")
+            self.print(f"📋 [{region_name}] 전체 {len(rows)}건 수집", level="debug")
+            
+            new, failed, skipped = self._update_schools_with_diff(rows, region_code, limit=limit)
+            
+            with self._counter_lock:
+                self.total_new += new
+                self.total_failed += failed
+                self.total_skipped += skipped
+            
+            self.print(f"  📊 [{region_name}] 신규성공={new}, 실패={failed}, 스킵={skipped}")
+            
+            if self.debug_mode:
+                self.print(f"✅ [{region_name}] 처리 완료")
+            
+            return new
+            
+        except Exception as e:
+            # ✅ 2. 이제 region_name 을 안전하게 사용 가능
+            self.logger.error(f"[{region_name}] 수집 실패: {e}")
+            self.print(f"❌ [{region_name}] 수집 실패: {e}", level="error")
             return 0
-
-        self.logger.info(f"[{region_name}] 전체 {len(rows)}건 수집")
-        self.print(f"📋 [{region_name}] 전체 {len(rows)}건 수집", level="debug")
-        new, failed, skipped = self._update_schools_with_diff(rows, region_code, limit=limit)
-
-        with self._counter_lock:
-            self.total_new += new
-            self.total_failed += failed
-            self.total_skipped += skipped
-
-        self.print(f"  📊 [{region_name}] 신규성공={new}, 실패={failed}, 스킵={skipped}")
-
-        if self.debug_mode:
-            self.print(f"✅ [{region_name}] 처리 완료")
-
-        return new
-
+            
     def _update_schools_with_diff(self, new_rows: List[dict], region_code: str, limit: Optional[int] = None) -> Tuple[int, int, int]:
         if self.debug_mode:
             self.print(f"🔍 _update_schools_with_diff: new_rows length = {len(new_rows)}")
