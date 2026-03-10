@@ -202,10 +202,10 @@ class NeisInfoCollector(BaseCollector):
         region_name = REGION_NAMES.get(region_code, region_code)
 
         if self.debug_mode:
-        self.print_progress(i, total_items, prefix=f"[{region_name}]")
-        last_update = time.time()
-            if new_rows:
-                self.print(f"🔍 sample keys: {list(new_rows[0].keys())}")
+            self.print_progress(i, total_items, prefix=f"[{region_name}]")
+            last_update = time.time()
+                if new_rows:
+                    self.print(f"🔍 sample keys: {list(new_rows[0].keys())}")
 
         existing = {}
         if os.path.exists(self.db_path):
@@ -343,7 +343,7 @@ class NeisInfoCollector(BaseCollector):
 
             # 진행률 출력 (일정 시간 간격 또는 마지막에)
             if time.time() - last_update >= 0.2 or i == total_items:
-                self.print_progress(i, total_items, prefix=f"[{region_name}]")
+                self.print_progress(i, total_items, prefix=f"[{region_name}]")  # ✅ region_name 은 함수 시작에서 정의됨
                 last_update = time.time()
 
         # region_name = REGION_NAMES.get(region_code, region_code)
