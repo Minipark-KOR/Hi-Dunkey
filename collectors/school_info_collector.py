@@ -50,15 +50,28 @@ class SchoolInfoCollector(BaseCollector):
     }
     # ---------------------
 
-    def __init__(self, shard: str = "none", school_range: Optional[str] = None, debug_mode: bool = False):
-        super().__init__("school_info", str(MASTER_DIR), shard, school_range)
+    def __init__(
+        self,
+        shard: str = "none",
+        school_range: Optional[str] = None,
+        debug_mode: bool = False,
+        quiet_mode: bool = False,          # ✅ 추가
+        **kwargs                           # ✅ 추가 인자 수용
+    ):
+        super().__init__(
+            "school_info",
+            str(MASTER_DIR),
+            shard,
+            school_range,
+            quiet_mode=quiet_mode,          # ✅ BaseCollector에 전달
+            **kwargs                         # ✅ 추가 인자 전달 (BaseCollector가 처리)
+        )
         self.debug_mode = debug_mode
-        self.quiet_mode = False
-        
-        # NEIS validator 상태 확인
+        self.quiet_mode = quiet_mode         # ✅ 저장
+
         neis_count = len(neis_validator.get_all())
         self.logger.info(f"NEIS validator 로드 완료: {neis_count}개 학교 코드")
-        
+
         self._init_db()
 
     def _init_db(self) -> None:
