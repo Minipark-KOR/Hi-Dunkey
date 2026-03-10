@@ -230,8 +230,7 @@ def select_mode(collector: Dict[str, Any]) -> Union[CollectionMode, MenuResult]:
 
 def get_basic_options(run_type: str) -> List[str]:
     """기본 옵션 수집 (실행 유형 1~3)"""
-    base_args = []  # ← 이 변수명만 사용!
-    
+    base_args = []
     if run_type == '1':
         logger.info("실제 수집 모드")
         print(f"{YELLOW}실제 수집 모드: 전체 데이터 수집{RESET}")
@@ -272,13 +271,6 @@ def get_basic_options(run_type: str) -> List[str]:
         base_args.extend(['--limit', limit])  # ✅ base_args 사용
         logger.info(f"제한 개수: {limit}")
     
-    # ✅ debug 입력은 이 함수에서 처리하지 않음 (고급 모드 전용)
-    # 또는 처리하려면 base_args 사용
-    debug = input("디버그 모드? (y/n) [n]: ").strip().lower()
-    if debug == 'y':
-        base_args.append('--debug')  # ✅ base_args 사용
-        logger.info("디버그 모드 ON")
-
     return base_args  # ✅ List[str] 만 반환 (튜플 아님!)
 
 def menu_advanced_mode() -> Tuple[Optional[List[str]], bool, Optional[MenuResult]]:
@@ -328,37 +320,36 @@ def menu_advanced_mode() -> Tuple[Optional[List[str]], bool, Optional[MenuResult
         is_parallel = False
         logger.info("샤드 모드: 통합")
 
-    # [변경] 지역 입력 처리
-    # ✅ 수정 후
-# [변경] 지역 입력 - 기본값 B10 표시 및 자동 적용
-regions_input = input("\n지역 (예: 서울,경기 또는 B10,C10) [기본: B10]: ").strip()
-if not regions_input:
-    regions_input = "B10"
-    print(f"  → 기본값: {GREEN}B10(서울){RESET} 이 선택되었습니다")
-codes = parse_region_input(regions_input)
-if codes:
-    regions_str = ','.join(codes)
-    args.extend(['--regions', regions_str])
-    logger.info(f"지역: {regions_str}")
-else:
-    logger.warning(f"유효한 지역이 없음: {regions_input}")
-    print(f"{YELLOW}⚠️ 유효한 지역이 없어 무시합니다.{RESET}")
+    # [변경] 지역 입력 - 기본값 B10 표시 및 자동 적용
+    regions_input = input("\n지역 (예: 서울,경기 또는 B10,C10) [기본: B10]: ").strip()
+    if not regions_input:
+        regions_input = "B10"
+        print(f"  → 기본값: {GREEN}B10(서울){RESET} 이 선택되었습니다")
+    codes = parse_region_input(regions_input)
+    if codes:
+        regions_str = ','.join(codes)
+        args.extend(['--regions', regions_str])
+        logger.info(f"지역: {regions_str}")
+    else:
+        logger.warning(f"유효한 지역이 없음: {regions_input}")
+        print(f"{YELLOW}⚠️ 유효한 지역이 없어 무시합니다.{RESET}")
 
-# [변경] 제한 개수 입력 - 기본값 100 표시 및 자동 적용
-limit = input("수집 제한 개수 [기본: 100]: ").strip()
-if not limit:
-    limit = "100"
-    print(f"  → 기본값: {GREEN}100{RESET} 개가 선택되었습니다")
-if limit.isdigit():
-    args.extend(['--limit', limit])
-    logger.info(f"제한: {limit}")
+    # [변경] 제한 개수 입력 - 기본값 100 표시 및 자동 적용
+    limit = input("수집 제한 개수 [기본: 100]: ").strip()
+    if not limit:
+        limit = "100"
+        print(f"  → 기본값: {GREEN}100{RESET} 개가 선택되었습니다")
+    if limit.isdigit():
+        args.extend(['--limit', limit])
+        logger.info(f"제한: {limit}")
 
+    # ✅ debug 입력과 return 은 모든 조건문 밖에서 실행
     debug = input("디버그 모드? (y/n) [n]: ").strip().lower()
     if debug == 'y':
         args.append('--debug')
         logger.info("디버그 모드 ON")
 
-    return args, is_parallel, None
+    return args, is_parallel, None  # ✅ 함수 끝에서 정상 반환
 
 def direct_advanced_mode() -> Union[List[str], MenuResult, None]:
     """고급 모드 직접 입력 옵션"""
