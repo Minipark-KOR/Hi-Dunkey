@@ -358,7 +358,7 @@ if limit.isdigit():
         args.append('--debug')
         logger.info("디버그 모드 ON")
 
-    return args, is_parallel, None
+        return args, is_parallel, None
 
 def direct_advanced_mode() -> Union[List[str], MenuResult, None]:
     """고급 모드 직접 입력 옵션"""
