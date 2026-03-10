@@ -597,7 +597,7 @@ def export_data(ctx: ActionContext) -> MenuResult:
     logger.info("데이터 내보내기 선택")
     print(f"\n{BLUE}📤 데이터 내보내기{RESET}")
     try:
-        from exporters.region_filter import get_all_regions, parse_region_input
+        from core.address import get_all_regions, parse_region_input
     except ImportError:
         logger.error("exporters 모듈을 찾을 수 없습니다.")
         print(f"{RED}❌ 내보내기 모듈이 없습니다. exporters/ 디렉토리를 생성하고 필요한 파일을 넣어주세요.{RESET}")
@@ -888,7 +888,6 @@ def main():
 
             while True:
                 run_type = select_run_type()
-                print(f"🔍 디버그: 받은 run_type = {run_type} (타입: {type(run_type)})")
                 if run_type == MenuResult.BACK:
                     break  # 수집기 선택으로
                 if run_type == MenuResult.RETRY:
@@ -896,7 +895,6 @@ def main():
                 if run_type == MenuResult.EXIT:
                     sys.exit(0)
                 if run_type == MenuResult.RESTART:
-                    print("🔍 디버그: RESTART 조건 만족, break 실행")
                     break  # 처음으로 (수집기 선택)
 
                 if run_type == '3':
@@ -1002,6 +1000,7 @@ def main():
 
                 else:
                     base_args = get_basic_options(run_type)
+                    restart_to_collector = False  # 플래그 추가
                     while True:
                         mode_res = select_mode(collector)
                         if isinstance(mode_res, MenuResult):
@@ -1012,33 +1011,35 @@ def main():
                             if mode_res == MenuResult.EXIT:
                                 sys.exit(0)
                             if mode_res == MenuResult.RESTART:
-                                break
+                                restart_to_collector = True  # 플래그 설정
+                                break   # 현재 루프 종료
                         else:
-                            mode = mode_res  # CollectionMode
-                        last_args = base_args
-                        last_mode = mode.value
-                        success = execute_collection(collector, base_args, mode, run_type)
-                        if not success and not is_dry_run:
-                            logger.warning("수집 실패 또는 부분 실패")
-                        result, new_args = post_run_menu(collector, collectors, last_args, last_mode)
-                        if result == MenuResult.EXIT:
-                            sys.exit(0)
-                        elif result == MenuResult.GO_TO_COLLECTOR:
-                            break
-                        elif result == MenuResult.BACK:
-                            break
-                        elif result == MenuResult.DEBUG:
-                            success = execute_collection(collector, new_args, mode, run_type)
+                            mode = mode_res
+                            last_args = base_args
+                            last_mode = mode.value
+                            success = execute_collection(collector, base_args, mode, run_type)
                             if not success and not is_dry_run:
                                 logger.warning("수집 실패 또는 부분 실패")
-                            result, new_args2 = post_run_menu(collector, collectors, new_args, last_mode)
+                            result, new_args = post_run_menu(collector, collectors, last_args, last_mode)
                             if result == MenuResult.EXIT:
                                 sys.exit(0)
                             elif result == MenuResult.GO_TO_COLLECTOR:
                                 break
                             elif result == MenuResult.BACK:
                                 break
-
+                            elif result == MenuResult.DEBUG:
+                                success = execute_collection(collector, new_args, mode, run_type)
+                                if not success and not is_dry_run:
+                                    logger.warning("수집 실패 또는 부분 실패")
+                                result, new_args2 = post_run_menu(collector, collectors, new_args, last_mode)
+                                if result == MenuResult.EXIT:
+                                    sys.exit(0)
+                                elif result == MenuResult.GO_TO_COLLECTOR:
+                                    break
+                                elif result == MenuResult.BACK:
+                                    break
+                    if restart_to_collector:
+                        break  # 실행 유형 루프도 종료 → 수집기 선택 메뉴로 이동
     except KeyboardInterrupt:
         logger.info("사용자에 의해 프로그램 종료")
         print(f"\n{YELLOW}👋 사용자 종료{RESET}")
