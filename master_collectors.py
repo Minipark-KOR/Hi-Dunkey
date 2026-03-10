@@ -243,8 +243,7 @@ def get_basic_options(run_type: str) -> List[str]:
         logger.info("디버그 모드: --debug")
         print(f"{YELLOW}디버그 모드: --debug 적용{RESET}")
 
-
-    # [변경] 지역 입력 - 기본값 B10 표시 및 자동 적용
+    # [변경] 지역 입력 처리 - 기본값 B10 표시 및 자동 적용
     regions_input = input("\n지역 (예: 서울,경기 또는 B10,C10) [기본: B10]: ").strip()
     if not regions_input:
         regions_input = "B10"
@@ -267,12 +266,13 @@ def get_basic_options(run_type: str) -> List[str]:
         args.extend(['--limit', limit])
         logger.info(f"제한: {limit}")
 
+    # ✅ debug 입력과 return 은 모든 조건문 밖에서 실행
     debug = input("디버그 모드? (y/n) [n]: ").strip().lower()
     if debug == 'y':
         args.append('--debug')
         logger.info("디버그 모드 ON")
 
-    return args, is_parallel, None
+    return args, is_parallel, None  # ✅ 함수 끝에서 정상 반환
 
 def menu_advanced_mode() -> Tuple[Optional[List[str]], bool, Optional[MenuResult]]:
     """고급 모드 메뉴형 옵션 선택"""
