@@ -185,7 +185,7 @@ def select_run_type() -> Union[str, MenuResult]:
         elif val == 11:
             return MenuResult.BACK
         elif val == 22:
-            logger.info(f"22번 선택됨, RESTART 반환 시도: {MenuResult.RESTART}")
+            print(f"🔍 디버그: 22번 선택됨, RESTART 반환 시도")
             return MenuResult.RESTART
         elif val == 33:
             logger.info("종료 선택")
@@ -888,7 +888,7 @@ def main():
 
             while True:
                 run_type = select_run_type()
-                logger.info(f"받은 run_type: {run_type} (type: {type(run_type)})")
+                print(f"🔍 디버그: 받은 run_type = {run_type} (타입: {type(run_type)})")
                 if run_type == MenuResult.BACK:
                     break  # 수집기 선택으로
                 if run_type == MenuResult.RETRY:
@@ -896,7 +896,7 @@ def main():
                 if run_type == MenuResult.EXIT:
                     sys.exit(0)
                 if run_type == MenuResult.RESTART:
-                    logger.info("RESTART 조건 만족, break 실행")
+                    print("🔍 디버그: RESTART 조건 만족, break 실행")
                     break  # 처음으로 (수집기 선택)
 
                 if run_type == '3':
