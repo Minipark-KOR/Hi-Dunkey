@@ -127,7 +127,7 @@ class BaseCollector(ABC):
             self.logger.warning("school_info.db 없음. 캐시 없이 동작")
             return
         try:
-            with sqlite3.connect(str(NEIS_INFO_DB_PATH)) as conn:
+            with sqlite3.connect(str(MASTER_DB)) as conn:
                 cur = conn.execute("""
                     SELECT sc_code, atpt_code, school_id, sc_name, sc_kind,
                            CASE WHEN sc_kind LIKE '%초등%' THEN '초'
