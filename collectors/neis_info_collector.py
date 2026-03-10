@@ -198,8 +198,12 @@ class NeisInfoCollector(BaseCollector):
             return 0
             
     def _update_schools_with_diff(self, new_rows: List[dict], region_code: str, limit: Optional[int] = None) -> Tuple[int, int, int]:
+        # ✅ 1. 함수 시작에서 region_name 정의
+        region_name = REGION_NAMES.get(region_code, region_code)
+
         if self.debug_mode:
-            self.print(f"🔍 _update_schools_with_diff: new_rows length = {len(new_rows)}")
+        self.print_progress(i, total_items, prefix=f"[{region_name}]")
+        last_update = time.time()
             if new_rows:
                 self.print(f"🔍 sample keys: {list(new_rows[0].keys())}")
 
@@ -342,7 +346,7 @@ class NeisInfoCollector(BaseCollector):
                 self.print_progress(i, total_items, prefix=f"[{region_name}]")
                 last_update = time.time()
 
-        region_name = REGION_NAMES.get(region_code, region_code)
+        # region_name = REGION_NAMES.get(region_code, region_code)
         self.logger.info(f"[{region_name}] 좌표 갱신: {len(new_coords)}개 / 완료")
         return len(new_coords), failed_count, skipped_count
 
