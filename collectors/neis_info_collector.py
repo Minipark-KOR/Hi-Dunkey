@@ -149,7 +149,13 @@ class NeisInfoCollector(BaseCollector):
 
     def _fetch_paginated(self, url, base_params, root_key, page_size=100, region=None, year=None):
         """Override to safely capture region_name for error logging."""
-        region_name = REGION_NAMES.get(region, region) if region else "알 수 없음"
+        # region_name 안전하게 할당 (REGION_NAMES 없을 경우 region 값 사용)
+        try:
+            region_name = REGION_NAMES.get(region, region) if region else "알 수 없음"
+        except NameError:
+            region_name = region if region else "알 수 없음"
+            self.logger.warning("REGION_NAMES가 정의되지 않아 기본값을 사용합니다.")
+
         try:
             return super()._fetch_paginated(url, base_params, root_key, page_size=page_size, region=region, year=year)
         except Exception as e:
@@ -157,7 +163,12 @@ class NeisInfoCollector(BaseCollector):
             raise   # re-raise so fetch_region's except block can handle it
 
     def fetch_region(self, region_code: str, limit: Optional[int] = None, year: Optional[int] = None, **kwargs) -> int:
-        region_name = REGION_NAMES.get(region_code, region_code)
+        # region_name 안전하게 할당
+        try:
+            region_name = REGION_NAMES.get(region_code, region_code)
+        except NameError:
+            region_name = region_code
+            self.logger.warning("REGION_NAMES가 정의되지 않아 지역 코드를 이름으로 사용합니다.")
 
         if year is None:
             year = get_current_school_year(now_kst())
@@ -200,22 +211,25 @@ class NeisInfoCollector(BaseCollector):
             return new
 
         except Exception as e:
-            # region_name is already defined, safe to use
+            # region_name은 항상 정의되어 있음
             self.logger.error(f"[{region_name}] 수집 실패: {e}")
             self.print(f"❌ [{region_name}] 수집 실패: {e}", level="error")
             return 0
-            
-    def _update_schools_with_diff(self, new_rows: List[dict], region_code: str, limit: Optional[int] = None) -> Tuple[int, int, int]:
-        # ✅ 1. 함수 시작에서 region_name 을 가장 먼저 정의 (필수!)
-        region_name = REGION_NAMES.get(region_code, region_code)
 
-        # ✅ 2. 디버그 출력 (원래 로직 유지)
+    def _update_schools_with_diff(self, new_rows: List[dict], region_code: str, limit: Optional[int] = None) -> Tuple[int, int, int]:
+        # region_name 안전하게 할당
+        try:
+            region_name = REGION_NAMES.get(region_code, region_code)
+        except NameError:
+            region_name = region_code
+            self.logger.warning("REGION_NAMES가 정의되지 않아 지역 코드를 이름으로 사용합니다.")
+
         if self.debug_mode:
             self.print(f"🔍 _update_schools_with_diff: new_rows length = {len(new_rows)}")
             if new_rows:
                 self.print(f"🔍 sample keys: {list(new_rows[0].keys())}")
 
-        # ✅ 3. 기존 데이터 조회 로직 (변경 없음)
+        # 기존 데이터 조회 로직 (변경 없음)
         existing = {}
         if os.path.exists(self.db_path):
             try:
@@ -355,9 +369,6 @@ class NeisInfoCollector(BaseCollector):
                 self.print_progress(i, total_items, prefix=f"[{region_name}]")
                 last_update = time.time()
 
-        # ✅ 4. 함수 끝의 중복 정의 제거 (주석 처리 또는 삭제)
-        # region_name = REGION_NAMES.get(region_code, region_code)  # ← 이 줄 삭제/주석
-        
         self.logger.info(f"[{region_name}] 좌표 갱신: {len(new_coords)}개 / 완료")
         return len(new_coords), failed_count, skipped_count
 
