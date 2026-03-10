@@ -17,12 +17,12 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# 프로젝트 루트를 sys.path에 추가 (constants 모듈 임포트 전에)
 sys.path.append(str(Path(__file__).parent.parent))
 
-from constants.paths import NEIS_INFO_DB_PATH, FAILURES_DB_PATH, LOG_DIR # 추가
-
-# 프로젝트 루트를 sys.path에 추가
-sys.path.append(str(Path(__file__).parent.parent))
+# 이제 프로젝트 모듈 임포트 가능
+from constants.paths import LOG_DIR
+from core.kst_time import KST, now_kst
 
 try:
     from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, SpinnerColumn
@@ -34,9 +34,9 @@ except ImportError:
     def simple_progress(completed, total):
         print(f"\r📊 진행: {completed}/{total} ({(completed/total*100):.1f}%)", end='', flush=True)
 
-from core.kst_time import KST, now_kst
 
 log_dir = LOG_DIR
+
 # 도메인별 병합 스크립트 매핑
 MERGE_SCRIPT_MAP = {
     "neis_info": "merge_neis_info_dbs.py",
@@ -79,7 +79,7 @@ def prompt_year(default_year: int) -> int:
             sys.exit(1)
 
 def parse_regions(regions_arg: str) -> List[str]:
-    """지역 코드 파싱"""
+    """지역 코드 파싱 (필요시 constants.codes에서 ALL_REGIONS 임포트)"""
     if regions_arg.upper() == "ALL":
         from constants.codes import ALL_REGIONS
         return ALL_REGIONS
@@ -185,17 +185,13 @@ def run_merge(collector: str, year: int, log_dir: Path, timeout: Optional[int] =
 
 def run_shard(region: str, shard: str, collector: str, extra_args: List[str], year: int, timeout: Optional[int] = None) -> Tuple[str, str, int]:
     """collector_cli.py를 통해 단일 지역-샤드 실행"""
-    # 로그 파일을 지역별, 샤드별로 분리
-    log_file = LOG_DIR / f"{collector}_{region}_{shard}.log"   # ✅ Path 객체 사용
+    log_file = LOG_DIR / f"{collector}_{region}_{shard}.log"
     cmd = [
         sys.executable, "collector_cli.py", collector,
         "--regions", region,
         "--shard", shard,
         "--year", str(year)
     ] + extra_args
-
-    # 디버그 모드이면 추가 옵션? extra_args에 --debug 포함 여부는 이미 extra_args에 들어있음.
-    # 디버그 모드에서는 로그에 --debug가 포함되어 실행됨.
 
     proc = None
     ret_code = 1
@@ -313,7 +309,6 @@ def main():
             transient=False,
         )
         progress.start()
-        # 각 지역-샤드 조합에 대한 작업 생성
         task_ids = {}
         for region, shard in tasks:
             desc = f"{region}-{shard}"
@@ -333,10 +328,8 @@ def main():
             region, shard, ret_code = future.result()
             completed += 1
             if progress and task_ids:
-                # 작업 완료 시 해당 바를 100%로 업데이트
                 progress.update(task_ids[(region, shard)], completed=100)
             elif not args.quiet and not RICH_AVAILABLE:
-                # 폴백: 단순 텍스트 진행률
                 simple_progress(completed, total_tasks)
             with lock:
                 results[(region, shard)] = ret_code
@@ -344,7 +337,7 @@ def main():
     if progress:
         progress.stop()
     elif not args.quiet and not RICH_AVAILABLE:
-        print()  # 줄바꿈
+        print()
 
     # 결과 집계
     failed = [(r, s) for (r, s), code in results.items() if code != 0]
