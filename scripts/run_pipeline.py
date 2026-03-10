@@ -16,6 +16,9 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, List, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+sys.path.append(str(Path(__file__).parent.parent))
+
 from constants.paths import NEIS_INFO_DB_PATH, FAILURES_DB_PATH, LOG_DIR # 추가
 
 # 프로젝트 루트를 sys.path에 추가
