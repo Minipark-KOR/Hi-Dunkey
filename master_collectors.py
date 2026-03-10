@@ -243,26 +243,36 @@ def get_basic_options(run_type: str) -> List[str]:
         logger.info("디버그 모드: --debug")
         print(f"{YELLOW}디버그 모드: --debug 적용{RESET}")
 
-    regions_input = input("지역 (예: 서울,경기 또는 B10,C10): ").strip()
-    if regions_input:
-        codes = parse_region_input(regions_input)
-        if codes:
-            regions_str = ','.join(codes)
-            base_args.extend(['--regions', regions_str])
-            logger.info(f"지역 옵션: {regions_str}")
-        else:
-            logger.warning(f"유효한 지역이 없음: {regions_input}")
-            print(f"{YELLOW}⚠️ 유효한 지역이 없어 무시합니다.{RESET}")
 
-    limit = input("수집 제한 개수 (기본: 전체): ").strip()
+    # [변경] 지역 입력 - 기본값 B10 표시 및 자동 적용
+    regions_input = input("\n지역 (예: 서울,경기 또는 B10,C10) [기본: B10]: ").strip()
+    if not regions_input:
+        regions_input = "B10"
+        print(f"  → 기본값: {GREEN}B10(서울){RESET} 이 선택되었습니다")
+    codes = parse_region_input(regions_input)
+    if codes:
+        regions_str = ','.join(codes)
+        args.extend(['--regions', regions_str])
+        logger.info(f"지역: {regions_str}")
+    else:
+        logger.warning(f"유효한 지역이 없음: {regions_input}")
+        print(f"{YELLOW}⚠️ 유효한 지역이 없어 무시합니다.{RESET}")
+
+    # [변경] 제한 개수 입력 - 기본값 100 표시 및 자동 적용
+    limit = input("수집 제한 개수 [기본: 100]: ").strip()
+    if not limit:
+        limit = "100"
+        print(f"  → 기본값: {GREEN}100{RESET} 개가 선택되었습니다")
     if limit.isdigit():
-        if '--limit' in base_args:
-            idx = base_args.index('--limit')
-            base_args.pop(idx)
-            base_args.pop(idx)
-        base_args.extend(['--limit', limit])
-        logger.info(f"제한 개수: {limit}")
-    return base_args
+        args.extend(['--limit', limit])
+        logger.info(f"제한: {limit}")
+
+    debug = input("디버그 모드? (y/n) [n]: ").strip().lower()
+    if debug == 'y':
+        args.append('--debug')
+        logger.info("디버그 모드 ON")
+
+    return args, is_parallel, None
 
 def menu_advanced_mode() -> Tuple[Optional[List[str]], bool, Optional[MenuResult]]:
     """고급 모드 메뉴형 옵션 선택"""
@@ -312,21 +322,29 @@ def menu_advanced_mode() -> Tuple[Optional[List[str]], bool, Optional[MenuResult
         logger.info("샤드 모드: 통합")
 
     # [변경] 지역 입력 처리
-    regions_input = input("\n지역 (예: 서울,경기 또는 B10,C10): ").strip()
-    if regions_input:
-        codes = parse_region_input(regions_input)
-        if codes:
-            regions_str = ','.join(codes)
-            args.extend(['--regions', regions_str])
-            logger.info(f"지역: {regions_str}")
-        else:
-            logger.warning(f"유효한 지역이 없음: {regions_input}")
-            print(f"{YELLOW}⚠️ 유효한 지역이 없어 무시합니다.{RESET}")
+    # ✅ 수정 후
+# [변경] 지역 입력 - 기본값 B10 표시 및 자동 적용
+regions_input = input("\n지역 (예: 서울,경기 또는 B10,C10) [기본: B10]: ").strip()
+if not regions_input:
+    regions_input = "B10"
+    print(f"  → 기본값: {GREEN}B10(서울){RESET} 이 선택되었습니다")
+codes = parse_region_input(regions_input)
+if codes:
+    regions_str = ','.join(codes)
+    args.extend(['--regions', regions_str])
+    logger.info(f"지역: {regions_str}")
+else:
+    logger.warning(f"유효한 지역이 없음: {regions_input}")
+    print(f"{YELLOW}⚠️ 유효한 지역이 없어 무시합니다.{RESET}")
 
-    limit = input("수집 제한 개수 (기본 전체): ").strip()
-    if limit.isdigit():
-        args.extend(['--limit', limit])
-        logger.info(f"제한: {limit}")
+# [변경] 제한 개수 입력 - 기본값 100 표시 및 자동 적용
+limit = input("수집 제한 개수 [기본: 100]: ").strip()
+if not limit:
+    limit = "100"
+    print(f"  → 기본값: {GREEN}100{RESET} 개가 선택되었습니다")
+if limit.isdigit():
+    args.extend(['--limit', limit])
+    logger.info(f"제한: {limit}")
 
     debug = input("디버그 모드? (y/n) [n]: ").strip().lower()
     if debug == 'y':
