@@ -147,9 +147,16 @@ class NeisInfoCollector(BaseCollector):
     def _get_target_key(self) -> str:
         return self.run_date
 
-    def fetch_region(self, region_code: str, limit: Optional[int] = None, year: Optional[int] = None, **kwargs) -> int:
-        # ✅ 1. region_name 을 가장 먼저 정의 (예외 발생 전)
-        region_name = REGION_NAMES.get(region_code, region_code)
+    def _fetch_paginated(self, url, base_params, root_key, page_size=100, region=None, year=None):
+    # region_name을 안전하게 정의
+    region_name = REGION_NAMES.get(region, region) if region else "알 수 없음"
+        
+        try:
+            # 부모 클래스의 _fetch_paginated 호출
+            return super()._fetch_paginated(url, base_params, root_key, page_size=page_size, region=region, year=year)
+        except Exception as e:
+            self.logger.error(f"[{region_name}] API 호출 실패: {e}")
+            raise
         
         if year is None:
             year = get_current_school_year(now_kst())
