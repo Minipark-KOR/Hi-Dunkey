@@ -1,63 +1,47 @@
 # constants/paths.py
 from pathlib import Path
-from core.config import config
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+BASE_DIR = PROJECT_ROOT
+DATA_DIR = BASE_DIR / "data"
 
-# data/ 아래 모든 디렉토리 정의
-DATA_DIR = PROJECT_ROOT / "data"
-
-# 설정 파일에서 경로를 읽되, 없으면 기본값 사용
-ACTIVE_DIR = DATA_DIR / config.get('paths', 'active_dir', default='active')
-MASTER_DIR = DATA_DIR / config.get('paths', 'master_dir', default='master')
-LOG_DIR = DATA_DIR / config.get('paths', 'logs_dir', default='logs')
-METRICS_DIR = DATA_DIR / config.get('paths', 'metrics_dir', default='metrics')
-TEMP_DIR = DATA_DIR / config.get('paths', 'temp_dir', default='temp')
-CACHE_DIR = DATA_DIR / config.get('paths', 'cache_dir', default='cache')
-EXPORT_DIR = DATA_DIR / config.get('paths', 'export_dir', default='export')
-QUERIES_DIR = DATA_DIR / config.get('paths', 'queries_dir', default='queries')
-GA4_DIR = DATA_DIR / config.get('paths', 'ga4_dir', default='ga4')
-
-# 추가: 리포트 및 바스켓 디렉토리
-REPORTS_DIR = DATA_DIR / config.get('paths', 'reports_dir', default='reports')
+# 기본 디렉토리 (하드코딩, config 없이도 동작)
+ACTIVE_DIR = DATA_DIR / "active"
+MASTER_DIR = DATA_DIR / "master"
+LOG_DIR = DATA_DIR / "logs"
+METRICS_DIR = DATA_DIR / "metrics"
+TEMP_DIR = DATA_DIR / "temp"
+CACHE_DIR = DATA_DIR / "cache"
+EXPORT_DIR = DATA_DIR / "export"
+QUERIES_DIR = DATA_DIR / "queries"
+GA4_DIR = DATA_DIR / "ga4"
+REPORTS_DIR = DATA_DIR / "reports"
 STATS_DIR = REPORTS_DIR / "stats"
 EXCEL_DIR = REPORTS_DIR / "excel"
 BASKETS_DIR = DATA_DIR / "baskets"
 WARM_DIR = BASKETS_DIR / "warm"
 
-# 각 collector별 DB 파일 경로 (Path 객체)
+# DB 파일 경로
 NEIS_INFO_DB_PATH = MASTER_DIR / "neis_info.db"
 SCHOOL_INFO_DB_PATH = MASTER_DIR / "school_info.db"
 MEAL_DB_PATH = ACTIVE_DIR / "meal.db"
 SCHEDULE_DB_PATH = ACTIVE_DIR / "schedule.db"
 TIMETABLE_DB_PATH = ACTIVE_DIR / "timetable.db"
-
-# 공통 DB (Path 객체)
 FAILURES_DB_PATH = DATA_DIR / "failures.db"
 GLOBAL_VOCAB_DB_PATH = ACTIVE_DIR / "global_vocab.db"
 UNKNOWN_DB_PATH = ACTIVE_DIR / "unknown_patterns.db"
-
-# NEIS 학교 기본정보 DB
 NEIS_INFO_ODD_DB_PATH = MASTER_DIR / "neis_info_odd.db"
 NEIS_INFO_EVEN_DB_PATH = MASTER_DIR / "neis_info_even.db"
 NEIS_INFO_TOTAL_DB_PATH = MASTER_DIR / "neis_info_total.db"
-
-# NEIS 급식 병합 DB
 MEAL_ODD_DB_PATH = ACTIVE_DIR / "meal_odd.db"
 MEAL_EVEN_DB_PATH = ACTIVE_DIR / "meal_even.db"
 MEAL_TOTAL_DB_PATH = ACTIVE_DIR / "meal_total.db"
-
-# NEIS 학사일정 병합 DB
 SCHEDULE_ODD_DB_PATH = ACTIVE_DIR / "schedule_odd.db"
 SCHEDULE_EVEN_DB_PATH = ACTIVE_DIR / "schedule_even.db"
 SCHEDULE_TOTAL_DB_PATH = ACTIVE_DIR / "schedule_total.db"
-
-# NEIS 시간표 병합 DB
 TIMETABLE_ODD_DB_PATH = ACTIVE_DIR / "timetable_odd.db"
 TIMETABLE_EVEN_DB_PATH = ACTIVE_DIR / "timetable_even.db"
 TIMETABLE_TOTAL_DB_PATH = ACTIVE_DIR / "timetable_total.db"
-
-# 학교알리미 병합 DB
 SCHOOL_INFO_ODD_DB_PATH = MASTER_DIR / "school_info_odd.db"
 SCHOOL_INFO_EVEN_DB_PATH = MASTER_DIR / "school_info_even.db"
 
