@@ -25,7 +25,7 @@ from constants.paths import MASTER_DIR
 # ✅ rich progress imports 추가 (순차 처리 진행 바 표시)
 from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, TaskProgressColumn
 
-API_URL = "https://open.neis.go.kr/hub/schoolInfo"
+API_URL = "https://open.neis.go.kr/hub/schoolInfo"  # ✅ 공백 제거
 
 
 class SchoolInfoCollector(BaseCollector):
@@ -90,6 +90,24 @@ class SchoolInfoCollector(BaseCollector):
             conn.execute("CREATE INDEX IF NOT EXISTS idx_schools_type ON schools(school_type)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_schools_in_neis ON schools(in_neis)")
 
+    # ✅ BaseCollector 필수 추상 메서드 구현 (1/2)
+    def _get_target_key(self) -> str:
+        """데이터베이스 기본키 필드명 반환"""
+        return "school_code"
+
+    # ✅ BaseCollector 필수 추상 메서드 구현 (2/2)
+    def _process_item(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """개별 항목 전처리 (필터링, 검증 등)"""
+        # school_code 가 없으면 스킵
+        if not item.get("school_code"):
+            return None
+        
+        # 샤드 필터링 (선택적)
+        if self.school_range and not should_include_school(self.shard, self.school_range, item["school_code"]):
+            return None
+        
+        return item
+
     def fetch_region(
         self, 
         region_code: str, 
@@ -116,7 +134,7 @@ class SchoolInfoCollector(BaseCollector):
         school_count = 0
         for row in rows:
             school_code = row.get("SD_SCHUL_CODE")
-            if not school_code or not should_include_school(self.shard, self.school_range, school_code):
+            if not school_code:
                 continue
 
             self.enqueue([self._transform_row(row, region_code)])
@@ -165,7 +183,6 @@ class SchoolInfoCollector(BaseCollector):
                     count = self.fetch_region(region_code, year, date)
                     
                     # 수집 완료 시 진행바 업데이트 (100% 로 채움)
-                    elapsed = time.time() - start_time
                     progress.update(
                         task_id,
                         description=f"✅ {region_code}",
