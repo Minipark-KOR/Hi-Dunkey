@@ -185,9 +185,8 @@ def select_run_type() -> Union[str, MenuResult]:
         elif val == 11:
             return MenuResult.BACK
         elif val == 22:
-            plogger.info("처음으로 (수집기 선택) 선택")
-            print("🔍 디버그: post_run_menu → GO_TO_COLLECTOR 반환")
-            return MenuResult.GO_TO_COLLECTOR, last_args
+            logger.info("처음으로 (수집기 선택) 선택")
+            return MenuResult.RESTART
         elif val == 33:
             logger.info("종료 선택")
             return MenuResult.EXIT
@@ -938,7 +937,6 @@ def main():
                     if not success and not is_dry_run:
                         logger.warning("수집 실패 또는 부분 실패")
                     result, new_args = post_run_menu(collector, collectors, last_args, last_mode)
-                    print(f"🔍 디버그: post_run_menu 반환 result = {result} (타입: {type(result)})")
                     if result == MenuResult.EXIT:
                         sys.exit(0)
                     elif result == MenuResult.GO_TO_COLLECTOR:
@@ -984,7 +982,6 @@ def main():
                         if not success and not is_dry_run:
                             logger.warning("수집 실패")
                         result, new_args = post_run_menu(collector, collectors, last_args, last_mode)
-                        print(f"🔍 디버그: post_run_menu 반환 result = {result} (타입: {type(result)})")
                         if result == MenuResult.EXIT:
                             sys.exit(0)
                         elif result == MenuResult.GO_TO_COLLECTOR:
