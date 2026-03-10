@@ -1,14 +1,14 @@
-## school_info_collector.py 최종 수정본 (BaseCollector 공통 출력 적용)
 #!/usr/bin/env python3
-# collectors/school_info_collector.py
-# 개발 가이드: docs/developer_guide.md 참조
-
+"""
+collectors/school_info_collector.py
+개발 가이드: docs/developer_guide.md 참조
+"""
 import os
 import sys
 from pathlib import Path
 import sqlite3
 from typing import Union, Optional, List, Dict, Any
-
+import time
 sys.path.append(str(Path(__file__).parent.parent))
 
 from core.base_collector import BaseCollector
@@ -22,6 +22,9 @@ from core.neis_validator import neis_validator
 from constants.codes import REGION_NAMES
 from constants.paths import MASTER_DIR
 
+# ✅ rich progress imports 추가 (순차 처리 진행 바 표시)
+from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, TaskProgressColumn
+
 API_URL = "https://open.neis.go.kr/hub/schoolInfo"
 
 
@@ -30,12 +33,15 @@ class SchoolInfoCollector(BaseCollector):
     description = "학교 기본정보 (학교알리미)"
     table_name = "schools"
     merge_script = "scripts/merge_school_info_dbs.py"
-    
     _cfg = config.get_collector_config("school_info")
     timeout_seconds = _cfg.get("timeout_seconds", 3600)
     parallel_timeout_seconds = _cfg.get("parallel_timeout_seconds", 7200)
     merge_timeout_seconds = _cfg.get("merge_timeout_seconds", 3600)
-    metrics_config = _cfg.get("metrics_config", {"enabled": True, "collect_geo": True, "collect_global": True})
+    metrics_config = _cfg.get("metrics_config", {
+        "enabled": True,
+        "collect_geo": True,
+        "collect_global": True
+    })
     parallel_config = {
         "max_workers": _cfg.get("max_workers", 4),
         "cpu_factor": _cfg.get("cpu_factor", 1.0),
@@ -47,7 +53,7 @@ class SchoolInfoCollector(BaseCollector):
     def __init__(self, shard: str = "none", school_range: Optional[str] = None, debug_mode: bool = False):
         super().__init__("school_info", str(MASTER_DIR), shard, school_range)
         self.debug_mode = debug_mode
-        self.quiet_mode = False  # quiet_mode는 BaseCollector에 이미 있지만, CLI에서 전달되지 않을 경우를 대비
+        self.quiet_mode = False
         
         # NEIS validator 상태 확인
         neis_count = len(neis_validator.get_all())
@@ -77,7 +83,7 @@ class SchoolInfoCollector(BaseCollector):
                     collected_at TEXT NOT NULL,
                     updated_at TEXT,
                     is_active INTEGER DEFAULT 1,
-                    in_neis INTEGER DEFAULT 0   -- NEIS 등록 여부 (1: 등록됨, 0: 미등록)
+                    in_neis INTEGER DEFAULT 0
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_schools_region ON schools(region_code)")
@@ -91,14 +97,13 @@ class SchoolInfoCollector(BaseCollector):
         date: Optional[str] = None
     ) -> int:
         """
-        지역별 학교 정보 수집
-        Returns: 처리된 학교 수 (항상 0, 호환성 위해 반환)
+        지역별 학교 정보 수집 (병렬 실행용)
+        Returns: 처리된 학교 수
         """
         if year is None:
             year = get_current_school_year(now_kst())
         region_name = REGION_NAMES.get(region_code, region_code)
 
-        # ✅ 디버그 출력을 self.print로 변경
         self.print(f"📡 [{region_name}] 학년도 {year} 수집 시작 (샤드: {self.shard})", level="debug")
 
         params = {"ATPT_OFCDC_SC_CODE": region_code}
@@ -117,7 +122,70 @@ class SchoolInfoCollector(BaseCollector):
             self.enqueue([self._transform_row(row, region_code)])
             school_count += 1
 
-        return school_count  # 처리된 학교 수 반환 (호환성)
+        return school_count
+
+    def fetch_all_regions(
+        self,
+        regions: Optional[List[str]] = None,
+        year: Optional[int] = None,
+        date: Optional[str] = None
+    ) -> Dict[str, int]:
+        """
+        ✅ 모든 지역을 순차적으로 순회하며 진행 상황 표시 (순차 처리용)
+        """
+        if regions is None:
+            regions = list(REGION_NAMES.keys())
+        
+        if year is None:
+            year = get_current_school_year(now_kst())
+        
+        results = {}
+        
+        # ✅ rich Progress 바 설정 (병렬 실행과 유사한 포맷)
+        with Progress(
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(bar_width=40),
+            TaskProgressColumn(),
+            TimeElapsedColumn(),
+            transient=False,
+            disable=self.quiet_mode
+        ) as progress:
+            
+            for region_code in regions:
+                region_name = REGION_NAMES.get(region_code, region_code)
+                task_desc = f"{region_code} ({region_name})"
+                
+                # 작업 시작
+                task_id = progress.add_task(task_desc, total=None)
+                
+                start_time = time.time()
+                
+                try:
+                    # 실제 수집 실행
+                    count = self.fetch_region(region_code, year, date)
+                    
+                    # 수집 완료 시 진행바 업데이트 (100% 로 채움)
+                    elapsed = time.time() - start_time
+                    progress.update(
+                        task_id,
+                        description=f"✅ {region_code}",
+                        completed=1,
+                        total=1
+                    )
+                    results[region_code] = count
+                    
+                except Exception as e:
+                    # 오류 발생 시 표시
+                    progress.update(
+                        task_id,
+                        description=f"❌ {region_code}",
+                        completed=1,
+                        total=1
+                    )
+                    self.logger.error(f"[{region_name}] 수집 실패: {e}")
+                    results[region_code] = 0
+        
+        return results
 
     def _transform_row(self, row: Dict[str, Any], region_code: str) -> Dict[str, Any]:
         now = now_kst().isoformat()
@@ -222,12 +290,23 @@ class SchoolInfoCollector(BaseCollector):
 
 if __name__ == "__main__":
     from core.collector_cli import run_collector
-
+    
     def _fetch(collector: SchoolInfoCollector, region: str, **kwargs) -> None:
+        """
+        병렬 실행용: 단일 지역 수집
+        """
         collector.fetch_region(region, **kwargs)
-
+    
+    def _fetch_all(collector: SchoolInfoCollector, **kwargs) -> None:
+        """
+        ✅ 순차 실행용: 모든 지역 수집 (진행 바 표시)
+        """
+        regions = list(REGION_NAMES.keys())
+        collector.fetch_all_regions(regions, **kwargs)
+    
     run_collector(
         SchoolInfoCollector,
-        _fetch,
+        _fetch_all,  # ✅ 순차 처리 시 모든 지역을 진행 바와 함께 수집
         "학교알리미 수집기",
     )
+    
