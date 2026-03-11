@@ -113,7 +113,7 @@ def merge_shards(shard_files, output_db, verbose=True):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="neis_info 샤드 DB 병합")
-    rser.add_argument("--odd", default=str(NEIS_INFO_ODD_DB_PATH))
+    parser.add_argument("--odd", default=str(NEIS_INFO_ODD_DB_PATH))
     parser.add_argument("--even", default=str(NEIS_INFO_EVEN_DB_PATH))
     parser.add_argument("--output", default=str(NEIS_INFO_TOTAL_DB_PATH))
     parser.add_argument("--quiet", action="store_true", help="출력 최소화")
