@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # collectors/school_info_collector.py
-# 최종 수정: 모든 API 필드 저장, 좌표 포함
+# 최종 수정: 모든 API 필드 저장, NOT NULL 컬럼(school_name, region_code) 추가
 
 import os
 import sys
@@ -48,6 +48,10 @@ class SchoolInfoCollector(BaseCollector):
                     -- 기본 키
                     school_code TEXT PRIMARY KEY,      -- 정보공시 학교코드 (SCHUL_CODE)
                     
+                    -- NOT NULL 컬럼 (기존 DB에 존재)
+                    school_name TEXT NOT NULL,         -- 학교명
+                    region_code TEXT NOT NULL,         -- 시도교육청코드 (예: B10)
+                    
                     -- 시도교육청 관련
                     atpt_ofcdc_org_nm TEXT,            -- 시도교육청명
                     atpt_ofcdc_org_code TEXT,          -- 시도교육청코드
@@ -60,7 +64,7 @@ class SchoolInfoCollector(BaseCollector):
                     lctn_sc_code TEXT,                   -- 소재지구분코드
                     
                     -- 학교 기본 정보
-                    schul_nm TEXT,                        -- 학교명
+                    schul_nm TEXT,                        -- 학교명 (중복 필드)
                     schul_knd_sc_code TEXT,               -- 학교급코드
                     fond_sc_code TEXT,                     -- 설립구분
                     hs_knd_sc_nm TEXT,                     -- 학교특성
@@ -152,11 +156,15 @@ class SchoolInfoCollector(BaseCollector):
         return school_count
 
     def _transform_row(self, row: Dict[str, Any], region_code: str) -> Dict[str, Any]:
-        """API 응답 row를 DB 레코드 딕셔너리로 변환"""
+        """API 응답 row를 DB 레코드 딕셔너리로 변환 (NOT NULL 필드 포함)"""
         now = now_kst().isoformat()
         return {
             # 기본 키
             "school_code": row.get("SCHUL_CODE", ""),
+            
+            # NOT NULL 컬럼 (반드시 값 제공)
+            "school_name": row.get("SCHUL_NM", ""),          # 학교명
+            "region_code": region_code,                       # 지역 코드 (예: B10)
             
             # 시도교육청
             "atpt_ofcdc_org_nm": row.get("ATPT_OFCDC_ORG_NM", ""),
@@ -213,7 +221,7 @@ class SchoolInfoCollector(BaseCollector):
             "collected_at": now,
             "updated_at": now,
             "is_active": 1,
-            "in_neis": 0,  # NEIS 등록 여부는 별도로 채울 수 있음
+            "in_neis": 0,
         }
 
     def _parse_float(self, val: Any) -> Optional[float]:
@@ -226,6 +234,7 @@ class SchoolInfoCollector(BaseCollector):
         sql = """
             INSERT OR REPLACE INTO schools (
                 school_code,
+                school_name, region_code,   -- ✅ NOT NULL 컬럼 추가
                 atpt_ofcdc_org_nm, atpt_ofcdc_org_code, ju_org_nm, ju_org_code,
                 adrcd_nm, adrcd_cd, lctn_sc_code,
                 schul_nm, schul_knd_sc_code, fond_sc_code, hs_knd_sc_nm,
@@ -237,12 +246,14 @@ class SchoolInfoCollector(BaseCollector):
                 coedu_sc_code, absch_yn, absch_ymd, close_yn,
                 schul_crse_sc_value, schul_crse_sc_value_nm,
                 collected_at, updated_at, is_active, in_neis
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """
         rows = []
         for r in batch:
             rows.append((
                 r["school_code"],
+                r["school_name"],           # ✅
+                r["region_code"],            # ✅
                 r["atpt_ofcdc_org_nm"], r["atpt_ofcdc_org_code"], r["ju_org_nm"], r["ju_org_code"],
                 r["adrcd_nm"], r["adrcd_cd"], r["lctn_sc_code"],
                 r["schul_nm"], r["schul_knd_sc_code"], r["fond_sc_code"], r["hs_knd_sc_nm"],
@@ -257,7 +268,6 @@ class SchoolInfoCollector(BaseCollector):
             ))
         conn.executemany(sql, rows)
 
-    # BaseCollector의 추상 메서드 구현
     def _process_item(self, raw_item: dict) -> List[dict]:
         return [self._transform_row(raw_item, "")]
         
