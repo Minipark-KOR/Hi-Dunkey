@@ -1,3 +1,4 @@
+```markdown
 ## 📘 Hi-Dunkey Collector 개발 가이드 (최종 업데이트)
 
 이 문서는 Hi-Dunkey 프로젝트에서 새로운 수집기(Collector)를 개발할 때 반드시 따라야 할 표준 패턴과 규칙을 설명합니다.  
@@ -10,36 +11,46 @@
 
 ```
 📦 프로젝트 루트
-├── config/                 # 설정 파일 디렉토리
-│   └── config.yaml         # 환경별 설정 (경로, 타임아웃, 병렬 설정 등)
-├── core/                   # 핵심 공통 모듈
-│   ├── base_collector.py   # 모든 수집기의 베이스 클래스
-│   ├── config.py           # 설정 파일 로더
-│   ├── database.py         # DB 연결 공통
-│   ├── kst_time.py         # 시간 처리
-│   ├── logger.py           # 로깅
-│   ├── network.py          # 네트워크 요청
-│   ├── retry.py            # 실패 재시도 관리
-│   ├── shard.py            # 샤딩/범위 필터링
-│   └── ...                 # 기타 유틸리티
-├── collectors/             # 개별 수집기 구현
+├── config/                      # 설정 파일 디렉토리
+│   └── config.yaml              # 환경별 설정 (경로, 타임아웃, 병렬 설정 등)
+├── core/                        # 핵심 공통 모듈
+│   ├── base_collector.py        # 모든 수집기의 베이스 클래스
+│   ├── config.py                # 설정 파일 로더
+│   ├── database.py              # DB 연결 공통
+│   ├── kst_time.py              # 시간 처리
+│   ├── logger.py                # 로깅
+│   ├── network.py               # 네트워크 요청 (safe_json_request 등)
+│   ├── retry.py                 # 실패 재시도 관리
+│   ├── shard.py                 # 샤딩/범위 필터링
+│   ├── address/                 # 주소/지역 관련 모듈
+│   │   ├── __init__.py
+│   │   ├── region_filter.py     # 지역 코드 파싱, 이름 변환
+│   │   ├── address_filter.py    # 주소 정제, 지번 추출, 해싱
+│   │   ├── geo.py               # VWorldGeocoder (저수준 API 호출)
+│   │   └── sgg_code_map.py      # 시군구 코드 매핑 (선택)
+│   └── ...                       # 기타 유틸리티
+├── collectors/                   # 개별 수집기 구현
 │   ├── neis_info_collector.py
 │   ├── school_info_collector.py
 │   ├── meal_collector.py
 │   ├── schedule_collector.py
-│   └── timetable_collector.py
-├── constants/              # 상수 모듈
-│   ├── codes.py            # API 엔드포인트, 지역 코드 등
-│   └── paths.py            # 경로 상수 (설정 기반)
-├── scripts/                # 실행 스크립트
-│   ├── run_pipeline.py     # 병렬 실행 + 병합
-│   ├── run_collector.py    # 정기 실행 (cron용)
-│   └── retry_worker.py     # 실패 작업 재시도
-├── collector_cli.py        # 공통 CLI 진입점
-├── master_collectors.py    # 메뉴 기반 마스터 제어 (--test 옵션 포함)
-├── requirements.txt        # 의존성 목록
-└── docs/                   # 문서
-    └── developer_guide.md  # 이 문서
+│   ├── timetable_collector.py
+│   └── geo_collector.py         # 지오코딩 전용 수집기
+├── constants/                    # 상수 모듈
+│   ├── codes.py                 # API 엔드포인트, 지역 코드 등
+│   ├── paths.py                 # 경로 상수 (설정 기반)
+│   └── errors.py                # API 오류 코드 중앙 관리
+├── scripts/                      # 실행 스크립트
+│   ├── run_pipeline.py           # 병렬 실행 + 병합
+│   ├── run_collector.py          # 정기 실행 (cron용)
+│   ├── retry_worker.py           # 실패 작업 재시도
+│   ├── migrate_neis_info.py      # DB 마이그레이션 (NEIS)
+│   └── migrate_school_info.py    # DB 마이그레이션 (학교알리미)
+├── collector_cli.py              # 공통 CLI 진입점
+├── master_collectors.py          # 메뉴 기반 마스터 제어 (--test 옵션 포함)
+├── requirements.txt              # 의존성 목록
+└── docs/                         # 문서
+    └── developer_guide.md        # 이 문서
 ```
 
 ---
@@ -56,7 +67,6 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from typing import List, Dict, Optional
-from datetime import datetime
 
 from core.base_collector import BaseCollector
 from core.database import get_db_connection
@@ -64,7 +74,7 @@ from core.shard import should_include_school
 from core.kst_time import now_kst
 from core.school_year import get_current_school_year
 from core.network import safe_json_request, build_session
-from core.config import config  # 설정 로더
+from core.config import config
 from constants.codes import REGION_NAMES
 from constants.paths import MASTER_DIR
 
@@ -73,28 +83,24 @@ API_URL = "https://api.example.com/endpoint"
 class NewCollector(BaseCollector):
     # ----- 메타데이터 (클래스 변수) -----
     description = "새로운 수집기 설명"
-    table_name = "my_table"                     # 기본 테이블명
-    merge_script = "scripts/merge_my_dbs.py"    # 병합 스크립트 (없으면 None)
-    
+    table_name = "my_table"
+    merge_script = "scripts/merge_my_dbs.py"   # 병합 스크립트 (없으면 None)
+
     # 설정 파일에서 값을 가져오되, 없으면 기본값 사용
-    _cfg = config.get_collector_config("new_collector")  # 설정 파일의 collectors.new_collector 섹션
+    _cfg = config.get_collector_config("new_collector")
     timeout_seconds = _cfg.get("timeout_seconds", 3600)
     parallel_timeout_seconds = _cfg.get("parallel_timeout_seconds", 7200)
     merge_timeout_seconds = _cfg.get("merge_timeout_seconds", 1800)
-    
-    # parallel_script는 기본값 "scripts/run_pipeline.py" 사용 (변경시 오버라이드)
+
     parallel_script = _cfg.get("parallel_script", "scripts/run_pipeline.py")
-    
     modes = _cfg.get("modes", ["통합", "odd 샤드", "even 샤드", "병렬 실행"])
     metrics_config = _cfg.get("metrics_config", {"enabled": False})
     parallel_config = _cfg.get("parallel_config", {})
     # ------------------------------------
 
-    def __init__(self, shard="none", school_range=None, debug_mode=False, **kwargs):
-        # 도메인명, 저장 디렉토리, 샤드, 범위를 BaseCollector에 전달
-        super().__init__("new_collector", str(MASTER_DIR), shard, school_range)
+    def __init__(self, shard="none", school_range=None, debug_mode=False, quiet_mode=False, **kwargs):
+        super().__init__("new_collector", str(MASTER_DIR), shard, school_range, quiet_mode=quiet_mode)
         self.debug_mode = debug_mode
-        self.incremental = kwargs.get('incremental', False)
         self._init_db()
 
     def _init_db(self):
@@ -115,8 +121,7 @@ class NewCollector(BaseCollector):
             year = get_current_school_year(now_kst())
         region_name = REGION_NAMES.get(region_code, region_code)
 
-        if self.debug_mode:
-            print(f"📡 [{region_name}] 수집 시작 (year={year})")
+        self.print(f"📡 [{region_name}] 수집 시작 (year={year})", level="debug")
 
         params = {"ATPT_OFCDC_SC_CODE": region_code}
         rows = self._fetch_paginated(API_URL, params, "rootKey", region=region_code, year=year)
@@ -155,6 +160,7 @@ if __name__ == "__main__":
 - `shard`: `"none"`, `"odd"`, `"even"` 중 하나 (기본값 `"none"`)
 - `school_range`: `"A"`, `"B"`, `"none"` 또는 `None` (범위 필터)
 - `debug_mode`: 디버그 출력 여부
+- `quiet_mode`: 출력 최소화 여부 (GitHub Actions 등에서 사용)
 - `**kwargs`: 추가 옵션 (예: `incremental`, `full`, `compare`)
 
 ### 2.2. DB 경로 자동 결정
@@ -179,7 +185,6 @@ if __name__ == "__main__":
 paths:
   master_dir: "data/master"
   active_dir: "data/active"
-  global_vocab: "data/active/global_vocab.db"
   logs_dir: "logs"
 
 collectors:
@@ -194,10 +199,16 @@ collectors:
     metrics_config:
       enabled: true
       collect_geo: false
+  geo:
+    daily_api_limit: 50000
+    vworld_api_key_env: "VWORLD_API_KEY"
+    kakao_api_key_env: "KAKAO_API_KEY"
 
 api:
   neis_api_key_env: "NEIS_API_KEY"
   vworld_api_key_env: "VWORLD_API_KEY"
+  school_info_api_key_env: "SCHOOL_INFO_API_KEY"
+  kakao_api_key_env: "KAKAO_API_KEY"
 ```
 
 ### 3.2. 설정 값 접근
@@ -246,7 +257,7 @@ def _init_db(self):
 ## 5. 데이터 수집 메서드 구현
 
 대부분의 수집기는 `fetch_region(region_code, year=None, date=None, **kwargs)` 형태의 메서드를 구현합니다.  
-단, 급식처럼 일별 수집이 필요한 경우 `fetch_daily`를 구현할 수 있습니다.
+급식처럼 일별 수집이 필요한 경우 `fetch_daily`를 구현할 수 있습니다.
 
 ```python
 def fetch_region(self, region_code: str, year: int = None, date: str = None, **kwargs):
@@ -254,28 +265,15 @@ def fetch_region(self, region_code: str, year: int = None, date: str = None, **k
         year = get_current_school_year(now_kst())
     region_name = REGION_NAMES.get(region_code, region_code)
 
-    if self.debug_mode:
-        print(f"📡 [{region_name}] 수집 시작 (year={year})")
+    self.print(f"📡 [{region_name}] 수집 시작 (year={year})", level="debug")
 
-    # API 요청 파라미터 구성
-    params = {
-        "ATPT_OFCDC_SC_CODE": region_code,
-        # 기타 필수 파라미터
-    }
-
-    # 페이지네이션 처리
-    rows = self._fetch_paginated(
-        API_URL, params, 'root_key',  # root_key는 API 응답에서 데이터가 있는 키
-        region=region_code,
-        year=year,
-        page_size=100
-    )
+    params = {"ATPT_OFCDC_SC_CODE": region_code}
+    rows = self._fetch_paginated(API_URL, params, 'root_key', region=region_code, year=year)
 
     if not rows:
         self.logger.warning(f"[{region_name}] 데이터 없음")
         return
 
-    # 샤드 필터링 후 enqueue
     for row in rows:
         school_code = row.get("SD_SCHUL_CODE")
         if not school_code or not should_include_school(self.shard, self.school_range, school_code):
@@ -430,8 +428,7 @@ def run_new_collector():
 ## 13. 공통 유틸리티 활용
 
 ### 13.1. API 키 및 환경변수
-- `constants.codes`에 정의된 `NEIS_API_KEY`, `VWORLD_API_KEY` 등을 사용합니다.
-- `.env` 파일을 통해 키를 관리할 수 있습니다 (`core/__init__.py`에서 로드).
+- `constants.codes`에 정의된 API 키 상수를 사용합니다. (대부분 환경변수에서 로드)
 - 설정 파일(`config.yaml`)의 `api` 섹션에서 환경변수명을 지정할 수 있습니다.
 
 ### 13.2. 에러 처리 및 재시도
@@ -446,119 +443,85 @@ def run_new_collector():
 - collector 클래스의 `metrics_config`에 설정을 정의하면 `master_collectors.py`에서 메트릭을 생성할 수 있습니다.
 
 ### 13.5. Vocab 관리
-- `VocabManager`, `MetaVocabManager`를 사용하여 정규화된 ID를 생성하고 관리할 수 있습니다.
+- `MetaVocabManager`를 사용하여 정규화된 주소 ID 등을 생성하고 관리할 수 있습니다.
 
-### 13.6. 주소 필터링
-- `core.filters.AddressFilter`를 사용하여 주소를 정규화하고 지번을 추출할 수 있습니다.
+### 13.6. 주소 처리 (core.address)
+주소 관련 기능은 `core.address` 패키지에 통합되어 있습니다.
+- `region_filter.py`: 지역 코드 파싱, 이름 변환
+  - `parse_region_input("서울,경기")` → `["B10", "J10"]`
+  - `get_region_name("B10")` → `"서울"`
+  - `get_all_regions()` → `[("B10","서울"), ...]`
+- `address_filter.py`: 주소 정제, 지번 추출, 해싱
+  - `AddressFilter.clean(address, level)`
+  - `AddressFilter.extract_jibun(address)`
+  - `AddressFilter.hash(address)`
+- `geo.py`: VWorldGeocoder (저수준 API 호출)
 
-### 13.7. ID 생성
+### 13.7. 지오코딩 분리 (geo_collector)
+좌표가 필요한 수집기(예: `neis_info_collector`)는 주소 정제까지만 수행하고, 실제 지오코딩은 `geo_collector`가 담당합니다.
+- `geo_collector.batch_update_schools(limit=500)`를 주기적으로 실행하여 좌표가 없는 학교들을 업데이트합니다.
+- 실패한 지오코딩 작업은 `failures.db`에 저장되고 `retry_worker`가 재시도합니다.
+
+### 13.8. ID 생성
 - `school_id.create_school_id()`로 교육청 코드+학교 코드 → 32비트 정수 ID 생성.
-- `IDGenerator`로 임의 텍스트 기반 63비트 ID 생성.
 
-### 13.8. 시간 처리
+### 13.9. 시간 처리
 - `core.kst_time.now_kst()`로 KST 현재 시간 획득.
 - `core.school_year.get_current_school_year()`로 현재 학년도 계산.
 
+### 13.10. API 오류 코드 처리 (constants/errors.py)
+API 호출 시 발생할 수 있는 오류 코드는 `constants/errors.py`에 중앙 관리합니다.
+```python
+# constants/errors.py
+NEIS_ERRORS = {
+    "ERROR-337": "일별 트래픽 제한 초과",
+    "ERROR-500": "서버 오류",
+    # ...
+}
+```
+`core.network.safe_json_request`에서 이 상수를 활용하여 세밀한 예외 처리를 구현할 수 있습니다.
+
 ---
 
-## 14. 템플릿 예제 (전체 코드)
+## 14. DB 마이그레이션
 
+기존 DB 스키마를 변경해야 할 경우, 마이그레이션 스크립트를 작성합니다.  
+예: `scripts/migrate_neis_info.py`
+
+- 파일명 규칙: `scripts/migrate_<collector_name>.py`
+- 실행 전에 반드시 DB가 존재하는지 확인합니다.
+- `ALTER TABLE`을 사용하여 누락된 컬럼을 안전하게 추가합니다.
+
+**템플릿 예시:**
 ```python
 #!/usr/bin/env python3
-import os
-import sys
+import sqlite3, sys, os
 from pathlib import Path
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+from constants.paths import SOME_DB_PATH
 
-sys.path.append(str(Path(__file__).parent.parent))
-
-from typing import List, Dict, Optional
-from datetime import datetime
-
-from core.base_collector import BaseCollector
-from core.database import get_db_connection
-from core.shard import should_include_school
-from core.kst_time import now_kst
-from core.school_year import get_current_school_year
-from core.network import safe_json_request, build_session
-from core.config import config
-from constants.codes import REGION_NAMES
-from constants.paths import MASTER_DIR
-
-API_URL = "https://api.example.com/endpoint"
-
-class TemplateCollector(BaseCollector):
-    # 메타데이터
-    description = "템플릿 수집기"
-    table_name = "template"
-    merge_script = "scripts/merge_template_dbs.py"
-    
-    _cfg = config.get_collector_config("template")
-    timeout_seconds = _cfg.get("timeout_seconds", 3600)
-    parallel_timeout_seconds = _cfg.get("parallel_timeout_seconds", 7200)
-    merge_timeout_seconds = _cfg.get("merge_timeout_seconds", 1800)
-    metrics_config = _cfg.get("metrics_config", {"enabled": True})
-    parallel_config = _cfg.get("parallel_config", {"max_workers": 2})
-
-    def __init__(self, shard="none", school_range=None, debug_mode=False, **kwargs):
-        super().__init__("template", str(MASTER_DIR), shard, school_range)
-        self.debug_mode = debug_mode
-        self._init_db()
-
-    def _init_db(self):
-        with get_db_connection(self.db_path) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS template (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    school_code TEXT,
-                    data TEXT,
-                    collected_at TEXT
-                )
-            """)
-            self._init_db_common(conn)
-
-    def fetch_region(self, region_code: str, year: int = None, date: str = None, **kwargs):
-        if year is None:
-            year = get_current_school_year(now_kst())
-        region_name = REGION_NAMES.get(region_code, region_code)
-
-        params = {"ATPT_OFCDC_SC_CODE": region_code}
-        rows = self._fetch_paginated(API_URL, params, "rootKey", region=region_code, year=year)
-
-        for row in rows:
-            school_code = row.get("SD_SCHUL_CODE")
-            if not school_code or not should_include_school(self.shard, self.school_range, school_code):
-                continue
-            self.enqueue([self._transform_row(row, region_code)])
-
-    def _transform_row(self, row, region_code):
-        return {
-            "school_code": row.get("SD_SCHUL_CODE"),
-            "data": row.get("SOME_FIELD"),
-            "collected_at": now_kst().isoformat(),
-        }
-
-    def _do_save_batch(self, conn, batch):
-        sql = "INSERT OR REPLACE INTO template (school_code, data, collected_at) VALUES (?, ?, ?)"
-        rows = [(r["school_code"], r["data"], r["collected_at"]) for r in batch]
-        conn.executemany(sql, rows)
-
-
-if __name__ == "__main__":
-    from core.collector_cli import run_collector
-    def _fetch(collector, region, **kwargs):
-        collector.fetch_region(region, **kwargs)
-    run_collector(TemplateCollector, _fetch, "템플릿 수집기")
+def migrate(db_path):
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute("PRAGMA table_info(table_name)")
+        existing = [row[1] for row in cur.fetchall()]
+        new_columns = [("new_col", "TEXT"), ...]
+        for col, typ in new_columns:
+            if col not in existing:
+                conn.execute(f"ALTER TABLE table_name ADD COLUMN {col} {typ}")
 ```
 
 ---
 
 ## 15. 참고할 기존 Collector
 
-- **NEIS 학교정보** (`collectors/neis_info_collector.py`): 복잡한 지오코딩, Diff 처리, MetaVocabManager 사용 예
-- **학교알리미** (`collectors/school_info_collector.py`): 기본 구조, 학년도 필터링
+- **NEIS 학교정보** (`collectors/neis_info_collector.py`): 지오코딩 분리, 모든 API 필드 저장, `MetaVocabManager` 사용 예
+- **학교알리미** (`collectors/school_info_collector.py`): 기본 구조, 학년도 필터링, 좌표 포함 API
 - **급식** (`collectors/meal_collector.py`): 일별 수집, `fetch_daily`, `BaseMealCollector` 상속
 - **학사일정** (`collectors/schedule_collector.py`): 연간 수집, `fetch_year`
 - **시간표** (`collectors/timetable_collector.py`): 추가 옵션(`--semester`), `fetch_year`
+- **지오코딩** (`collectors/geo_collector.py`): 배치 지오코딩, API 사용량 관리, 캐싱
 
 ---
 
@@ -599,3 +562,4 @@ collectors:
 
 이 가이드를 따라 새로운 수집기를 만들면 `collector_cli.py`, `master_collectors.py`, `run_pipeline.py` 등에 자연스럽게 통합되며, 프로젝트의 일관성을 유지할 수 있습니다.  
 궁금한 점이 있으면 기존 collector의 코드를 참조하거나 팀 리더에게 문의하세요.
+```
