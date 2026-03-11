@@ -1,6 +1,4 @@
 # config/config.yaml
-# 프로젝트 설정 파일 (환경별로 분기 가능)
-# config/config.yaml
 paths:
   active_dir: "active"
   master_dir: "master"
@@ -53,6 +51,10 @@ collectors:
     cpu_factor: 1.0
     max_by_api: 10
     absolute_max: 16
+  geo:
+    daily_api_limit: 50000
+    vworld_api_key_env: "VWORLD_API_KEY"
+    kakao_api_key_env: "KAKAO_API_KEY"
 
 api:
   neis_api_key_env: "NEIS_API_KEY"
