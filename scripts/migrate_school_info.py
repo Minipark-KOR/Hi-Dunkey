@@ -5,14 +5,13 @@ import sys
 import os
 from pathlib import Path
 
-# 🔑 경로 계산 (scripts/migrate_school_info.py 기준)
-SCRIPT_DIR = Path(__file__).resolve().parent          # scripts/
-PROJECT_ROOT = SCRIPT_DIR.parent                       # 프로젝트 루트
-
+# 경로 계산
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from constants.paths import SCHOOL_INFO_DB_PATH
+from constants.paths import MASTER_DIR, SCHOOL_INFO_DB_PATH
 
 def migrate(db_path: str) -> bool:
     if not os.path.exists(db_path):
@@ -30,22 +29,23 @@ def migrate(db_path: str) -> bool:
         existing = [row[1] for row in cur.fetchall()]
         print(f"📋 기존 컬럼: {len(existing)}개")
 
-        # 학교알리미 API 전체 필드 (총 37개)
+        # 추가할 컬럼 목록 (school_info_collector.py의 _init_db 기준 + NOT NULL 컬럼)
         new_columns = [
-            # 기본 키
-            ("school_code", "TEXT"),
-            
+            # NOT NULL 컬럼 (추가)
+            ("school_name", "TEXT NOT NULL"),
+            ("region_code", "TEXT NOT NULL"),
+
             # 시도교육청 관련
             ("atpt_ofcdc_org_nm", "TEXT"),
             ("atpt_ofcdc_org_code", "TEXT"),
             ("ju_org_nm", "TEXT"),
             ("ju_org_code", "TEXT"),
-            
+
             # 지역 정보
             ("adrcd_nm", "TEXT"),
             ("adrcd_cd", "TEXT"),
             ("lctn_sc_code", "TEXT"),
-            
+
             # 학교 기본 정보
             ("schul_nm", "TEXT"),
             ("schul_knd_sc_code", "TEXT"),
@@ -54,11 +54,11 @@ def migrate(db_path: str) -> bool:
             ("bnhh_yn", "TEXT"),
             ("schul_fond_typ_code", "TEXT"),
             ("dght_sc_code", "TEXT"),
-            
+
             # 설립/개교일
             ("foas_memrd", "TEXT"),
             ("fond_ymd", "TEXT"),
-            
+
             # 주소/위치
             ("adres_brkdn", "TEXT"),
             ("dtlad_brkdn", "TEXT"),
@@ -68,25 +68,25 @@ def migrate(db_path: str) -> bool:
             ("schul_rdnda", "TEXT"),
             ("lttud", "REAL"),
             ("lgtud", "REAL"),
-            
+
             # 연락처
             ("user_telno", "TEXT"),
             ("user_telno_sw", "TEXT"),
             ("user_telno_ga", "TEXT"),
             ("perc_faxno", "TEXT"),
             ("hmpg_adres", "TEXT"),
-            
+
             # 기타 구분
             ("coedu_sc_code", "TEXT"),
             ("absch_yn", "TEXT"),
             ("absch_ymd", "TEXT"),
             ("close_yn", "TEXT"),
-            
+
             # 각종학교용
             ("schul_crse_sc_value", "TEXT"),
             ("schul_crse_sc_value_nm", "TEXT"),
-            
-            # 수집 메타
+
+            # 수집 메타 (이미 있을 수 있음)
             ("collected_at", "TEXT"),
             ("updated_at", "TEXT"),
             ("is_active", "INTEGER DEFAULT 1"),
@@ -101,9 +101,9 @@ def migrate(db_path: str) -> bool:
                     print(f"  ✅ 추가: {col}")
                     added += 1
                 except sqlite3.OperationalError as e:
-                    print(f"  ⚠️  실패: {col} - {e}")
+                    print(f"  ⚠️ 실패: {col} - {e}")
             else:
-                print(f"  ⏭️  존재: {col}")
+                print(f"  ⏭️ 존재: {col}")
 
         # 인덱스 생성 (필요시)
         indexes = [
@@ -117,7 +117,7 @@ def migrate(db_path: str) -> bool:
                 conn.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} {idx_def}")
                 print(f"  ✅ 인덱스: {idx_name}")
             except sqlite3.OperationalError as e:
-                print(f"  ⚠️  인덱스 실패: {idx_name} - {e}")
+                print(f"  ⚠️ 인덱스 실패: {idx_name} - {e}")
 
         print("=" * 70)
         print(f"📊 결과: 추가 {added}개, 총 {len(new_columns)}개")
@@ -127,18 +127,20 @@ if __name__ == "__main__":
     print(f"📁 프로젝트 루트: {PROJECT_ROOT}")
     print()
 
+    # 명령줄 인자가 있으면 해당 파일만 처리
     if len(sys.argv) >= 2:
-        db_path = sys.argv[1]
-        print(f"📍 지정 경로 사용: {db_path}")
+        db_paths = [sys.argv[1]]
     else:
-        db_path = str(SCHOOL_INFO_DB_PATH)
-        print(f"ℹ️  기본 경로 사용: {db_path}")
+        # MASTER_DIR 아래 모든 school_info*.db 파일 찾기
+        db_paths = list(MASTER_DIR.glob("school_info*.db"))
+        if not db_paths:
+            print("❌ 마이그레이션할 school_info DB 파일이 없습니다.")
+            sys.exit(1)
 
-    print()
-
-    if migrate(db_path):
-        print("🎉 학교알리미 정보 마이그레이션 완료")
-    else:
-        print("❌ 마이그레이션 실패")
-        sys.exit(1)
-        
+    for db_path in db_paths:
+        print(f"\n📁 처리 중: {db_path.name}")
+        if migrate(str(db_path)):
+            print(f"✅ {db_path.name} 마이그레이션 완료")
+        else:
+            print(f"❌ {db_path.name} 마이그레이션 실패")
+            
