@@ -142,7 +142,11 @@ def run_merge(collector: str, year: int, log_dir: Path, timeout: Optional[int] =
         print(f"⚠️ 병합 스크립트 없음: {merge_script_path}")
         return False
 
-    merge_cmd = [sys.executable, str(merge_script_path), "--year", str(year)]
+    if collector == "school_info":
+        merge_cmd = [sys.executable, str(merge_script_path)]
+    else:
+        merge_cmd = [sys.executable, str(merge_script_path), "--year", str(year)]
+
     merge_log = log_dir / f"{collector}_merge.log"
     print(f"\n🔄 병합 시작: {' '.join(merge_cmd)} (로그: {merge_log})")
 

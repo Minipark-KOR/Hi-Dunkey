@@ -121,12 +121,7 @@ class SchoolInfoCollector(BaseCollector):
         
         return item
 
-    def fetch_region(
-        self, 
-        region_code: str, 
-        year: Optional[int] = None, 
-        date: Optional[str] = None
-    ) -> int:
+    def fetch_region(self, region_code: str, year: Optional[int] = None, date: Optional[str] = None) -> int:
         """
         지역별 학교 정보 수집 (병렬 실행용)
         Returns: 처리된 학교 수
@@ -148,6 +143,10 @@ class SchoolInfoCollector(BaseCollector):
         for row in rows:
             school_code = row.get("SD_SCHUL_CODE")
             if not school_code:
+                continue
+            
+            # ✅ 샤딩 필터링 추가
+            if not self._include_school(school_code):
                 continue
 
             self.enqueue([self._transform_row(row, region_code)])
