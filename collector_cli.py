@@ -96,6 +96,18 @@ def run_collector(collector_name: str):
         extra_parsers[collector_name](parser)
     parser.add_argument("--limit", type=int, help="테스트용 제한 개수")
     args = parser.parse_args()
+    
+    # 연도 프롬프트 (대화형 터미널에서만)
+    if args.year is None and sys.stdin.isatty():
+        default_year = get_current_school_year(now_kst())
+        try:
+            user_input = input(f"수집할 학년도를 입력하세요 (기본값: {default_year}): ").strip()
+            if user_input:
+                args.year = int(user_input)
+            else:
+                args.year = default_year
+        except (EOFError, KeyboardInterrupt):
+            args.year = default_year
 
     # GitHub Actions 환경에서는 자동으로 quiet 모드
     if os.getenv('GITHUB_ACTIONS') == 'true' and not args.quiet:
