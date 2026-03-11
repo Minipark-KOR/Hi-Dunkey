@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 # collectors/neis_info_collector.py
-# 최종 수정: 모든 NEIS API 필드 저장, 지오코딩 분리
+# 개발 가이드: docs/developer_guide.md 참조
 
 import os
 import sys
 import time
+import random
 import sqlite3
 import argparse
 import threading
 from pathlib import Path
 
+# 프로젝트 루트를 sys.path에 추가 (모든 로컬 임포트보다 먼저)
 sys.path.append(str(Path(__file__).parent.parent))
 
 from typing import List, Dict, Tuple, Optional
 from datetime import timedelta
 
+# 이제 core 모듈 임포트 가능
 from core.config import config
 from core.base_collector import BaseCollector
 from core.database import get_db_connection, get_db_reader
@@ -25,18 +28,22 @@ from core.kst_time import now_kst
 from core.school_year import get_current_school_year
 from constants.codes import NEIS_ENDPOINTS, ALL_REGIONS, REGION_NAMES
 from constants.paths import NEIS_INFO_DB_PATH as MASTER_DB, MASTER_DIR, FAILURES_DB_PATH
+from collectors.geo_collector import GeoCollector
 
 BASE_DIR = str(MASTER_DIR)
 GLOBAL_VOCAB_DB_PATH = MASTER_DIR.parent / "active" / "global_vocab.db"
 NEIS_URL = NEIS_ENDPOINTS['school']
 
+# ANSI 색상 코드 (BaseCollector의 print에서는 사용하지 않지만, 필요시 유지)
 GREEN, RED, YELLOW, RESET = "\033[92m", "\033[91m", "\033[93m", "\033[0m"
 
 
 class NeisInfoCollector(BaseCollector):
+    # ----- 메타데이터 -----
     description = "학교 기본정보 (NEIS)"
     table_name = "schools"
     merge_script = "scripts/merge_neis_info_dbs.py"
+    # 설정에서 값을 가져오되, 없으면 기본값 사용
     _cfg = config.get_collector_config("neis_info")
     timeout_seconds = _cfg.get("timeout_seconds", 3600)
     parallel_timeout_seconds = _cfg.get("parallel_timeout_seconds", 7200)
@@ -48,6 +55,7 @@ class NeisInfoCollector(BaseCollector):
         "max_by_api": _cfg.get("max_by_api", 10),
         "absolute_max": _cfg.get("absolute_max", 16),
     }
+# ---------------------
 
     LEVEL_GEOCODING = 3
     LEVEL_FINAL = 4
@@ -74,7 +82,14 @@ class NeisInfoCollector(BaseCollector):
         self.meta_vocab = self.register_resource(
             MetaVocabManager(str(GLOBAL_VOCAB_DB_PATH), debug_mode)
         )
-        # 지오코딩은 별도 워커에서 처리 → geo_collector 제거
+        self.geo_collector = self.register_resource(
+            GeoCollector(
+                global_db_path=str(GLOBAL_VOCAB_DB_PATH),
+                school_db_path=self.db_path,
+                failures_db_path=str(FAILURES_DB_PATH),
+                debug_mode=debug_mode,
+            )
+        )
 
         self.total_new = 0
         self.total_failed = 0
@@ -116,25 +131,7 @@ class NeisInfoCollector(BaseCollector):
                     number_end INTEGER,
                     number_bit INTEGER,
                     kakao_address TEXT,
-                    jibun_address TEXT,
-                    -- NEIS API 전체 필드 (마이그레이션 필요)
-                    atpt_ofcdc_sc_nm TEXT,
-                    lctn_sc_nm TEXT,
-                    ju_org_nm TEXT,
-                    fond_sc_nm TEXT,
-                    org_rdnzc TEXT,
-                    org_rdnda TEXT,
-                    org_faxno TEXT,
-                    coedu_sc_nm TEXT,
-                    hs_sc_nm TEXT,
-                    indst_specl_ccccl_exst_yn TEXT,
-                    hs_gnrl_busns_sc_nm TEXT,
-                    spcly_purps_hs_ord_nm TEXT,
-                    ene_bfe_sehf_sc_nm TEXT,
-                    dght_sc_nm TEXT,
-                    fond_ymd TEXT,
-                    foas_memrd TEXT,
-                    load_dtm TEXT
+                    jibun_address TEXT
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_address_hash ON schools(address_hash)")
@@ -151,18 +148,22 @@ class NeisInfoCollector(BaseCollector):
         return self.run_date
 
     def _fetch_paginated(self, url, base_params, root_key, page_size=100, region=None, year=None):
+        """Override to safely capture region_name for error logging."""
+        # region_name 안전하게 할당 (REGION_NAMES 없을 경우 region 값 사용)
         try:
             region_name = REGION_NAMES.get(region, region) if region else "알 수 없음"
         except NameError:
             region_name = region if region else "알 수 없음"
             self.logger.warning("REGION_NAMES가 정의되지 않아 기본값을 사용합니다.")
+
         try:
             return super()._fetch_paginated(url, base_params, root_key, page_size=page_size, region=region, year=year)
         except Exception as e:
             self.logger.error(f"[{region_name}] API 호출 실패: {e}")
-            raise
+            raise   # re-raise so fetch_region's except block can handle it
 
     def fetch_region(self, region_code: str, limit: Optional[int] = None, year: Optional[int] = None, **kwargs) -> int:
+        # region_name 안전하게 할당
         try:
             region_name = REGION_NAMES.get(region_code, region_code)
         except NameError:
@@ -184,11 +185,16 @@ class NeisInfoCollector(BaseCollector):
                 year=year
             )
 
+            if self.debug_mode:
+                self.print(f"🔍 {region_code} rows length: {len(rows)}")
+
             if not rows:
                 self.logger.error(f"[{region_name}] 수집된 데이터 없음")
+                self.print(f"❌ [{region_name}] 수집된 데이터 없음", level="debug")
                 return 0
 
             self.logger.info(f"[{region_name}] 전체 {len(rows)}건 수집")
+            self.print(f"📋 [{region_name}] 전체 {len(rows)}건 수집", level="debug")
 
             new, failed, skipped = self._update_schools_with_diff(rows, region_code, limit=limit)
 
@@ -198,28 +204,41 @@ class NeisInfoCollector(BaseCollector):
                 self.total_skipped += skipped
 
             self.print(f"  📊 [{region_name}] 신규성공={new}, 실패={failed}, 스킵={skipped}")
+
+            if self.debug_mode:
+                self.print(f"✅ [{region_name}] 처리 완료")
+
             return new
 
         except Exception as e:
+            # region_name은 항상 정의되어 있음
             self.logger.error(f"[{region_name}] 수집 실패: {e}")
+            self.print(f"❌ [{region_name}] 수집 실패: {e}", level="error")
             return 0
 
     def _update_schools_with_diff(self, new_rows: List[dict], region_code: str, limit: Optional[int] = None) -> Tuple[int, int, int]:
+        # region_name 안전하게 할당
         try:
             region_name = REGION_NAMES.get(region_code, region_code)
         except NameError:
             region_name = region_code
             self.logger.warning("REGION_NAMES가 정의되지 않아 지역 코드를 이름으로 사용합니다.")
 
+        if self.debug_mode:
+            self.print(f"🔍 _update_schools_with_diff: new_rows length = {len(new_rows)}")
+            if new_rows:
+                self.print(f"🔍 sample keys: {list(new_rows[0].keys())}")
+
+        # 기존 데이터 조회 로직 (변경 없음)
         existing = {}
         if os.path.exists(self.db_path):
             try:
                 with get_db_reader(self.db_path) as conn:
                     cur = conn.execute(
-                        "SELECT sc_code, address_hash, latitude, longitude FROM schools"
+                        "SELECT sc_code, address_hash, latitude, longitude, geocode_attempts, last_error FROM schools"
                     )
                     existing = {
-                        row[0]: {"hash": row[1], "lat": row[2], "lon": row[3]}
+                        row[0]: {"hash": row[1], "lat": row[2], "lon": row[3], "attempts": row[4], "last_error": row[5]}
                         for row in cur
                     }
             except Exception as e:
@@ -242,8 +261,11 @@ class NeisInfoCollector(BaseCollector):
 
         if limit and len(row_meta) > limit:
             row_meta = dict(list(row_meta.items())[:limit])
+            if self.debug_mode:
+                self.print(f"🔍 limit 적용: {len(row_meta)}개만 처리")
 
-        processed_count = 0
+        new_coords: Dict[str, Tuple[float, float]] = {}
+        failed_count = 0
         skipped_count = 0
         start_time = time.time()
         last_update = start_time
@@ -253,26 +275,57 @@ class NeisInfoCollector(BaseCollector):
             if meta["old"].get("hash") != meta["new_hash"] and meta["full_address"]:
                 cleaned = AddressFilter.clean(meta["full_address"], level=self.LEVEL_GEOCODING)
                 jibun = AddressFilter.extract_jibun(meta["full_address"])
-                meta["cleaned_address"] = cleaned
                 meta["jibun_address"] = jibun
-                processed_count += 1
+
+                try:
+                    coords = self.geo_collector._geocode(cleaned)
+                except Exception as e:
+                    if not self.quiet_mode:
+                        self.print(f"\n⚠️ [{sc_code}] 예외: {type(e).__name__}")
+                    self.logger.warning(f"지오코딩 예외 {sc_code}: {e}")
+                    coords = None
+
+                if coords:
+                    new_coords[sc_code] = coords
+                else:
+                    failed_count += 1
+                    if self.shard != "none":
+                        now_naive = now_kst().replace(tzinfo=None)
+                        deadline = now_naive.replace(hour=15, minute=0, second=0, microsecond=0)
+                        if now_naive > deadline:
+                            deadline += timedelta(days=1)
+                        self.retry_mgr.record_failure(
+                            domain='school', task_type='geocode',
+                            shard=self.shard, sc_code=sc_code,
+                            region=region_code, address=meta["full_address"],
+                            jibun_address=jibun,
+                            error="Geocoding failed", deadline=deadline,
+                        )
             else:
-                meta["cleaned_address"] = None
                 skipped_count += 1
 
             row = meta["row"]
             atpt_code = row.get("ATPT_OFCDC_SC_CODE") or ""
             old = meta["old"]
 
-            lat = old.get("lat")
-            lon = old.get("lon")
+            if sc_code in new_coords:
+                lon, lat = new_coords[sc_code]
+                attempts, last_error = 0, None
+            else:
+                lat, lon = old.get("lat"), old.get("lon")
+                attempts = old.get("attempts", 0) + 1
+                last_error = old.get("last_error") or "Geocoding failed"
 
+            cleaned = AddressFilter.clean(meta["full_address"], level=self.LEVEL_FINAL) if meta["full_address"] else ""
             addr_ids = {}
-            if meta.get("cleaned_address"):
+            if cleaned:
                 try:
-                    addr_ids = self.meta_vocab.save_address(meta["cleaned_address"])
+                    addr_ids = self.meta_vocab.save_address(cleaned)
                 except Exception as e:
                     self.logger.error(f"주소 변환 실패 {sc_code}: {e}")
+
+            if self.debug_mode and not self.quiet_mode:
+                self.print(f"🔁 enqueue 호출: {sc_code}")
 
             try:
                 school_id = create_school_id(atpt_code, sc_code)
@@ -288,7 +341,7 @@ class NeisInfoCollector(BaseCollector):
                 "sc_kind": row.get("SCHUL_KND_SC_NM", ""),
                 "atpt_code": atpt_code,
                 "address": meta["full_address"],
-                "cleaned_address": meta.get("cleaned_address", ""),
+                "cleaned_address": cleaned,
                 "address_hash": meta["new_hash"],
                 "tel": row.get("ORG_TELNO", ""),
                 "homepage": row.get("HMPG_ADRES", ""),
@@ -297,8 +350,8 @@ class NeisInfoCollector(BaseCollector):
                 "load_dt": now_kst().isoformat(),
                 "latitude": lat,
                 "longitude": lon,
-                "geocode_attempts": 0,
-                "last_error": None,
+                "geocode_attempts": attempts,
+                "last_error": last_error,
                 "city_id": addr_ids.get("city_id", 0),
                 "district_id": addr_ids.get("district_id", 0),
                 "street_id": addr_ids.get("street_id", 0),
@@ -309,47 +362,30 @@ class NeisInfoCollector(BaseCollector):
                 "number_bit": addr_ids.get("number_bit", 0),
                 "jibun_address": meta.get("jibun_address"),
                 "kakao_address": None,
-                "atpt_ofcdc_sc_nm": row.get("ATPT_OFCDC_SC_NM", ""),
-                "lctn_sc_nm": row.get("LCTN_SC_NM", ""),
-                "ju_org_nm": row.get("JU_ORG_NM", ""),
-                "fond_sc_nm": row.get("FOND_SC_NM", ""),
-                "org_rdnzc": row.get("ORG_RDNZC", "").strip(),
-                "org_rdnda": row.get("ORG_RDNDA", ""),
-                "org_faxno": row.get("ORG_FAXNO", ""),
-                "coedu_sc_nm": row.get("COEDU_SC_NM", ""),
-                "hs_sc_nm": row.get("HS_SC_NM", ""),
-                "indst_specl_ccccl_exst_yn": row.get("INDST_SPECL_CCCCL_EXST_YN", ""),
-                "hs_gnrl_busns_sc_nm": row.get("HS_GNRL_BUSNS_SC_NM", ""),
-                "spcly_purps_hs_ord_nm": row.get("SPCLY_PURPS_HS_ORD_NM", ""),
-                "ene_bfe_sehf_sc_nm": row.get("ENE_BFE_SEHF_SC_NM", ""),
-                "dght_sc_nm": row.get("DGHT_SC_NM", ""),
-                "fond_ymd": row.get("FOND_YMD", ""),
-                "foas_memrd": row.get("FOAS_MEMRD", ""),
-                "load_dtm": row.get("LOAD_DTM", ""),
             }])
 
+            # 진행률 출력 (일정 시간 간격 또는 마지막에)
             if time.time() - last_update >= 0.2 or i == total_items:
                 self.print_progress(i, total_items, prefix=f"[{region_name}]")
                 last_update = time.time()
 
-        self.logger.info(f"[{region_name}] 처리 완료: 신규/변경 {processed_count}개, 스킵 {skipped_count}개")
-        return processed_count, 0, skipped_count
+        self.logger.info(f"[{region_name}] 좌표 갱신: {len(new_coords)}개 / 완료")
+        return len(new_coords), failed_count, skipped_count
 
     def _process_item(self, raw_item: dict) -> List[dict]:
         return []
 
     def _do_save_batch(self, conn: sqlite3.Connection, batch: List[dict]):
+        if self.debug_mode and not self.quiet_mode:
+            self.print(f"🔍 [_do_save_batch] 실행, 배치 크기: {len(batch)}")
         sql = """
-            INSERT OR REPLACE INTO schools (
-                sc_code, school_id, sc_name, eng_name, sc_kind, atpt_code,
-                address, cleaned_address, address_hash, tel, homepage, status,
-                last_seen, load_dt, latitude, longitude, geocode_attempts, last_error,
-                city_id, district_id, street_id, number_type, number_value,
-                number_start, number_end, number_bit, jibun_address, kakao_address,
-                atpt_ofcdc_sc_nm, lctn_sc_nm, ju_org_nm, fond_sc_nm, org_rdnzc, org_rdnda,
-                org_faxno, coedu_sc_nm, hs_sc_nm, indst_specl_ccccl_exst_yn, hs_gnrl_busns_sc_nm,
-                spcly_purps_hs_ord_nm, ene_bfe_sehf_sc_nm, dght_sc_nm, fond_ymd, foas_memrd, load_dtm
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            INSERT OR REPLACE INTO schools
+            (sc_code, school_id, sc_name, eng_name, sc_kind, atpt_code,
+             address, cleaned_address, address_hash, tel, homepage, status,
+             last_seen, load_dt, latitude, longitude, geocode_attempts, last_error,
+             city_id, district_id, street_id, number_type, number_value,
+             number_start, number_end, number_bit, jibun_address, kakao_address)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """
         rows = []
         for it in batch:
@@ -361,40 +397,29 @@ class NeisInfoCollector(BaseCollector):
                 it['geocode_attempts'], it['last_error'], it['city_id'],
                 it['district_id'], it['street_id'], it['number_type'],
                 it['number_value'], it['number_start'], it['number_end'],
-                it['number_bit'], it.get('jibun_address'), it.get('kakao_address'),
-                it.get('atpt_ofcdc_sc_nm', ''),
-                it.get('lctn_sc_nm', ''),
-                it.get('ju_org_nm', ''),
-                it.get('fond_sc_nm', ''),
-                it.get('org_rdnzc', ''),
-                it.get('org_rdnda', ''),
-                it.get('org_faxno', ''),
-                it.get('coedu_sc_nm', ''),
-                it.get('hs_sc_nm', ''),
-                it.get('indst_specl_ccccl_exst_yn', ''),
-                it.get('hs_gnrl_busns_sc_nm', ''),
-                it.get('spcly_purps_hs_ord_nm', ''),
-                it.get('ene_bfe_sehf_sc_nm', ''),
-                it.get('dght_sc_nm', ''),
-                it.get('fond_ymd', ''),
-                it.get('foas_memrd', ''),
-                it.get('load_dtm', '')
+                it['number_bit'], it.get('jibun_address'), it.get('kakao_address')
             ))
         try:
             conn.executemany(sql, rows)
+            if self.debug_mode and not self.quiet_mode:
+                self.print(f"✅ [_do_save_batch] executemany 성공, 영향받은 행: {conn.total_changes}")
+                self.print(f"💾 배치 저장 완료: {len(batch)}개")
         except Exception as e:
             self.logger.error(f"배치 저장 실패: {e}")
+            if self.debug_mode and not self.quiet_mode:
+                self.print(f"❌ [_do_save_batch] 예외: {e}")
+                self.print(f"   첫 번째 레코드 샘플: {batch[0] if batch else '없음'}")
             raise
 
 
 if __name__ == "__main__":
     is_github_actions = os.getenv('GITHUB_ACTIONS') == 'true'
     parser = argparse.ArgumentParser(description="학교 기본정보 수집기")
-    parser.add_argument("--regions", default="ALL", help="수집할 지역")
-    parser.add_argument("--shard", choices=["none", "odd", "even"], default="none")
-    parser.add_argument("--debug", action="store_true")
-    parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--regions", default="ALL", help="수집할 지역 (ALL 또는 쉼표 구분, 예: B10,C10)")
+    parser.add_argument("--shard", choices=["none", "odd", "even"], default="none", help="샤드 모드 (none=통합, odd/even=분할)")
+    parser.add_argument("--debug", action="store_true", help="상세 출력 모드")
+    parser.add_argument("--quiet", action="store_true", help="출력 최소화 (GitHub Actions 등)")
+    parser.add_argument("--limit", type=int, default=None, help="수집할 학교 수 제한 (테스트용)")
     args = parser.parse_args()
 
     if is_github_actions and not args.quiet:
@@ -413,10 +438,17 @@ if __name__ == "__main__":
     else:
         regions = [r.strip() for r in args.regions.split(",") if r.strip()]
 
+    if not args.quiet:
+        print(f"\n🚀 학교 정보 수집 시작 (샤드: {args.shard}, 지역: {len(regions)}개, limit: {args.limit or '전체'})")
+        print("=" * 70)
+
     for region in regions:
         collector.fetch_region(region, limit=args.limit)
         if args.limit:
             break
+
+    if not args.quiet:
+        print("\n⏳ 남은 데이터 처리 중...")
 
     collector.flush()
     time.sleep(2)
@@ -427,4 +459,18 @@ if __name__ == "__main__":
         print(f"📊 DB 저장 완료: {count}건 (파일: {collector.db_path})")
     else:
         print(f"❌ DB 파일 없음: {collector.db_path}")
+
+    if not args.quiet:
+        total = collector.total_new + collector.total_failed + collector.total_skipped
+        success_rate = (collector.total_new / total * 100) if total > 0 else 0
+        print("=" * 70)
+        print(f"📊 전체 통계 (샤드: {args.shard})")
+        print(f"   신규 성공: {collector.total_new}개 ({success_rate:.1f}%)")
+        print(f"   실패:      {collector.total_failed}개")
+        print(f"   스킵:      {collector.total_skipped}개")
+        print(f"   총 처리:   {total}개")
+        print("=" * 70)
+        print("✅ 수집 완료")
+    else:
+        collector.logger.info("수집 완료")
         
