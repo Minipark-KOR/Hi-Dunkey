@@ -30,23 +30,63 @@ def migrate(db_path: str) -> bool:
         existing = [row[1] for row in cur.fetchall()]
         print(f"📋 기존 컬럼: {len(existing)}개")
 
-        # 학교알리미 정보 전용 컬럼
+        # 학교알리미 API 전체 필드 (총 37개)
         new_columns = [
+            # 기본 키
             ("school_code", "TEXT"),
-            ("school_name", "TEXT"),
-            ("region_code", "TEXT"),
-            ("region_name", "TEXT"),
-            ("school_type", "TEXT"),
-            ("school_type_name", "TEXT"),
-            ("address", "TEXT"),
+            
+            # 시도교육청 관련
+            ("atpt_ofcdc_org_nm", "TEXT"),
+            ("atpt_ofcdc_org_code", "TEXT"),
+            ("ju_org_nm", "TEXT"),
+            ("ju_org_code", "TEXT"),
+            
+            # 지역 정보
+            ("adrcd_nm", "TEXT"),
+            ("adrcd_cd", "TEXT"),
+            ("lctn_sc_code", "TEXT"),
+            
+            # 학교 기본 정보
+            ("schul_nm", "TEXT"),
+            ("schul_knd_sc_code", "TEXT"),
+            ("fond_sc_code", "TEXT"),
+            ("hs_knd_sc_nm", "TEXT"),
+            ("bnhh_yn", "TEXT"),
+            ("schul_fond_typ_code", "TEXT"),
+            ("dght_sc_code", "TEXT"),
+            
+            # 설립/개교일
+            ("foas_memrd", "TEXT"),
+            ("fond_ymd", "TEXT"),
+            
+            # 주소/위치
+            ("adres_brkdn", "TEXT"),
+            ("dtlad_brkdn", "TEXT"),
             ("zip_code", "TEXT"),
-            ("phone", "TEXT"),
-            ("homepage", "TEXT"),
-            ("establishment_date", "TEXT"),
-            ("open_date", "TEXT"),
-            ("close_date", "TEXT"),
-            ("latitude", "REAL"),
-            ("longitude", "REAL"),
+            ("schul_rdnzc", "TEXT"),
+            ("schul_rdnma", "TEXT"),
+            ("schul_rdnda", "TEXT"),
+            ("lttud", "REAL"),
+            ("lgtud", "REAL"),
+            
+            # 연락처
+            ("user_telno", "TEXT"),
+            ("user_telno_sw", "TEXT"),
+            ("user_telno_ga", "TEXT"),
+            ("perc_faxno", "TEXT"),
+            ("hmpg_adres", "TEXT"),
+            
+            # 기타 구분
+            ("coedu_sc_code", "TEXT"),
+            ("absch_yn", "TEXT"),
+            ("absch_ymd", "TEXT"),
+            ("close_yn", "TEXT"),
+            
+            # 각종학교용
+            ("schul_crse_sc_value", "TEXT"),
+            ("schul_crse_sc_value_nm", "TEXT"),
+            
+            # 수집 메타
             ("collected_at", "TEXT"),
             ("updated_at", "TEXT"),
             ("is_active", "INTEGER DEFAULT 1"),
@@ -65,9 +105,10 @@ def migrate(db_path: str) -> bool:
             else:
                 print(f"  ⏭️  존재: {col}")
 
+        # 인덱스 생성 (필요시)
         indexes = [
-            ("idx_schools_region", "ON schools(region_code)"),
-            ("idx_schools_type", "ON schools(school_type)"),
+            ("idx_schools_region", "ON schools(atpt_ofcdc_org_code)"),
+            ("idx_schools_type", "ON schools(schul_knd_sc_code)"),
             ("idx_schools_in_neis", "ON schools(in_neis)"),
         ]
 

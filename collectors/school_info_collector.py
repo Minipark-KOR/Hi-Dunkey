@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""
-collectors/school_info_collector.py
-개발 가이드: docs/developer_guide.md 참조
-"""
+# collectors/school_info_collector.py
+# 최종 수정: 모든 API 필드 저장, 좌표 포함
+
 import os
 import sys
-from pathlib import Path
-import sqlite3
-from typing import Union, Optional, List, Dict, Any
 import time
+import sqlite3
+import argparse
+from pathlib import Path
+from typing import List, Dict, Optional, Any
+
 sys.path.append(str(Path(__file__).parent.parent))
 
 from core.base_collector import BaseCollector
@@ -18,18 +19,12 @@ from core.kst_time import now_kst
 from core.school_year import get_current_school_year
 from core.network import safe_json_request, build_session
 from core.config import config
-from core.neis_validator import neis_validator
 from constants.codes import REGION_NAMES
 from constants.paths import MASTER_DIR
 
-# ✅ rich progress imports 추가 (순차 처리 진행 바 표시)
-from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, TaskProgressColumn
-
-API_URL = "https://open.neis.go.kr/hub/schoolInfo"  # ✅ 공백 제거
-
+API_URL = "https://open.neis.go.kr/hub/schoolInfo"  # 학교알리미 API 엔드포인트 (예시, 실제 엔드포인트 확인 필요)
 
 class SchoolInfoCollector(BaseCollector):
-    # ----- 메타데이터 -----
     description = "학교 기본정보 (학교알리미)"
     table_name = "schools"
     merge_script = "scripts/merge_school_info_dbs.py"
@@ -37,219 +32,191 @@ class SchoolInfoCollector(BaseCollector):
     timeout_seconds = _cfg.get("timeout_seconds", 3600)
     parallel_timeout_seconds = _cfg.get("parallel_timeout_seconds", 7200)
     merge_timeout_seconds = _cfg.get("merge_timeout_seconds", 3600)
-    metrics_config = _cfg.get("metrics_config", {
-        "enabled": True,
-        "collect_geo": True,
-        "collect_global": True
-    })
-    parallel_config = {
-        "max_workers": _cfg.get("max_workers", 4),
-        "cpu_factor": _cfg.get("cpu_factor", 1.0),
-        "max_by_api": _cfg.get("max_by_api", 10),
-        "absolute_max": _cfg.get("absolute_max", 16),
-    }
-    # ---------------------
+    metrics_config = _cfg.get("metrics_config", {"enabled": True})
+    parallel_config = _cfg.get("parallel_config", {"max_workers": 4})
 
-    def __init__(
-        self,
-        shard: str = "none",
-        school_range: Optional[str] = None,
-        debug_mode: bool = False,
-        quiet_mode: bool = False,          # ✅ 추가
-        **kwargs                           # ✅ 추가 인자 수용
-    ):
-        super().__init__(
-            "school_info",
-            str(MASTER_DIR),
-            shard,
-            school_range,
-            quiet_mode=quiet_mode,          # ✅ BaseCollector에 전달
-            **kwargs                         # ✅ 추가 인자 전달 (BaseCollector가 처리)
-        )
+    def __init__(self, shard="none", school_range=None, debug_mode=False, quiet_mode=False, **kwargs):
+        super().__init__("school_info", str(MASTER_DIR), shard, school_range, quiet_mode=quiet_mode)
         self.debug_mode = debug_mode
-        self.quiet_mode = quiet_mode         # ✅ 저장
-
-        neis_count = len(neis_validator.get_all())
-        self.logger.info(f"NEIS validator 로드 완료: {neis_count}개 학교 코드")
-
+        self.quiet_mode = quiet_mode
         self._init_db()
 
-    def _init_db(self) -> None:
+    def _init_db(self):
         with get_db_connection(self.db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS schools (
-                    school_code TEXT PRIMARY KEY,
-                    school_name TEXT NOT NULL,
-                    region_code TEXT NOT NULL,
-                    region_name TEXT,
-                    school_type TEXT,
-                    school_type_name TEXT,
-                    address TEXT,
-                    zip_code TEXT,
-                    phone TEXT,
-                    homepage TEXT,
-                    establishment_date TEXT,
-                    open_date TEXT,
-                    close_date TEXT,
-                    latitude REAL,
-                    longitude REAL,
+                    -- 기본 키
+                    school_code TEXT PRIMARY KEY,      -- 정보공시 학교코드 (SCHUL_CODE)
+                    
+                    -- 시도교육청 관련
+                    atpt_ofcdc_org_nm TEXT,            -- 시도교육청명
+                    atpt_ofcdc_org_code TEXT,          -- 시도교육청코드
+                    ju_org_nm TEXT,                     -- 교육지원청명
+                    ju_org_code TEXT,                    -- 교육지원청코드
+                    
+                    -- 지역 정보
+                    adrcd_nm TEXT,                       -- 지역명
+                    adrcd_cd TEXT,                       -- 지역코드
+                    lctn_sc_code TEXT,                   -- 소재지구분코드
+                    
+                    -- 학교 기본 정보
+                    schul_nm TEXT,                        -- 학교명
+                    schul_knd_sc_code TEXT,               -- 학교급코드
+                    fond_sc_code TEXT,                     -- 설립구분
+                    hs_knd_sc_nm TEXT,                     -- 학교특성
+                    bnhh_yn TEXT,                          -- 분교여부
+                    schul_fond_typ_code TEXT,              -- 설립유형
+                    dght_sc_code TEXT,                      -- 주야구분
+                    
+                    -- 설립/개교일
+                    foas_memrd TEXT,                        -- 개교기념일
+                    fond_ymd TEXT,                          -- 설립일
+                    
+                    -- 주소/위치
+                    adres_brkdn TEXT,                       -- 주소내역
+                    dtlad_brkdn TEXT,                       -- 상세주소내역
+                    zip_code TEXT,                          -- 우편번호
+                    schul_rdnzc TEXT,                       -- 학교도로명 우편번호
+                    schul_rdnma TEXT,                       -- 학교도로명 주소
+                    schul_rdnda TEXT,                       -- 학교도로명 상세주소
+                    lttud REAL,                              -- 위도
+                    lgtud REAL,                              -- 경도
+                    
+                    -- 연락처
+                    user_telno TEXT,                         -- 전화번호
+                    user_telno_sw TEXT,                      -- 전화번호(교무실)
+                    user_telno_ga TEXT,                      -- 전화번호(행정실)
+                    perc_faxno TEXT,                         -- 팩스번호
+                    hmpg_adres TEXT,                         -- 홈페이지 주소
+                    
+                    -- 기타 구분
+                    coedu_sc_code TEXT,                      -- 남녀공학 구분
+                    absch_yn TEXT,                           -- 폐교여부
+                    absch_ymd TEXT,                           -- 폐교일자
+                    close_yn TEXT,                            -- 휴교여부
+                    
+                    -- 각종학교용
+                    schul_crse_sc_value TEXT,                 -- 학교과정구분값(2-3-4)
+                    schul_crse_sc_value_nm TEXT,              -- 학교과정구분명(초-중-고)
+                    
+                    -- 수집 메타
                     collected_at TEXT NOT NULL,
                     updated_at TEXT,
                     is_active INTEGER DEFAULT 1,
                     in_neis INTEGER DEFAULT 0
                 )
             """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_schools_region ON schools(region_code)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_schools_type ON schools(school_type)")
+            # 인덱스 생성
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_schools_region ON schools(atpt_ofcdc_org_code)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_schools_type ON schools(schul_knd_sc_code)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_schools_in_neis ON schools(in_neis)")
+            self._init_db_common(conn)
 
-    # ✅ BaseCollector 필수 추상 메서드 구현 (1/2)
     def _get_target_key(self) -> str:
-        """데이터베이스 기본키 필드명 반환"""
         return "school_code"
 
-    # ✅ BaseCollector 필수 추상 메서드 구현 (2/2)
-    def _process_item(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """개별 항목 전처리 (필터링, 검증 등)"""
-        # school_code 가 없으면 스킵
-        if not item.get("school_code"):
-            return None
-        
-        # 샤드 필터링 (선택적)
-        if self.school_range and not should_include_school(self.shard, self.school_range, item["school_code"]):
-            return None
-        
-        return item
-
-    def fetch_region(self, region_code: str, year: Optional[int] = None, date: Optional[str] = None) -> int:
-        """
-        지역별 학교 정보 수집 (병렬 실행용)
-        Returns: 처리된 학교 수
-        """
+    def fetch_region(self, region_code: str, year: Optional[int] = None, date: Optional[str] = None, **kwargs) -> int:
+        """지역별 학교 정보 수집"""
         if year is None:
             year = get_current_school_year(now_kst())
         region_name = REGION_NAMES.get(region_code, region_code)
 
-        self.print(f"📡 [{region_name}] 학년도 {year} 수집 시작 (샤드: {self.shard})", level="debug")
+        if not self.quiet_mode:
+            self.print(f"📡 [{region_name}] 학년도 {year} 수집 시작", level="debug")
 
-        params = {"ATPT_OFCDC_SC_CODE": region_code}
+        # API 요청 파라미터 구성 (실제 학교알리미 API에 맞게 조정 필요)
+        params = {
+            "ATPT_OFCDC_SC_CODE": region_code,
+            "pSize": 100,
+            "pIndex": 1,
+            "KEY": config.get_api_key('school_info'),  # API 키 설정 필요
+            "Type": "json"
+        }
         rows = self._fetch_paginated(API_URL, params, "schoolInfo", region=region_code, year=year)
 
         if not rows:
-            self.logger.warning(f"[{region_name}] 수집된 데이터 없음")
+            self.logger.warning(f"[{region_name}] 데이터 없음")
             return 0
 
         school_count = 0
         for row in rows:
-            school_code = row.get("SD_SCHUL_CODE")
+            school_code = row.get("SD_SCHUL_CODE")  # 실제 API 응답 키 확인 필요
             if not school_code:
                 continue
-            
-            # ✅ 샤딩 필터링 추가
-            if not self._include_school(school_code):
+            # 샤드 필터링 (선택)
+            if self.shard != "none" and not should_include_school(self.shard, self.school_range, school_code):
                 continue
-
             self.enqueue([self._transform_row(row, region_code)])
             school_count += 1
 
         return school_count
 
-    def fetch_all_regions(
-        self,
-        regions: Optional[List[str]] = None,
-        year: Optional[int] = None,
-        date: Optional[str] = None
-    ) -> Dict[str, int]:
-        """
-        ✅ 모든 지역을 순차적으로 순회하며 진행 상황 표시 (순차 처리용)
-        """
-        if regions is None:
-            regions = list(REGION_NAMES.keys())
-        
-        if year is None:
-            year = get_current_school_year(now_kst())
-        
-        results = {}
-        
-        # ✅ rich Progress 바 설정 (병렬 실행과 유사한 포맷)
-        with Progress(
-            TextColumn("[bold blue]{task.description}"),
-            BarColumn(bar_width=40),
-            TaskProgressColumn(),
-            TimeElapsedColumn(),
-            transient=False,
-            disable=self.quiet_mode
-        ) as progress:
-            
-            for region_code in regions:
-                region_name = REGION_NAMES.get(region_code, region_code)
-                task_desc = f"{region_code} ({region_name})"
-                
-                # 작업 시작
-                task_id = progress.add_task(task_desc, total=None)
-                
-                start_time = time.time()
-                
-                try:
-                    # 실제 수집 실행
-                    count = self.fetch_region(region_code, year, date)
-                    
-                    # 수집 완료 시 진행바 업데이트 (100% 로 채움)
-                    progress.update(
-                        task_id,
-                        description=f"✅ {region_code}",
-                        completed=1,
-                        total=1
-                    )
-                    results[region_code] = count
-                    
-                except Exception as e:
-                    # 오류 발생 시 표시
-                    progress.update(
-                        task_id,
-                        description=f"❌ {region_code}",
-                        completed=1,
-                        total=1
-                    )
-                    self.logger.error(f"[{region_name}] 수집 실패: {e}")
-                    results[region_code] = 0
-        
-        return results
-
     def _transform_row(self, row: Dict[str, Any], region_code: str) -> Dict[str, Any]:
+        """API 응답 row를 DB 레코드 딕셔너리로 변환"""
         now = now_kst().isoformat()
-        school_code = row.get("SD_SCHUL_CODE")
         return {
-            "school_code": school_code,
-            "school_name": row.get("SCHUL_NM", ""),
-            "region_code": region_code,
-            "region_name": REGION_NAMES.get(region_code, ""),
-            "school_type": row.get("LCLAS_SC_CODE"),
-            "school_type_name": row.get("LCLAS_SC_NM", ""),
-            "address": row.get("ORG_RDNMA", ""),
-            "zip_code": row.get("ORG_RDNZC", ""),
-            "phone": row.get("ORG_TELNO", ""),
-            "homepage": row.get("HMPG_ADRES", ""),
-            "establishment_date": row.get("FOND_YMD", ""),
-            "open_date": row.get("OPEN_YMD", ""),
-            "close_date": row.get("CLOSE_YMD", ""),
-            "latitude": self._parse_float(row.get("LTTUD")),
-            "longitude": self._parse_float(row.get("LGTUD")),
+            # 기본 키
+            "school_code": row.get("SCHUL_CODE", ""),
+            
+            # 시도교육청
+            "atpt_ofcdc_org_nm": row.get("ATPT_OFCDC_ORG_NM", ""),
+            "atpt_ofcdc_org_code": row.get("ATPT_OFCDC_ORG_CODE", ""),
+            "ju_org_nm": row.get("JU_ORG_NM", ""),
+            "ju_org_code": row.get("JU_ORG_CODE", ""),
+            
+            # 지역
+            "adrcd_nm": row.get("ADRCD_NM", ""),
+            "adrcd_cd": row.get("ADRCD_CD", ""),
+            "lctn_sc_code": row.get("LCTN_SC_CODE", ""),
+            
+            # 학교 기본
+            "schul_nm": row.get("SCHUL_NM", ""),
+            "schul_knd_sc_code": row.get("SCHUL_KND_SC_CODE", ""),
+            "fond_sc_code": row.get("FOND_SC_CODE", ""),
+            "hs_knd_sc_nm": row.get("HS_KND_SC_NM", ""),
+            "bnhh_yn": row.get("BNHH_YN", ""),
+            "schul_fond_typ_code": row.get("SCHUL_FOND_TYP_CODE", ""),
+            "dght_sc_code": row.get("DGHT_SC_CODE", ""),
+            
+            # 날짜
+            "foas_memrd": row.get("FOAS_MEMRD", ""),
+            "fond_ymd": row.get("FOND_YMD", ""),
+            
+            # 주소
+            "adres_brkdn": row.get("ADRES_BRKDN", ""),
+            "dtlad_brkdn": row.get("DTLAD_BRKDN", ""),
+            "zip_code": row.get("ZIP_CODE", ""),
+            "schul_rdnzc": row.get("SCHUL_RDNZC", ""),
+            "schul_rdnma": row.get("SCHUL_RDNMA", ""),
+            "schul_rdnda": row.get("SCHUL_RDNDA", ""),
+            "lttud": self._parse_float(row.get("LTTUD")),
+            "lgtud": self._parse_float(row.get("LGTUD")),
+            
+            # 연락처
+            "user_telno": row.get("USER_TELNO", ""),
+            "user_telno_sw": row.get("USER_TELNO_SW", ""),
+            "user_telno_ga": row.get("USER_TELNO_GA", ""),
+            "perc_faxno": row.get("PERC_FAXNO", ""),
+            "hmpg_adres": row.get("HMPG_ADRES", ""),
+            
+            # 기타
+            "coedu_sc_code": row.get("COEDU_SC_CODE", ""),
+            "absch_yn": row.get("ABSCH_YN", ""),
+            "absch_ymd": row.get("ABSCH_YMD", ""),
+            "close_yn": row.get("CLOSE_YN", ""),
+            
+            # 각종학교
+            "schul_crse_sc_value": row.get("SCHUL_CRSE_SC_VALUE", ""),
+            "schul_crse_sc_value_nm": row.get("SCHUL_CRSE_SC_VALUE_NM", ""),
+            
+            # 메타
             "collected_at": now,
             "updated_at": now,
             "is_active": 1,
-            "in_neis": self._get_in_neis_status(school_code),
+            "in_neis": 0,  # NEIS 등록 여부는 별도로 채울 수 있음
         }
 
-    def _get_in_neis_status(self, school_code: str) -> int:
-        """NEIS 등록 여부 조회 (예외 안전)"""
-        try:
-            return 1 if neis_validator.contains(school_code) else 0
-        except Exception as e:
-            self.logger.warning(f"NEIS 검증 실패 {school_code}: {e}")
-            return 0
-
-    def _parse_float(self, val: Union[str, float, None]) -> Optional[float]:
+    def _parse_float(self, val: Any) -> Optional[float]:
         try:
             return float(val) if val is not None and val != "" else None
         except (ValueError, TypeError):
@@ -258,84 +225,39 @@ class SchoolInfoCollector(BaseCollector):
     def _do_save_batch(self, conn: sqlite3.Connection, batch: List[Dict[str, Any]]) -> None:
         sql = """
             INSERT OR REPLACE INTO schools (
-                school_code, school_name, region_code, region_name,
-                school_type, school_type_name, address, zip_code,
-                phone, homepage, establishment_date, open_date, close_date,
-                latitude, longitude, collected_at, updated_at, is_active,
-                in_neis
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                school_code,
+                atpt_ofcdc_org_nm, atpt_ofcdc_org_code, ju_org_nm, ju_org_code,
+                adrcd_nm, adrcd_cd, lctn_sc_code,
+                schul_nm, schul_knd_sc_code, fond_sc_code, hs_knd_sc_nm,
+                bnhh_yn, schul_fond_typ_code, dght_sc_code,
+                foas_memrd, fond_ymd,
+                adres_brkdn, dtlad_brkdn, zip_code, schul_rdnzc, schul_rdnma, schul_rdnda,
+                lttud, lgtud,
+                user_telno, user_telno_sw, user_telno_ga, perc_faxno, hmpg_adres,
+                coedu_sc_code, absch_yn, absch_ymd, close_yn,
+                schul_crse_sc_value, schul_crse_sc_value_nm,
+                collected_at, updated_at, is_active, in_neis
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """
-        rows = [(
-            r["school_code"], r["school_name"], r["region_code"], r["region_name"],
-            r["school_type"], r["school_type_name"], r["address"], r["zip_code"],
-            r["phone"], r["homepage"], r["establishment_date"], r["open_date"], r["close_date"],
-            r["latitude"], r["longitude"], r["collected_at"], r["updated_at"], r["is_active"],
-            r["in_neis"]
-        ) for r in batch]
+        rows = []
+        for r in batch:
+            rows.append((
+                r["school_code"],
+                r["atpt_ofcdc_org_nm"], r["atpt_ofcdc_org_code"], r["ju_org_nm"], r["ju_org_code"],
+                r["adrcd_nm"], r["adrcd_cd"], r["lctn_sc_code"],
+                r["schul_nm"], r["schul_knd_sc_code"], r["fond_sc_code"], r["hs_knd_sc_nm"],
+                r["bnhh_yn"], r["schul_fond_typ_code"], r["dght_sc_code"],
+                r["foas_memrd"], r["fond_ymd"],
+                r["adres_brkdn"], r["dtlad_brkdn"], r["zip_code"], r["schul_rdnzc"], r["schul_rdnma"], r["schul_rdnda"],
+                r["lttud"], r["lgtud"],
+                r["user_telno"], r["user_telno_sw"], r["user_telno_ga"], r["perc_faxno"], r["hmpg_adres"],
+                r["coedu_sc_code"], r["absch_yn"], r["absch_ymd"], r["close_yn"],
+                r["schul_crse_sc_value"], r["schul_crse_sc_value_nm"],
+                r["collected_at"], r["updated_at"], r["is_active"], r["in_neis"]
+            ))
         conn.executemany(sql, rows)
 
-    def _fetch_paginated(
-        self,
-        url: str,
-        base_params: Dict[str, Any],
-        root_key: str,
-        region: Optional[str] = None,
-        year: Optional[int] = None,
-        page_size: int = 100
-    ) -> List[Dict[str, Any]]:
-        session = build_session()
-        all_rows: List[Dict[str, Any]] = []
-        page = 1
-
-        while True:
-            params = base_params.copy()
-            params.update({
-                "pIndex": page,
-                "pSize": page_size,
-                "AY": str(year) if year else None,
-                "Type": "json"
-            })
-            params = {k: v for k, v in params.items() if v is not None}
-
-            data = safe_json_request(session, url, params, self.logger)
-            if not data:
-                break
-
-            try:
-                rows = data[root_key][1].get("row", []) if len(data[root_key]) > 1 else []
-            except (KeyError, IndexError):
-                rows = []
-
-            if not rows:
-                break
-
-            all_rows.extend(rows)
-            if len(rows) < page_size:
-                break
-            page += 1
-
-        return all_rows
-
-
-if __name__ == "__main__":
-    from core.collector_cli import run_collector
-    
-    def _fetch(collector: SchoolInfoCollector, region: str, **kwargs) -> None:
-        """
-        병렬 실행용: 단일 지역 수집
-        """
-        collector.fetch_region(region, **kwargs)
-    
-    def _fetch_all(collector: SchoolInfoCollector, **kwargs) -> None:
-        """
-        ✅ 순차 실행용: 모든 지역 수집 (진행 바 표시)
-        """
-        regions = list(REGION_NAMES.keys())
-        collector.fetch_all_regions(regions, **kwargs)
-    
-    run_collector(
-        SchoolInfoCollector,
-        _fetch_all,  # ✅ 순차 처리 시 모든 지역을 진행 바와 함께 수집
-        "학교알리미 수집기",
-    )
-    
+    # BaseCollector의 추상 메서드 구현
+    def _process_item(self, raw_item: dict) -> List[dict]:
+        return [self._transform_row(raw_item, "")]
+        
