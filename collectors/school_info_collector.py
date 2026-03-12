@@ -22,7 +22,7 @@ from constants.codes import REGION_NAMES, ALL_REGIONS
 from constants.paths import MASTER_DIR
 from constants.api_mappings import get_api_field
 
-API_URL = "https://open.neis.go.kr/hub/schoolInfo"
+API_URL = "http://www.schoolinfo.go.kr/openApi.do"
 
 
 class SchoolInfoCollector(BaseCollector):
