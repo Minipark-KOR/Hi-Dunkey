@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # collectors/school_info_collector.py
 # 최종 수정: 모든 API 필드 저장, NOT NULL 컬럼(school_name, region_code) 추가
+# school_code 키 오류 수정 (SD_SCHUL_CODE 사용), 중복 저장 로직 제거
 
 import os
 import sys
@@ -159,8 +160,8 @@ class SchoolInfoCollector(BaseCollector):
         """API 응답 row를 DB 레코드 딕셔너리로 변환 (NOT NULL 필드 포함)"""
         now = now_kst().isoformat()
         return {
-            # 기본 키
-            "school_code": row.get("SCHUL_CODE", ""),
+            # 기본 키 - 수정: SCHUL_CODE → SD_SCHUL_CODE
+            "school_code": row.get("SD_SCHUL_CODE", ""),
             
             # NOT NULL 컬럼 (반드시 값 제공)
             "school_name": row.get("SCHUL_NM", ""),          # 학교명
@@ -288,27 +289,8 @@ class SchoolInfoCollector(BaseCollector):
             raise
 
         print("✅ [_save_batch] 저장 완료 (디버그용)")
-
-        # 디버깅: 첫 번째 행의 값을 출력
-        if rows:
-            self.logger.debug(f"첫 번째 행: {rows[0]}")
-            # 각 값의 타입도 확인
-            self.logger.debug(f"첫 번째 행 타입: {[type(v).__name__ for v in rows[0]]}")
-
-        try:
-            cursor = conn.cursor()
-            cursor.executemany(sql, rows)
-            affected = cursor.rowcount  # 영향받은 행 수 (각 배치에 대해 -1일 수 있음)
-            self.logger.debug(f"executemany 후 rowcount: {affected}")
-            conn.commit()
-            # 저장 후 총 행 수 확인 (같은 커넥션)
-            count = conn.execute("SELECT COUNT(*) FROM schools").fetchone()[0]
-            self.logger.debug(f"저장 후 총 레코드 수: {count}")
-        except Exception as e:
-            self.logger.error(f"배치 저장 실패: {e}", exc_info=True)
-            # 실패한 배치의 일부를 로그에 남김
-            self.logger.error(f"실패한 배치 첫 행: {rows[0] if rows else '없음'}")
-            raise  # 예외를 다시 발생시켜 중단
+        # (중복 저장 로직 제거됨)
 
     def _process_item(self, raw_item: dict) -> List[dict]:
         return [self._transform_row(raw_item, "")]
+        
