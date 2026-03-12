@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # collectors/school_info_collector.py
 # 최종 수정: 모든 API 필드 저장, NOT NULL 컬럼(school_name, region_code) 추가
-# school_code 키 오류 수정 (SD_SCHUL_CODE 사용), 중복 저장 로직 제거
+# api_mappings 활용, school_code 키 오류 수정, 중복 저장 로직 제거
 
 import os
 import sys
@@ -18,12 +18,12 @@ from core.database import get_db_connection
 from core.shard import should_include_school
 from core.kst_time import now_kst
 from core.school_year import get_current_school_year
-from core.network import safe_json_request, build_session
 from core.config import config
 from constants.codes import REGION_NAMES
 from constants.paths import MASTER_DIR
+from constants.api_mappings import get_api_field   # ✅ 매핑 함수 임포트
 
-API_URL = "https://open.neis.go.kr/hub/schoolInfo"  # 학교알리미 API 엔드포인트 (예시, 실제 엔드포인트 확인 필요)
+API_URL = "https://open.neis.go.kr/hub/schoolInfo"  # 학교알리미 API 엔드포인트
 
 class SchoolInfoCollector(BaseCollector):
     description = "학교 기본정보 (학교알리미)"
@@ -46,72 +46,50 @@ class SchoolInfoCollector(BaseCollector):
         with get_db_connection(self.db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS schools (
-                    -- 기본 키
-                    school_code TEXT PRIMARY KEY,      -- 정보공시 학교코드 (SCHUL_CODE)
-                    
-                    -- NOT NULL 컬럼 (기존 DB에 존재)
-                    school_name TEXT NOT NULL,         -- 학교명
-                    region_code TEXT NOT NULL,         -- 시도교육청코드 (예: B10)
-                    
-                    -- 시도교육청 관련
-                    atpt_ofcdc_org_nm TEXT,            -- 시도교육청명
-                    atpt_ofcdc_org_code TEXT,          -- 시도교육청코드
-                    ju_org_nm TEXT,                     -- 교육지원청명
-                    ju_org_code TEXT,                    -- 교육지원청코드
-                    
-                    -- 지역 정보
-                    adrcd_nm TEXT,                       -- 지역명
-                    adrcd_cd TEXT,                       -- 지역코드
-                    lctn_sc_code TEXT,                   -- 소재지구분코드
-                    
-                    -- 학교 기본 정보
-                    schul_nm TEXT,                        -- 학교명 (중복 필드)
-                    schul_knd_sc_code TEXT,               -- 학교급코드
-                    fond_sc_code TEXT,                     -- 설립구분
-                    hs_knd_sc_nm TEXT,                     -- 학교특성
-                    bnhh_yn TEXT,                          -- 분교여부
-                    schul_fond_typ_code TEXT,              -- 설립유형
-                    dght_sc_code TEXT,                      -- 주야구분
-                    
-                    -- 설립/개교일
-                    foas_memrd TEXT,                        -- 개교기념일
-                    fond_ymd TEXT,                          -- 설립일
-                    
-                    -- 주소/위치
-                    adres_brkdn TEXT,                       -- 주소내역
-                    dtlad_brkdn TEXT,                       -- 상세주소내역
-                    zip_code TEXT,                          -- 우편번호
-                    schul_rdnzc TEXT,                       -- 학교도로명 우편번호
-                    schul_rdnma TEXT,                       -- 학교도로명 주소
-                    schul_rdnda TEXT,                       -- 학교도로명 상세주소
-                    lttud REAL,                              -- 위도
-                    lgtud REAL,                              -- 경도
-                    
-                    -- 연락처
-                    user_telno TEXT,                         -- 전화번호
-                    user_telno_sw TEXT,                      -- 전화번호(교무실)
-                    user_telno_ga TEXT,                      -- 전화번호(행정실)
-                    perc_faxno TEXT,                         -- 팩스번호
-                    hmpg_adres TEXT,                         -- 홈페이지 주소
-                    
-                    -- 기타 구분
-                    coedu_sc_code TEXT,                      -- 남녀공학 구분
-                    absch_yn TEXT,                           -- 폐교여부
-                    absch_ymd TEXT,                           -- 폐교일자
-                    close_yn TEXT,                            -- 휴교여부
-                    
-                    -- 각종학교용
-                    schul_crse_sc_value TEXT,                 -- 학교과정구분값(2-3-4)
-                    schul_crse_sc_value_nm TEXT,              -- 학교과정구분명(초-중-고)
-                    
-                    -- 수집 메타
+                    school_code TEXT PRIMARY KEY,
+                    school_name TEXT NOT NULL,
+                    region_code TEXT NOT NULL,
+                    atpt_ofcdc_org_nm TEXT,
+                    atpt_ofcdc_org_code TEXT,
+                    ju_org_nm TEXT,
+                    ju_org_code TEXT,
+                    adrcd_nm TEXT,
+                    adrcd_cd TEXT,
+                    lctn_sc_code TEXT,
+                    schul_nm TEXT,
+                    schul_knd_sc_code TEXT,
+                    fond_sc_code TEXT,
+                    hs_knd_sc_nm TEXT,
+                    bnhh_yn TEXT,
+                    schul_fond_typ_code TEXT,
+                    dght_sc_code TEXT,
+                    foas_memrd TEXT,
+                    fond_ymd TEXT,
+                    adres_brkdn TEXT,
+                    dtlad_brkdn TEXT,
+                    zip_code TEXT,
+                    schul_rdnzc TEXT,
+                    schul_rdnma TEXT,
+                    schul_rdnda TEXT,
+                    lttud REAL,
+                    lgtud REAL,
+                    user_telno TEXT,
+                    user_telno_sw TEXT,
+                    user_telno_ga TEXT,
+                    perc_faxno TEXT,
+                    hmpg_adres TEXT,
+                    coedu_sc_code TEXT,
+                    absch_yn TEXT,
+                    absch_ymd TEXT,
+                    close_yn TEXT,
+                    schul_crse_sc_value TEXT,
+                    schul_crse_sc_value_nm TEXT,
                     collected_at TEXT NOT NULL,
                     updated_at TEXT,
                     is_active INTEGER DEFAULT 1,
                     in_neis INTEGER DEFAULT 0
                 )
             """)
-            # 인덱스 생성
             conn.execute("CREATE INDEX IF NOT EXISTS idx_schools_region ON schools(atpt_ofcdc_org_code)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_schools_type ON schools(schul_knd_sc_code)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_schools_in_neis ON schools(in_neis)")
@@ -121,7 +99,6 @@ class SchoolInfoCollector(BaseCollector):
         return "school_code"
 
     def fetch_region(self, region_code: str, year: Optional[int] = None, date: Optional[str] = None, **kwargs) -> int:
-        """지역별 학교 정보 수집"""
         if year is None:
             year = get_current_school_year(now_kst())
         region_name = REGION_NAMES.get(region_code, region_code)
@@ -129,12 +106,11 @@ class SchoolInfoCollector(BaseCollector):
         if not self.quiet_mode:
             self.print(f"📡 [{region_name}] 학년도 {year} 수집 시작", level="debug")
 
-        # API 요청 파라미터 구성 (실제 학교알리미 API에 맞게 조정 필요)
         params = {
             "ATPT_OFCDC_SC_CODE": region_code,
             "pSize": 100,
             "pIndex": 1,
-            "KEY": config.get_api_key('school_info'),  # API 키 설정 필요
+            "KEY": config.get_api_key('school_info'),
             "Type": "json"
         }
         rows = self._fetch_paginated(API_URL, params, "schoolInfo", region=region_code, year=year)
@@ -145,10 +121,9 @@ class SchoolInfoCollector(BaseCollector):
 
         school_count = 0
         for row in rows:
-            school_code = row.get("SD_SCHUL_CODE")  # 실제 API 응답 키 확인 필요
+            school_code = get_api_field(row, "school_code", "school_info")
             if not school_code:
                 continue
-            # 샤드 필터링 (선택)
             if self.shard != "none" and not should_include_school(self.shard, self.school_range, school_code):
                 continue
             self.enqueue([self._transform_row(row, region_code)])
@@ -157,73 +132,54 @@ class SchoolInfoCollector(BaseCollector):
         return school_count
 
     def _transform_row(self, row: Dict[str, Any], region_code: str) -> Dict[str, Any]:
-        """API 응답 row를 DB 레코드 딕셔너리로 변환 (NOT NULL 필드 포함)"""
         now = now_kst().isoformat()
-        return {
-            # 기본 키 - 수정: SCHUL_CODE → SD_SCHUL_CODE
-            "school_code": row.get("SD_SCHUL_CODE", ""),
-            
-            # NOT NULL 컬럼 (반드시 값 제공)
-            "school_name": row.get("SCHUL_NM", ""),          # 학교명
-            "region_code": region_code,                       # 지역 코드 (예: B10)
-            
-            # 시도교육청
-            "atpt_ofcdc_org_nm": row.get("ATPT_OFCDC_ORG_NM", ""),
-            "atpt_ofcdc_org_code": row.get("ATPT_OFCDC_ORG_CODE", ""),
-            "ju_org_nm": row.get("JU_ORG_NM", ""),
-            "ju_org_code": row.get("JU_ORG_CODE", ""),
-            
-            # 지역
-            "adrcd_nm": row.get("ADRCD_NM", ""),
-            "adrcd_cd": row.get("ADRCD_CD", ""),
-            "lctn_sc_code": row.get("LCTN_SC_CODE", ""),
-            
-            # 학교 기본
-            "schul_nm": row.get("SCHUL_NM", ""),
-            "schul_knd_sc_code": row.get("SCHUL_KND_SC_CODE", ""),
-            "fond_sc_code": row.get("FOND_SC_CODE", ""),
-            "hs_knd_sc_nm": row.get("HS_KND_SC_NM", ""),
-            "bnhh_yn": row.get("BNHH_YN", ""),
-            "schul_fond_typ_code": row.get("SCHUL_FOND_TYP_CODE", ""),
-            "dght_sc_code": row.get("DGHT_SC_CODE", ""),
-            
-            # 날짜
-            "foas_memrd": row.get("FOAS_MEMRD", ""),
-            "fond_ymd": row.get("FOND_YMD", ""),
-            
-            # 주소
-            "adres_brkdn": row.get("ADRES_BRKDN", ""),
-            "dtlad_brkdn": row.get("DTLAD_BRKDN", ""),
-            "zip_code": row.get("ZIP_CODE", ""),
-            "schul_rdnzc": row.get("SCHUL_RDNZC", ""),
-            "schul_rdnma": row.get("SCHUL_RDNMA", ""),
-            "schul_rdnda": row.get("SCHUL_RDNDA", ""),
-            "lttud": self._parse_float(row.get("LTTUD")),
-            "lgtud": self._parse_float(row.get("LGTUD")),
-            
-            # 연락처
-            "user_telno": row.get("USER_TELNO", ""),
-            "user_telno_sw": row.get("USER_TELNO_SW", ""),
-            "user_telno_ga": row.get("USER_TELNO_GA", ""),
-            "perc_faxno": row.get("PERC_FAXNO", ""),
-            "hmpg_adres": row.get("HMPG_ADRES", ""),
-            
-            # 기타
-            "coedu_sc_code": row.get("COEDU_SC_CODE", ""),
-            "absch_yn": row.get("ABSCH_YN", ""),
-            "absch_ymd": row.get("ABSCH_YMD", ""),
-            "close_yn": row.get("CLOSE_YN", ""),
-            
-            # 각종학교
-            "schul_crse_sc_value": row.get("SCHUL_CRSE_SC_VALUE", ""),
-            "schul_crse_sc_value_nm": row.get("SCHUL_CRSE_SC_VALUE_NM", ""),
-            
-            # 메타
+        # 매핑된 모든 필드를 한 번에 가져오는 방법 (선택)
+        # 여기서는 모든 필드를 개별적으로 매핑
+        result = {
+            "school_code": get_api_field(row, "school_code", "school_info", ""),
+            "school_name": get_api_field(row, "school_name", "school_info", ""),
+            "region_code": region_code,
+            "atpt_ofcdc_org_nm": get_api_field(row, "atpt_ofcdc_org_nm", "school_info", ""),
+            "atpt_ofcdc_org_code": get_api_field(row, "atpt_ofcdc_org_code", "school_info", ""),
+            "ju_org_nm": get_api_field(row, "ju_org_nm", "school_info", ""),
+            "ju_org_code": get_api_field(row, "ju_org_code", "school_info", ""),
+            "adrcd_nm": get_api_field(row, "adrcd_nm", "school_info", ""),
+            "adrcd_cd": get_api_field(row, "adrcd_cd", "school_info", ""),
+            "lctn_sc_code": get_api_field(row, "lctn_sc_code", "school_info", ""),
+            "schul_nm": get_api_field(row, "schul_nm", "school_info", ""),
+            "schul_knd_sc_code": get_api_field(row, "schul_knd_sc_code", "school_info", ""),
+            "fond_sc_code": get_api_field(row, "fond_sc_code", "school_info", ""),
+            "hs_knd_sc_nm": get_api_field(row, "hs_knd_sc_nm", "school_info", ""),
+            "bnhh_yn": get_api_field(row, "bnhh_yn", "school_info", ""),
+            "schul_fond_typ_code": get_api_field(row, "schul_fond_typ_code", "school_info", ""),
+            "dght_sc_code": get_api_field(row, "dght_sc_code", "school_info", ""),
+            "foas_memrd": get_api_field(row, "foas_memrd", "school_info", ""),
+            "fond_ymd": get_api_field(row, "fond_ymd", "school_info", ""),
+            "adres_brkdn": get_api_field(row, "adres_brkdn", "school_info", ""),
+            "dtlad_brkdn": get_api_field(row, "dtlad_brkdn", "school_info", ""),
+            "zip_code": get_api_field(row, "zip_code", "school_info", ""),
+            "schul_rdnzc": get_api_field(row, "schul_rdnzc", "school_info", ""),
+            "schul_rdnma": get_api_field(row, "schul_rdnma", "school_info", ""),
+            "schul_rdnda": get_api_field(row, "schul_rdnda", "school_info", ""),
+            "lttud": self._parse_float(get_api_field(row, "lttud", "school_info")),
+            "lgtud": self._parse_float(get_api_field(row, "lgtud", "school_info")),
+            "user_telno": get_api_field(row, "user_telno", "school_info", ""),
+            "user_telno_sw": get_api_field(row, "user_telno_sw", "school_info", ""),
+            "user_telno_ga": get_api_field(row, "user_telno_ga", "school_info", ""),
+            "perc_faxno": get_api_field(row, "perc_faxno", "school_info", ""),
+            "hmpg_adres": get_api_field(row, "hmpg_adres", "school_info", ""),
+            "coedu_sc_code": get_api_field(row, "coedu_sc_code", "school_info", ""),
+            "absch_yn": get_api_field(row, "absch_yn", "school_info", ""),
+            "absch_ymd": get_api_field(row, "absch_ymd", "school_info", ""),
+            "close_yn": get_api_field(row, "close_yn", "school_info", ""),
+            "schul_crse_sc_value": get_api_field(row, "schul_crse_sc_value", "school_info", ""),
+            "schul_crse_sc_value_nm": get_api_field(row, "schul_crse_sc_value_nm", "school_info", ""),
             "collected_at": now,
             "updated_at": now,
             "is_active": 1,
             "in_neis": 0,
         }
+        return result
 
     def _parse_float(self, val: Any) -> Optional[float]:
         try:
@@ -232,7 +188,6 @@ class SchoolInfoCollector(BaseCollector):
             return None
 
     def _do_save_batch(self, conn: sqlite3.Connection, batch: List[Dict[str, Any]]) -> None:
-        # placeholders 생성
         placeholders = ', '.join(['?'] * 42)
         sql = f"""
             INSERT OR REPLACE INTO schools (
@@ -251,7 +206,6 @@ class SchoolInfoCollector(BaseCollector):
                 collected_at, updated_at, is_active, in_neis
             ) VALUES ({placeholders})
         """
-        
         rows = []
         for r in batch:
             rows.append((
@@ -273,7 +227,7 @@ class SchoolInfoCollector(BaseCollector):
 
         print(f"\n🔥 [SAVE] 배치 크기: {len(batch)}")
         if rows:
-            print(f"🔥 첫 행 샘플: {rows[0][:5]}...")  # 첫 5개 값만
+            print(f"🔥 첫 행 샘플: {rows[0][:5]}...")
 
         try:
             cursor = conn.cursor()
@@ -281,7 +235,6 @@ class SchoolInfoCollector(BaseCollector):
             affected = cursor.rowcount
             print(f"🔥 executemany 후 rowcount: {affected}")
             conn.commit()
-            # 저장 후 총 행 수 확인
             count = conn.execute("SELECT COUNT(*) FROM schools").fetchone()[0]
             print(f"🔥 저장 후 총 레코드 수: {count}")
         except Exception as e:
@@ -289,8 +242,9 @@ class SchoolInfoCollector(BaseCollector):
             raise
 
         print("✅ [_save_batch] 저장 완료 (디버그용)")
-        # (중복 저장 로직 제거됨)
 
     def _process_item(self, raw_item: dict) -> List[dict]:
+        # 이 메서드는 BaseCollector의 추상 메서드로, 단일 아이템 처리를 위해 사용됩니다.
+        # fetch_region에서 직접 enqueue하므로 여기서는 사용되지 않지만, 구현해야 함.
         return [self._transform_row(raw_item, "")]
         

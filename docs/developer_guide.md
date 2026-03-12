@@ -37,17 +37,19 @@
 │   ├── timetable_collector.py
 │   └── geo_collector.py         # 지오코딩 전용 수집기
 ├── constants/                    # 상수 모듈
+│   ├── api_mappings.py          # API 응답 키 ↔ 내부 필드명 매핑 (중앙 관리)
 │   ├── codes.py                 # API 엔드포인트, 지역 코드 등
 │   ├── paths.py                 # 경로 상수 (설정 기반)
+│   ├── schema.py                # (선택) 테이블 스키마 중앙 정의
 │   └── errors.py                # API 오류 코드 중앙 관리
 ├── scripts/                      # 실행 스크립트
 │   ├── run_pipeline.py           # 병렬 실행 + 병합
 │   ├── run_collector.py          # 정기 실행 (cron용)
 │   ├── retry_worker.py           # 실패 작업 재시도
-│   ├── migrate_neis_info.py      # DB 마이그레이션 (NEIS)
-│   └── migrate_school_info.py    # DB 마이그레이션 (학교알리미)
+│   └── ...                        # 기존 마이그레이션 스크립트는 migrate.py로 통합됨
 ├── collector_cli.py              # 공통 CLI 진입점
 ├── master_collectors.py          # 메뉴 기반 마스터 제어 (--test 옵션 포함)
+├── migrate.py                    # 통합 DB 마이그레이션 스크립트 (루트)
 ├── requirements.txt              # 의존성 목록
 └── docs/                         # 문서
     └── developer_guide.md        # 이 문서
@@ -77,6 +79,7 @@ from core.network import safe_json_request, build_session
 from core.config import config
 from constants.codes import REGION_NAMES
 from constants.paths import MASTER_DIR
+from constants.api_mappings import get_api_field   # ✅ 중앙 매핑 함수 임포트
 
 API_URL = "https://api.example.com/endpoint"
 
@@ -85,6 +88,7 @@ class NewCollector(BaseCollector):
     description = "새로운 수집기 설명"
     table_name = "my_table"
     merge_script = "scripts/merge_my_dbs.py"   # 병합 스크립트 (없으면 None)
+    api_context = "my_context"                  # api_mappings.py에서 사용할 컨텍스트
 
     # 설정 파일에서 값을 가져오되, 없으면 기본값 사용
     _cfg = config.get_collector_config("new_collector")
@@ -131,15 +135,16 @@ class NewCollector(BaseCollector):
             return
 
         for row in rows:
-            school_code = row.get("SD_SCHUL_CODE")
+            school_code = get_api_field(row, "school_code", self.api_context)
             if not school_code or not should_include_school(self.shard, self.school_range, school_code):
                 continue
             self.enqueue([self._transform_row(row, region_code)])
 
     def _transform_row(self, row: dict, region_code: str) -> dict:
+        # get_api_field를 사용하여 API 키를 내부 필드명으로 변환
         return {
-            "school_code": row.get("SD_SCHUL_CODE"),
-            "some_data": row.get("SOME_FIELD"),
+            "school_code": get_api_field(row, "school_code", self.api_context),
+            "some_data": get_api_field(row, "some_data", self.api_context),
             "collected_at": now_kst().isoformat(),
         }
 
@@ -275,7 +280,7 @@ def fetch_region(self, region_code: str, year: int = None, date: str = None, **k
         return
 
     for row in rows:
-        school_code = row.get("SD_SCHUL_CODE")
+        school_code = get_api_field(row, "school_code", self.api_context)
         if not school_code or not should_include_school(self.shard, self.school_range, school_code):
             continue
         self.enqueue([self._transform_row(row, region_code)])
@@ -305,21 +310,20 @@ rows = self._fetch_paginated(
 
 ## 6. 데이터 변환 (`_transform_row`)
 
-API 응답 row를 DB 레코드 딕셔너리로 변환합니다.
+API 응답 row를 DB 레코드 딕셔너리로 변환할 때 **반드시 `get_api_field`를 사용**하여 중앙 매핑 시스템을 활용합니다.
 
 ```python
 def _transform_row(self, row: dict, region_code: str) -> dict:
     now = now_kst().isoformat()
     return {
-        "school_code": row.get("SD_SCHUL_CODE"),
-        "some_data": row.get("SOME_FIELD"),
+        "school_code": get_api_field(row, "school_code", self.api_context),
+        "some_data": get_api_field(row, "some_data", self.api_context),
         "collected_at": now,
-        # ...
+        # 필요한 모든 필드를 동일한 방식으로 추가
     }
 ```
 
-- 이 딕셔너리는 나중에 `_do_save_batch`에서 사용됩니다.
-- 필요한 경우 추가 필드를 포함할 수 있습니다.
+- `api_context`는 클래스 변수로 정의하며, `api_mappings.py`에 해당 컨텍스트가 정의되어 있어야 합니다.
 
 ---
 
@@ -431,21 +435,54 @@ def run_new_collector():
 - `constants.codes`에 정의된 API 키 상수를 사용합니다. (대부분 환경변수에서 로드)
 - 설정 파일(`config.yaml`)의 `api` 섹션에서 환경변수명을 지정할 수 있습니다.
 
-### 13.2. 에러 처리 및 재시도
+### 13.2. 중앙 API 매핑 시스템 (`constants/api_mappings.py`)
+모든 수집기는 API 응답 키를 내부 필드명으로 변환할 때 **`get_api_field` 함수**를 사용해야 합니다.  
+이를 통해 API 키 변경 시 매핑 파일만 수정하면 모든 수집기에 일괄 적용됩니다.
+
+**매핑 파일 예시:**
+```python
+# constants/api_mappings.py
+NEIS_COMMON_MAP = {
+    'SD_SCHUL_CODE': 'school_code',
+    'ATPT_OFCDC_SC_CODE': 'region_code',
+    'SCHUL_NM': 'school_name',
+}
+
+NEIS_SCHOOL_MAP = {**NEIS_COMMON_MAP, **{
+    'ENG_SCHUL_NM': 'eng_name',
+    'ORG_RDNMA': 'address',
+    # ...
+}}
+
+SCHOOL_INFO_MAP = {
+    'SCHUL_CODE': 'school_code',
+    'SCHUL_NM': 'school_name',
+    # ...
+}
+
+NEIS_FIELD_MAP_BY_CONTEXT = {
+    'common': NEIS_COMMON_MAP,
+    'school': NEIS_SCHOOL_MAP,
+    'school_info': SCHOOL_INFO_MAP,
+    # ...
+}
+```
+
+### 13.3. 에러 처리 및 재시도
 - `RetryManager`를 사용하여 실패한 작업을 기록하고 재시도할 수 있습니다.
 - `self.retry_mgr.record_failure(...)`로 실패를 기록하고, `scripts/retry_worker.py`가 처리합니다.
 
-### 13.3. 로깅
+### 13.4. 로깅
 - `self.logger`를 사용하여 로그를 남깁니다. (자동으로 파일과 콘솔에 출력)
 
-### 13.4. 메트릭 생성
+### 13.5. 메트릭 생성
 - `core.metrics` 모듈을 사용하여 수집 현황 통계를 생성할 수 있습니다. (선택 사항)
 - collector 클래스의 `metrics_config`에 설정을 정의하면 `master_collectors.py`에서 메트릭을 생성할 수 있습니다.
 
-### 13.5. Vocab 관리
+### 13.6. Vocab 관리
 - `MetaVocabManager`를 사용하여 정규화된 주소 ID 등을 생성하고 관리할 수 있습니다.
 
-### 13.6. 주소 처리 (core.address)
+### 13.7. 주소 처리 (`core.address`)
 주소 관련 기능은 `core.address` 패키지에 통합되어 있습니다.
 - `region_filter.py`: 지역 코드 파싱, 이름 변환
   - `parse_region_input("서울,경기")` → `["B10", "J10"]`
@@ -457,19 +494,19 @@ def run_new_collector():
   - `AddressFilter.hash(address)`
 - `geo.py`: VWorldGeocoder (저수준 API 호출)
 
-### 13.7. 지오코딩 분리 (geo_collector)
+### 13.8. 지오코딩 분리 (`geo_collector`)
 좌표가 필요한 수집기(예: `neis_info_collector`)는 주소 정제까지만 수행하고, 실제 지오코딩은 `geo_collector`가 담당합니다.
 - `geo_collector.batch_update_schools(limit=500)`를 주기적으로 실행하여 좌표가 없는 학교들을 업데이트합니다.
 - 실패한 지오코딩 작업은 `failures.db`에 저장되고 `retry_worker`가 재시도합니다.
 
-### 13.8. ID 생성
+### 13.9. ID 생성
 - `school_id.create_school_id()`로 교육청 코드+학교 코드 → 32비트 정수 ID 생성.
 
-### 13.9. 시간 처리
+### 13.10. 시간 처리
 - `core.kst_time.now_kst()`로 KST 현재 시간 획득.
 - `core.school_year.get_current_school_year()`로 현재 학년도 계산.
 
-### 13.10. API 오류 코드 처리 (constants/errors.py)
+### 13.11. API 오류 코드 처리 (`constants/errors.py`)
 API 호출 시 발생할 수 있는 오류 코드는 `constants/errors.py`에 중앙 관리합니다.
 ```python
 # constants/errors.py
@@ -483,34 +520,56 @@ NEIS_ERRORS = {
 
 ---
 
-## 14. DB 마이그레이션
+## 14. DB 마이그레이션 (통합 스크립트)
 
-기존 DB 스키마를 변경해야 할 경우, 마이그레이션 스크립트를 작성합니다.  
-예: `scripts/migrate_neis_info.py`
+기존에는 각 수집기별로 별도의 마이그레이션 스크립트를 작성했지만, 이제는 **루트 디렉토리의 `migrate.py` 하나로 통합**하여 관리합니다.  
+이 스크립트는 `constants.schema`(또는 `api_mappings.py`)에 정의된 테이블 스키마를 읽어 누락된 컬럼을 추가하고 인덱스를 생성합니다.
 
-- 파일명 규칙: `scripts/migrate_<collector_name>.py`
-- 실행 전에 반드시 DB가 존재하는지 확인합니다.
-- `ALTER TABLE`을 사용하여 누락된 컬럼을 안전하게 추가합니다.
+### 14.1. 스키마 정의 (선택 사항: `constants/schema.py`)
+중앙에서 테이블 스키마를 관리하려면 `constants/schema.py`를 생성합니다.
 
-**템플릿 예시:**
 ```python
-#!/usr/bin/env python3
-import sqlite3, sys, os
-from pathlib import Path
-SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPT_DIR.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-from constants.paths import SOME_DB_PATH
-
-def migrate(db_path):
-    with sqlite3.connect(db_path) as conn:
-        cur = conn.execute("PRAGMA table_info(table_name)")
-        existing = [row[1] for row in cur.fetchall()]
-        new_columns = [("new_col", "TEXT"), ...]
-        for col, typ in new_columns:
-            if col not in existing:
-                conn.execute(f"ALTER TABLE table_name ADD COLUMN {col} {typ}")
+# constants/schema.py
+SCHEMAS = {
+    "school_info": {
+        "table_name": "schools",
+        "columns": [
+            ("school_code", "TEXT", "PRIMARY KEY"),
+            ("school_name", "TEXT", "NOT NULL"),
+            ("region_code", "TEXT", "NOT NULL"),
+            # ... 모든 컬럼
+        ],
+        "indexes": [
+            ("idx_schools_region", "atpt_ofcdc_org_code"),
+        ],
+    },
+    "neis_info": {
+        "table_name": "schools",
+        "columns": [ ... ],
+        "indexes": [ ... ],
+    },
+}
 ```
+
+### 14.2. 통합 마이그레이션 스크립트 사용법
+
+```bash
+# 특정 스키마에 해당하는 모든 DB 파일 마이그레이션
+python migrate.py school_info
+
+# 특정 DB 파일만 마이그레이션
+python migrate.py neis_info --db data/master/neis_info_odd.db
+```
+
+스크립트는 `MASTER_DIR` 내에서 `{schema}*.db` 패턴의 파일을 찾아 순회하며 누락된 컬럼을 추가합니다.  
+이미 존재하는 컬럼은 건너뛰므로 안전하게 여러 번 실행할 수 있습니다.
+
+### 14.3. 새 컬럼 추가 시
+- `constants.schema`에 컬럼 정의를 추가합니다.
+- `migrate.py`를 실행하여 모든 관련 DB에 컬럼을 추가합니다.
+- 필요시 `api_mappings.py`에도 새 내부 필드명과 API 키 매핑을 추가합니다.
+
+이 방식을 통해 각 수집기별로 개별 마이그레이션 스크립트를 유지할 필요가 없어지며, 스키마 변경이 훨씬 간편해집니다.
 
 ---
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # collectors/neis_info_collector.py
-# 최종 수정: 모든 NEIS API 필드 저장, 지오코딩 분리
+# 최종 수정: 모든 NEIS API 필드 저장, 지오코딩 분리, 중앙 매핑 시스템 적용
 
 import os
 import sys
@@ -9,11 +9,9 @@ import sqlite3
 import argparse
 import threading
 from pathlib import Path
+from typing import List, Dict, Tuple, Optional
 
 sys.path.append(str(Path(__file__).parent.parent))
-
-from typing import List, Dict, Tuple, Optional
-from datetime import timedelta
 
 from core.config import config
 from core.base_collector import BaseCollector
@@ -25,6 +23,7 @@ from core.kst_time import now_kst
 from core.school_year import get_current_school_year
 from constants.codes import NEIS_ENDPOINTS, ALL_REGIONS, REGION_NAMES
 from constants.paths import NEIS_INFO_DB_PATH as MASTER_DB, MASTER_DIR, FAILURES_DB_PATH
+from constants.api_mappings import get_api_field   # ✅ 중앙 매핑 함수 임포트
 
 BASE_DIR = str(MASTER_DIR)
 GLOBAL_VOCAB_DB_PATH = MASTER_DIR.parent / "active" / "global_vocab.db"
@@ -228,10 +227,10 @@ class NeisInfoCollector(BaseCollector):
 
         row_meta = {}
         for row in new_rows:
-            sc_code = row.get("SD_SCHUL_CODE")
+            sc_code = get_api_field(row, "school_code", "school", "")
             if not sc_code or not self._include_school(sc_code):
                 continue
-            full_address = row.get("ORG_RDNMA", "")
+            full_address = get_api_field(row, "address", "school", "")
             new_hash = AddressFilter.hash(full_address) if full_address else ""
             row_meta[sc_code] = {
                 "row": row,
@@ -261,7 +260,7 @@ class NeisInfoCollector(BaseCollector):
                 skipped_count += 1
 
             row = meta["row"]
-            atpt_code = row.get("ATPT_OFCDC_SC_CODE") or ""
+            atpt_code = get_api_field(row, "region_code", "school", "")
             old = meta["old"]
 
             lat = old.get("lat")
@@ -280,18 +279,19 @@ class NeisInfoCollector(BaseCollector):
                 self.logger.error(f"school_id 생성 실패 {sc_code}: {e}")
                 continue
 
+            # 내부 필드명과 매핑된 값 조회 (모든 필드에 get_api_field 적용)
             self.enqueue([{
                 "sc_code": sc_code,
                 "school_id": school_id,
-                "sc_name": row.get("SCHUL_NM", ""),
-                "eng_name": row.get("ENG_SCHUL_NM", ""),
-                "sc_kind": row.get("SCHUL_KND_SC_NM", ""),
+                "sc_name": get_api_field(row, "school_name", "school", ""),
+                "eng_name": get_api_field(row, "eng_name", "school", ""),
+                "sc_kind": get_api_field(row, "school_kind", "school", ""),
                 "atpt_code": atpt_code,
                 "address": meta["full_address"],
                 "cleaned_address": meta.get("cleaned_address", ""),
                 "address_hash": meta["new_hash"],
-                "tel": row.get("ORG_TELNO", ""),
-                "homepage": row.get("HMPG_ADRES", ""),
+                "tel": get_api_field(row, "phone", "school", ""),
+                "homepage": get_api_field(row, "homepage", "school", ""),
                 "status": "운영",
                 "last_seen": int(self.run_date),
                 "load_dt": now_kst().isoformat(),
@@ -309,7 +309,8 @@ class NeisInfoCollector(BaseCollector):
                 "number_bit": addr_ids.get("number_bit", 0),
                 "jibun_address": meta.get("jibun_address"),
                 "kakao_address": None,
-                "atpt_ofcdc_sc_nm": row.get("ATPT_OFCDC_SC_NM", ""),
+                # NEIS 전체 필드 (매핑에 추가 필요시)
+                "atpt_ofcdc_sc_nm": row.get("ATPT_OFCDC_SC_NM", ""),   # TODO: 매핑에 추가
                 "lctn_sc_nm": row.get("LCTN_SC_NM", ""),
                 "ju_org_nm": row.get("JU_ORG_NM", ""),
                 "fond_sc_nm": row.get("FOND_SC_NM", ""),
