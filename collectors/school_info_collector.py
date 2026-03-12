@@ -270,6 +270,25 @@ class SchoolInfoCollector(BaseCollector):
                 r["collected_at"], r["updated_at"], r["is_active"], r["in_neis"]
             ))
 
+        print(f"\n🔥 [SAVE] 배치 크기: {len(batch)}")
+        if rows:
+            print(f"🔥 첫 행 샘플: {rows[0][:5]}...")  # 첫 5개 값만
+
+        try:
+            cursor = conn.cursor()
+            cursor.executemany(sql, rows)
+            affected = cursor.rowcount
+            print(f"🔥 executemany 후 rowcount: {affected}")
+            conn.commit()
+            # 저장 후 총 행 수 확인
+            count = conn.execute("SELECT COUNT(*) FROM schools").fetchone()[0]
+            print(f"🔥 저장 후 총 레코드 수: {count}")
+        except Exception as e:
+            print(f"🔥 저장 실패: {e}")
+            raise
+
+        print("✅ [_save_batch] 저장 완료 (디버그용)")
+
         # 디버깅: 첫 번째 행의 값을 출력
         if rows:
             self.logger.debug(f"첫 번째 행: {rows[0]}")
