@@ -52,6 +52,15 @@ class SchoolInfoCollector(BaseCollector):
 
     def fetch_region(self, region_code: str, year: Optional[int] = None,
                      date: Optional[str] = None, limit: Optional[int] = None, **kwargs) -> int:
+        # --- 여기부터 임시 디버깅 코드 ---
+        import requests
+        api_key = config.get_api_key('school_info')
+        url = f"{API_URL}?KEY={api_key}"
+        print(f"📡 API URL: {url}")
+        resp = requests.get(url)
+        print(f"상태 코드: {resp.status_code}")
+        print(f"응답 내용 (처음 500자):\n{resp.text[:500]}")
+        # --- 여기까지 임시 디버깅 코드 ---
         if year is None:
             year = get_current_school_year(now_kst())
 
