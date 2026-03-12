@@ -66,7 +66,7 @@ def collect_school_geo_stats(school_db_path: str) -> Dict[str, Any]:
     try:
         with sqlite3.connect(school_db_path) as conn:
             total    = conn.execute(
-                "SELECT COUNT(*) FROM schools_neis"          # ✅ schools → schools_neis
+                "SELECT COUNT(*) FROM schools_neis"
             ).fetchone()[0]
             with_geo = conn.execute(
                 "SELECT COUNT(*) FROM schools_neis "

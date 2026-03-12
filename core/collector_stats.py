@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # core/collector_stats.py
-# 배치 처리 메트릭스 수집 및 요약
+# 배치 처리 메트릭스 수집 및 요약 (min 값 안전 처리)
 
 import time
 import threading
@@ -49,8 +49,10 @@ class CollectorStats:
         """현재까지 누적된 통계 반환"""
         with self.lock:
             elapsed_total = time.time() - self.start_time
-            avg_batch_size = self.total_rows / self.total_batches if self.total_batches > 0 else 0
-            avg_time_per_batch = self.total_time / self.total_batches if self.total_batches > 0 else 0
+            has_batches = self.total_batches > 0
+
+            avg_batch_size = self.total_rows / self.total_batches if has_batches else 0
+            avg_time_per_batch = self.total_time / self.total_batches if has_batches else 0
             rows_per_second = self.total_rows / elapsed_total if elapsed_total > 0 else 0
 
             return {
@@ -59,12 +61,12 @@ class CollectorStats:
                 "total_batches": self.total_batches,
                 "total_rows": self.total_rows,
                 "failed_batches": self.failed_batches,
-                "success_rate": round((self.total_batches - self.failed_batches) / self.total_batches * 100, 2) if self.total_batches > 0 else 0,
+                "success_rate": round((self.total_batches - self.failed_batches) / self.total_batches * 100, 2) if has_batches else 0,
                 "avg_batch_size": round(avg_batch_size, 2),
-                "min_batch_size": self.min_batch_size if self.min_batch_size != float('inf') else 0,
+                "min_batch_size": self.min_batch_size if has_batches and self.min_batch_size != float('inf') else 0,
                 "max_batch_size": self.max_batch_size,
                 "avg_time_per_batch": round(avg_time_per_batch, 3),
-                "min_batch_time": round(self.min_batch_time, 3) if self.min_batch_time != float('inf') else 0,
+                "min_batch_time": round(self.min_batch_time, 3) if has_batches and self.min_batch_time != float('inf') else 0,
                 "max_batch_time": round(self.max_batch_time, 3),
                 "rows_per_second": round(rows_per_second, 2),
             }

@@ -1,14 +1,12 @@
 # constants/schema.py
-
 from typing import Dict, List, Tuple
 
-# 각 테이블의 스키마: (컬럼명, 데이터 타입, 제약 조건)
-# 제약 조건은 빈 문자열이면 없음, "NOT NULL", "DEFAULT 1" 등
 SCHEMAS = {
     "school_info": {
-        "table_name": "schools",  # 실제 테이블명
+        "table_name": "schools_info",
+        "primary_key": ["school_code"],                     # ✅ 명시적 PK
         "columns": [
-            ("school_code", "TEXT", "PRIMARY KEY"),
+            ("school_code", "TEXT", ""),                    # PRIMARY KEY 제거
             ("school_name", "TEXT", "NOT NULL"),
             ("region_code", "TEXT", "NOT NULL"),
             ("atpt_ofcdc_org_nm", "TEXT", ""),
@@ -52,15 +50,16 @@ SCHEMAS = {
             ("in_neis", "INTEGER", "DEFAULT 0"),
         ],
         "indexes": [
-            ("idx_schools_region", "atpt_ofcdc_org_code"),
-            ("idx_schools_type", "schul_knd_sc_code"),
-            ("idx_schools_in_neis", "in_neis"),
+            ("idx_schools_info_region", "atpt_ofcdc_org_code"),
+            ("idx_schools_info_type", "schul_knd_sc_code"),
+            ("idx_schools_info_in_neis", "in_neis"),
         ],
     },
     "neis_info": {
-        "table_name": "schools",
+        "table_name": "schools_neis",
+        "primary_key": ["sc_code"],                         # ✅ 명시적 PK
         "columns": [
-            ("sc_code", "TEXT", "PRIMARY KEY"),
+            ("sc_code", "TEXT", ""),                        # PRIMARY KEY 제거
             ("school_id", "INTEGER", ""),
             ("sc_name", "TEXT", ""),
             ("eng_name", "TEXT", ""),
@@ -107,13 +106,13 @@ SCHEMAS = {
             ("load_dtm", "TEXT", ""),
         ],
         "indexes": [
-            ("idx_address_hash", "address_hash"),
-            ("idx_city", "city_id"),
-            ("idx_district", "district_id"),
-            ("idx_street", "street_id"),
-            ("idx_schools_missing", "latitude", "WHERE latitude IS NULL"),
-            ("idx_schools_region", "atpt_code"),
+            ("idx_neis_address_hash", "address_hash"),
+            ("idx_neis_city", "city_id"),
+            ("idx_neis_district", "district_id"),
+            ("idx_neis_street", "street_id"),
+            ("idx_neis_missing", "latitude", "WHERE latitude IS NULL"),
+            ("idx_neis_region", "atpt_code"),
         ],
     },
-    # 필요에 따라 meal, timetable 등 추가
+    # 다른 스키마도 동일한 패턴으로 추가 (예: meal, timetable 등)
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # collectors/neis_info_collector.py
-# 최종 수정: _init_db 제거, _process_item 제거, _load_school_cache 수정 반영
+# 최종 수정: _init_db 제거, _process_item 제거, REGION_NAMES 직접 import
 
 import os
 import sys
@@ -211,7 +211,7 @@ class NeisInfoCollector(BaseCollector):
                 self.logger.error(f"school_id 생성 실패 {sc_code}: {e}")
                 continue
 
-            # ✅ 변환된 dict enqueue
+            # 변환된 dict enqueue
             self.enqueue([{
                 "sc_code": sc_code,
                 "school_id": school_id,

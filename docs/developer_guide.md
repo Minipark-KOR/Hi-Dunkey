@@ -1,4 +1,3 @@
-```markdown
 ## 📘 Hi-Dunkey Collector 개발 가이드 (최종 업데이트)
 
 이 문서는 Hi-Dunkey 프로젝트에서 새로운 수집기(Collector)를 개발할 때 반드시 따라야 할 표준 패턴과 규칙을 설명합니다.  
@@ -14,10 +13,12 @@
 ├── config/                      # 설정 파일 디렉토리
 │   └── config.yaml              # 환경별 설정 (경로, 타임아웃, 병렬 설정 등)
 ├── core/                        # 핵심 공통 모듈
-│   ├── base_collector.py        # 모든 수집기의 베이스 클래스
+│   ├── base_collector.py        # 모든 수집기의 베이스 클래스 (v2: 자동 테이블 생성, 통계, 검증)
 │   ├── config.py                # 설정 파일 로더
 │   ├── database.py              # DB 연결 공통 (연결, PRAGMA, 체크포인트)
 │   ├── schema_manager.py        # 스키마 기반 테이블 생성 및 저장 유틸리티
+│   ├── collector_stats.py       # 배치 처리 통계 (실시간 메트릭)
+│   ├── data_validator.py        # 데이터 유효성 검증
 │   ├── kst_time.py              # 시간 처리
 │   ├── logger.py                # 로깅
 │   ├── network.py               # 네트워크 요청 (safe_json_request 등)
@@ -31,17 +32,17 @@
 │   │   └── sgg_code_map.py      # 시군구 코드 매핑 (선택)
 │   └── ...                       # 기타 유틸리티
 ├── collectors/                   # 개별 수집기 구현
-│   ├── neis_info_collector.py
-│   ├── school_info_collector.py
-│   ├── meal_collector.py
-│   ├── schedule_collector.py
-│   ├── timetable_collector.py
+│   ├── neis_info_collector.py    # NEIS 학교정보 (최신 구조 반영)
+│   ├── school_info_collector.py  # 학교알리미 (최신 구조 반영)
+│   ├── meal_collector.py         # 급식 (구조 업데이트 예정)
+│   ├── schedule_collector.py     # 학사일정 (구조 업데이트 예정)
+│   ├── timetable_collector.py    # 시간표 (구조 업데이트 예정)
 │   └── geo_collector.py         # 지오코딩 전용 수집기
 ├── constants/                    # 상수 모듈
 │   ├── api_mappings.py          # API 응답 키 ↔ 내부 필드명 매핑 (중앙 관리)
 │   ├── codes.py                 # API 엔드포인트, 지역 코드 등
 │   ├── paths.py                 # 경로 상수 (설정 기반)
-│   ├── schema.py                # 테이블 스키마 중앙 정의
+│   ├── schema.py                # 테이블 스키마 중앙 정의 (primary_key 명시)
 │   └── errors.py                # API 오류 코드 중앙 관리
 ├── scripts/                      # 실행 스크립트
 │   ├── run_pipeline.py           # 병렬 실행 + 병합
@@ -58,7 +59,7 @@
 
 ---
 
-## 2. Collector 기본 구조
+## 2. Collector 기본 구조 (BaseCollector v2)
 
 ```python
 #!/usr/bin/env python3
@@ -73,7 +74,6 @@ from typing import List, Dict, Optional
 
 from core.base_collector import BaseCollector
 from core.database import get_db_connection
-from core.schema_manager import create_table_from_schema   # ✅ 스키마 기반 테이블 생성
 from core.shard import should_include_school
 from core.kst_time import now_kst
 from core.school_year import get_current_school_year
@@ -88,7 +88,7 @@ class NewCollector(BaseCollector):
     # ----- 메타데이터 (클래스 변수) -----
     description = "새로운 수집기 설명"
     table_name = "my_table"                 # 실제 테이블명 (schema.py의 table_name과 일치)
-    schema_name = "new_collector"            # schema.py의 키 (create_table_from_schema에 전달)
+    schema_name = "new_collector"            # schema.py의 키 (필수!)
     api_context = "my_context"               # api_mappings.py에서 사용할 컨텍스트
     merge_script = "scripts/merge_my_dbs.py" # 병합 스크립트 (없으면 None)
 
@@ -107,13 +107,7 @@ class NewCollector(BaseCollector):
     def __init__(self, shard="none", school_range=None, debug_mode=False, quiet_mode=False, **kwargs):
         super().__init__("new_collector", str(MASTER_DIR), shard, school_range, quiet_mode=quiet_mode)
         self.debug_mode = debug_mode
-        self._init_db()
-
-    def _init_db(self):
-        with get_db_connection(self.db_path) as conn:
-            # constants/schema.py에 정의된 스키마를 사용하여 테이블 생성
-            create_table_from_schema(conn, self.schema_name)   # 스키마 이름 전달
-            self._init_db_common(conn)
+        # _init_db()는 BaseCollector.__init__에서 자동 호출되므로 직접 호출하지 않음
 
     def fetch_region(self, region_code: str, year: int = None, date: str = None, **kwargs):
         if year is None:
@@ -133,6 +127,7 @@ class NewCollector(BaseCollector):
             school_code = get_api_field(row, "school_code", self.api_context)
             if not school_code or not should_include_school(self.shard, self.school_range, school_code):
                 continue
+            # ✅ fetch_region에서 직접 변환 후 enqueue
             self.enqueue([self._transform_row(row, region_code)])
 
     def _transform_row(self, row: dict, region_code: str) -> dict:
@@ -142,13 +137,9 @@ class NewCollector(BaseCollector):
             "collected_at": now_kst().isoformat(),
         }
 
-    # _do_save_batch는 schema_manager.save_batch를 사용할 경우 오버라이드하지 않아도 됨.
-    # 기본 저장 로직은 BaseCollector에서 schema_name을 이용해 처리할 수 있습니다.
-    # 만약 커스텀 저장이 필요하면 아래와 같이 오버라이드합니다.
-    # def _do_save_batch(self, conn, batch):
-    #     sql = "INSERT OR REPLACE INTO my_table (school_code, some_data, collected_at) VALUES (?, ?, ?)"
-    #     rows = [(r["school_code"], r["some_data"], r["collected_at"]) for r in batch]
-    #     conn.executemany(sql, rows)
+    # _do_save_batch는 BaseCollector의 기본 구현(schema_manager.save_batch)을 사용하므로
+    # 특별한 이유가 없으면 오버라이드하지 않음.
+    # 만약 커스텀 저장이 필요하면 오버라이드.
 
 if __name__ == "__main__":
     from core.collector_cli import run_collector
@@ -157,14 +148,21 @@ if __name__ == "__main__":
     run_collector(NewCollector, _fetch, "새로운 수집기")
 ```
 
-### 2.1. `__init__` 주요 인자
+### 2.1. BaseCollector v2 주요 변경 사항
+- **`schema_name` 필수**: 각 수집기는 자신의 스키마 이름을 클래스 변수로 반드시 정의해야 합니다.
+- **`_init_db` 자동화**: `BaseCollector.__init__`에서 `schema_name`을 기반으로 테이블을 자동 생성하므로, 하위 클래스에서 `_init_db`를 구현할 필요가 없습니다.
+- **`_process_item` 제거**: 더 이상 사용하지 않습니다. 모든 데이터 변환은 `fetch_region`에서 완료한 후 `enqueue`해야 합니다.
+- **통계 자동 수집**: `BaseCollector`에 내장된 `CollectorStats`가 배치 저장 시마다 처리 시간, 배치 크기 등을 자동 기록하며, 종료 시 요약 로그를 출력합니다.
+- **데이터 유효성 검증**: 설정에서 `validate_data: true`로 지정하면, 저장 전에 `DataValidator`를 통해 기본 검증(PK null, 컬럼 누락 등)을 수행합니다.
+
+### 2.2. `__init__` 주요 인자
 - `shard`: `"none"`, `"odd"`, `"even"` 중 하나 (기본값 `"none"`)
 - `school_range`: `"A"`, `"B"`, `"none"` 또는 `None` (범위 필터)
 - `debug_mode`: 디버그 출력 여부
 - `quiet_mode`: 출력 최소화 여부 (GitHub Actions 등에서 사용)
 - `**kwargs`: 추가 옵션 (예: `incremental`, `full`, `compare`)
 
-### 2.2. DB 경로 자동 결정
+### 2.3. DB 경로 자동 결정
 `BaseCollector`가 `self.db_path`를 다음과 같이 생성합니다.
 - `shard="none"` → `{base_dir}/{name}.db`
 - `shard="odd"` → `{base_dir}/{name}_odd.db`
@@ -194,12 +192,9 @@ collectors:
     parallel_timeout_seconds: 7200
     merge_timeout_seconds: 1800
     max_workers: 4
-    cpu_factor: 1.0
-    max_by_api: 10
-    absolute_max: 16
+    validate_data: true          # ✅ 데이터 유효성 검증 활성화
     metrics_config:
       enabled: true
-      collect_geo: false
   geo:
     daily_api_limit: 50000
     vworld_api_key_env: "VWORLD_API_KEY"
@@ -229,23 +224,23 @@ master_dir = config.get('paths', 'master_dir', default='data/master')
 
 ---
 
-## 4. DB 초기화 (`_init_db`) – 중앙 스키마 활용
+## 4. DB 초기화 – 중앙 스키마 활용 (자동화)
 
-각 수집기는 더 이상 하드코딩된 `CREATE TABLE` 문을 사용하지 않고, **`core.schema_manager.create_table_from_schema`** 함수를 호출하여 테이블을 생성합니다.  
-이 함수는 `constants/schema.py`에 정의된 스키마를 읽어 테이블과 인덱스를 생성합니다.
+각 수집기는 더 이상 `_init_db` 메서드를 구현하지 않습니다.  
+`BaseCollector`가 `__init__`에서 자동으로 다음을 수행합니다.
 
 ```python
-from core.database import get_db_connection
-from core.schema_manager import create_table_from_schema
-
 def _init_db(self):
-    with get_db_connection(self.db_path) as conn:
-        create_table_from_schema(conn, self.schema_name)   # 스키마 이름 (constants/schema.py의 키)
-        self._init_db_common(conn)
+    if self.schema_name:
+        with get_db_connection(self.db_path) as conn:
+            create_table_from_schema(conn, self.schema_name)
+            self._init_db_common(conn)
 ```
 
-- `get_db_connection`은 WAL 모드, 적절한 PRAGMA 설정을 자동으로 적용합니다.
-- `_init_db_common(conn)`을 호출하면 `collection_checkpoint` 테이블이 생성됩니다 (선택 사항).
+- `create_table_from_schema`는 `constants/schema.py`에 정의된 스키마를 읽어 테이블과 인덱스를 생성합니다.
+- `_init_db_common`은 체크포인트 테이블을 생성합니다.
+
+따라서 새 수집기는 `schema_name`만 올바르게 설정하면 됩니다.
 
 ---
 
@@ -319,31 +314,33 @@ def _transform_row(self, row: dict, region_code: str) -> dict:
 
 ## 7. 배치 저장 (`_do_save_batch`)
 
-`BaseCollector`는 내부 writer 스레드가 일정 크기마다 `_do_save_batch`를 호출합니다.  
-**기본 저장 로직**을 사용하려면 `_do_save_batch`를 오버라이드하지 않아도 됩니다.  
-`BaseCollector`는 `schema_name`을 통해 `core.schema_manager.save_batch` 함수를 호출하여 자동으로 저장합니다.  
-만약 커스텀 저장 로직이 필요하다면 아래와 같이 오버라이드합니다.
+`BaseCollector`의 기본 `_do_save_batch`는 `schema_manager.save_batch`를 호출하여 자동 저장합니다.  
+또한 설정에 따라 데이터 유효성 검증을 수행하고, 통계를 수집합니다.
 
 ```python
-def _do_save_batch(self, conn, batch):
-    sql = """
-        INSERT OR REPLACE INTO my_table (school_code, some_data, collected_at)
-        VALUES (?, ?, ?)
-    """
-    rows = [(r["school_code"], r["some_data"], r["collected_at"]) for r in batch]
-    conn.executemany(sql, rows)
+def _do_save_batch(self, conn: sqlite3.Connection, batch: List[dict]) -> None:
+    schema = SCHEMAS[self.schema_name]
+    columns = [col[0].strip() for col in schema["columns"]]
+    pk_columns = schema.get("primary_key", [])
+
+    if self.validate_data:
+        valid, errors, warnings = DataValidator.validate_batch(batch, columns, pk_columns)
+        if not valid:
+            self.logger.error(f"데이터 검증 실패: {errors}")
+            return
+
+    save_batch(conn, self.table_name, columns, batch)
 ```
 
-- `conn`은 `get_db_connection`으로 얻은 SQLite 연결 객체입니다.
-- `batch`는 `_transform_row`에서 반환된 딕셔너리들의 리스트입니다.
+- `validate_data`는 `config.yaml`에서 설정합니다.
+- `DataValidator`는 PRIMARY KEY null, 컬럼 누락 등을 검사합니다.
 
 ---
 
 ## 8. 추가 메서드 구현 (필요시)
 
-- `_process_item(self, raw_item)`: 단일 API row를 처리하여 enqueue할 아이템 리스트 반환.  
-  기본적으로 `_transform_row`를 호출하는 간단한 구현이면 충분하지만, 복잡한 파싱이 필요하면 이 메서드를 오버라이드할 수 있습니다.
 - `iterate_schools`, `iterate_schools_by_month` 등이 필요한 경우 직접 구현합니다. (예: 급식, 학사일정 등)
+- **주의**: `_process_item`은 더 이상 사용되지 않으므로 구현하지 마세요.
 
 ---
 
@@ -468,14 +465,33 @@ NEIS_FIELD_MAP_BY_CONTEXT = {
 ### 13.4. 로깅
 - `self.logger`를 사용하여 로그를 남깁니다. (자동으로 파일과 콘솔에 출력)
 
-### 13.5. 메트릭 생성
-- `core.metrics` 모듈을 사용하여 수집 현황 통계를 생성할 수 있습니다. (선택 사항)
-- collector 클래스의 `metrics_config`에 설정을 정의하면 `master_collectors.py`에서 메트릭을 생성할 수 있습니다.
+### 13.5. 메트릭 생성 (`core/metrics.py`)
+- `metrics.py`는 수집 완료 후 전체 DB 현황(레코드 수, 파일 크기, 좌표 확보율 등)을 요약하는 메트릭을 생성합니다.
+- `master_collectors.py`에서 `--metrics` 옵션으로 실행할 수 있습니다.
 
-### 13.6. Vocab 관리
+### 13.6. 배치 처리 통계 (`core/collector_stats.py`)
+`BaseCollector`는 내부적으로 `CollectorStats` 인스턴스(`self.stats`)를 가지고 있으며, 각 배치 저장 시 처리 시간, 배치 크기, 성공 여부를 기록합니다. 수집 종료 시 자동으로 요약 로그가 출력됩니다.
+
+```python
+# 로그 예시
+📊 [neis_info] 배치 처리 통계
+   ⏱️  경과 시간: 125.3초
+   📦 배치 수: 47 (실패: 0, 성공률: 100.0%)
+   📋 처리 행: 9,421행
+   📏 평균 배치 크기: 200.45 (최소 150, 최대 487)
+   ⏱️  평균 배치 시간: 0.123초 (최소 0.045초, 최대 0.345초)
+   🚀 처리 속도: 75.2행/초
+```
+
+### 13.7. 데이터 유효성 검증 (`core/data_validator.py`)
+설정에서 `validate_data: true`로 활성화하면 저장 전에 다음을 검증합니다.
+- PRIMARY KEY 컬럼이 NULL인 경우 → 오류로 처리하고 해당 배치 저장 중단
+- 스키마에 정의된 컬럼이 데이터에 없는 경우 → 경고 로그 출력 (NULL 저장됨)
+
+### 13.8. Vocab 관리
 - `MetaVocabManager`를 사용하여 정규화된 주소 ID 등을 생성하고 관리할 수 있습니다.
 
-### 13.7. 주소 처리 (`core.address`)
+### 13.9. 주소 처리 (`core.address`)
 주소 관련 기능은 `core.address` 패키지에 통합되어 있습니다.
 - `region_filter.py`: 지역 코드 파싱, 이름 변환
   - `parse_region_input("서울,경기")` → `["B10", "J10"]`
@@ -487,19 +503,19 @@ NEIS_FIELD_MAP_BY_CONTEXT = {
   - `AddressFilter.hash(address)`
 - `geo.py`: VWorldGeocoder (저수준 API 호출)
 
-### 13.8. 지오코딩 분리 (`geo_collector`)
+### 13.10. 지오코딩 분리 (`geo_collector`)
 좌표가 필요한 수집기(예: `neis_info_collector`)는 주소 정제까지만 수행하고, 실제 지오코딩은 `geo_collector`가 담당합니다.
 - `geo_collector.batch_update_schools(limit=500)`를 주기적으로 실행하여 좌표가 없는 학교들을 업데이트합니다.
 - 실패한 지오코딩 작업은 `failures.db`에 저장되고 `retry_worker`가 재시도합니다.
 
-### 13.9. ID 생성
+### 13.11. ID 생성
 - `school_id.create_school_id()`로 교육청 코드+학교 코드 → 32비트 정수 ID 생성.
 
-### 13.10. 시간 처리
+### 13.12. 시간 처리
 - `core.kst_time.now_kst()`로 KST 현재 시간 획득.
 - `core.school_year.get_current_school_year()`로 현재 학년도 계산.
 
-### 13.11. API 오류 코드 처리 (`constants/errors.py`)
+### 13.13. API 오류 코드 처리 (`constants/errors.py`)
 API 호출 시 발생할 수 있는 오류 코드는 `constants/errors.py`에 중앙 관리합니다.
 ```python
 # constants/errors.py
@@ -515,33 +531,38 @@ NEIS_ERRORS = {
 
 ## 14. 중앙 스키마 관리 (`constants/schema.py`)와 통합 마이그레이션
 
-### 14.1. 스키마 정의
-모든 테이블의 스키마는 `constants/schema.py`에 중앙 정의됩니다.
+### 14.1. 스키마 정의 (최신 형식)
+PRIMARY KEY 정보는 더 이상 컬럼 제약조건에 포함하지 않고, 별도의 `primary_key` 리스트로 명시합니다.
 
 ```python
 # constants/schema.py
 SCHEMAS = {
     "school_info": {
-        "table_name": "schools",
+        "table_name": "schools_info",
+        "primary_key": ["school_code"],                     # ✅ 명시적 PK
         "columns": [
-            ("school_code", "TEXT", "PRIMARY KEY"),
+            ("school_code", "TEXT", ""),                    # PRIMARY KEY 제거
             ("school_name", "TEXT", "NOT NULL"),
             ("region_code", "TEXT", "NOT NULL"),
             # ... 모든 컬럼
         ],
         "indexes": [
-            ("idx_schools_region", "atpt_ofcdc_org_code"),
-            ("idx_schools_type", "schul_knd_sc_code"),
+            ("idx_schools_info_region", "atpt_ofcdc_org_code"),
+            ("idx_schools_info_type", "schul_knd_sc_code"),
         ],
     },
     "neis_info": {
-        "table_name": "schools",
+        "table_name": "schools_neis",
+        "primary_key": ["sc_code"],
         "columns": [ ... ],
         "indexes": [ ... ],
     },
     # 다른 수집기도 동일한 방식으로 추가
 }
 ```
+
+- **장점**: PRIMARY KEY 정보가 명확해지고, 문자열 파싱 의존성이 사라집니다.
+- **향후 확장**: UNIQUE, FOREIGN KEY 등 다른 메타정보도 동일한 방식으로 추가 가능합니다.
 
 ### 14.2. 통합 마이그레이션 스크립트 (`migrate.py`)
 루트 디렉토리의 `migrate.py`는 `schema.py`를 읽어 누락된 컬럼을 추가하고 인덱스를 생성합니다.
@@ -571,12 +592,14 @@ python migrate.py
 
 ## 15. 참고할 기존 Collector
 
-- **NEIS 학교정보** (`collectors/neis_info_collector.py`): 지오코딩 분리, 모든 API 필드 저장, `MetaVocabManager` 사용 예, 중앙 스키마 적용
-- **학교알리미** (`collectors/school_info_collector.py`): 기본 구조, 학년도 필터링, 좌표 포함 API, 중앙 스키마 적용
-- **급식** (`collectors/meal_collector.py`): 일별 수집, `fetch_daily`, `BaseMealCollector` 상속
-- **학사일정** (`collectors/schedule_collector.py`): 연간 수집, `fetch_year`
-- **시간표** (`collectors/timetable_collector.py`): 추가 옵션(`--semester`), `fetch_year`
+- **NEIS 학교정보** (`collectors/neis_info_collector.py`): 최신 구조 반영, `schema_name="neis_info"`, `_init_db` 없음, `_process_item` 없음, 지오코딩 분리, `MetaVocabManager` 사용 예.
+- **학교알리미** (`collectors/school_info_collector.py`): 최신 구조 반영, `schema_name="school_info"`, `_init_db` 없음, `_process_item` 없음.
+- **급식** (`collectors/meal_collector.py`): 일별 수집, `fetch_daily`, `BaseMealCollector` 상속 (향후 구조 업데이트 필요)
+- **학사일정** (`collectors/schedule_collector.py`): 연간 수집, `fetch_year` (향후 구조 업데이트 필요)
+- **시간표** (`collectors/timetable_collector.py`): 추가 옵션(`--semester`), `fetch_year` (향후 구조 업데이트 필요)
 - **지오코딩** (`collectors/geo_collector.py`): 배치 지오코딩, API 사용량 관리, 캐싱
+
+새로 개발하는 수집기는 반드시 최신 구조(`schema_name`, 자동 `_init_db`, 통계, 검증)를 따라야 합니다.
 
 ---
 
@@ -592,6 +615,7 @@ collectors:
     parallel_timeout_seconds: 7200
     merge_timeout_seconds: 1800
     max_workers: 4
+    validate_data: true   # 데이터 검증 활성화
     metrics_config:
       enabled: true
 ```
@@ -615,6 +639,5 @@ collectors:
 
 ---
 
-이 가이드를 따라 새로운 수집기를 만들면 `collector_cli.py`, `master_collectors.py`, `run_pipeline.py` 등에 자연스럽게 통합되며, 프로젝트의 일관성을 유지할 수 있습니다.  
+이 가이드를 따라 새로운 수집기를 만들면 `BaseCollector`의 최신 기능(자동 테이블 생성, 통계 수집, 데이터 검증)을 모두 활용할 수 있으며, 프로젝트 전체의 일관성을 유지할 수 있습니다.  
 궁금한 점이 있으면 기존 collector의 코드를 참조하거나 팀 리더에게 문의하세요.
-```

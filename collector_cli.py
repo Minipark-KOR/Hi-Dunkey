@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# collector_cli.py
 """
 Collector 공통 CLI 진입점
 """

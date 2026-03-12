@@ -1,227 +1,199 @@
 #!/usr/bin/env python3
-# collectors/schedule_collector.py
-# 개발 가이드: docs/developer_guide.md 참조
+# collectors/school_info_collector.py
+# 최종 수정: _init_db 제거, _process_item 제거, fetch_region에서 변환 후 enqueue
 
 import os
 import sys
+import time
+import sqlite3
+import argparse
 from pathlib import Path
+from typing import List, Dict, Optional, Any
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from datetime import date, timedelta
-from typing import List
-
 from core.base_collector import BaseCollector
 from core.database import get_db_connection
-from core.meta_vocab import MetaVocabManager
-from core.config import config
-from parsers.schedule_parser import parse_schedule_row
-from constants.codes import NEIS_ENDPOINTS
+from core.shard import should_include_school
 from core.kst_time import now_kst
 from core.school_year import get_current_school_year
-from constants.paths import ACTIVE_DIR, GLOBAL_VOCAB_DB_PATH
+from core.config import config
+from constants.codes import REGION_NAMES, ALL_REGIONS
+from constants.paths import MASTER_DIR
+from constants.api_mappings import get_api_field
 
-NEIS_URL = NEIS_ENDPOINTS['schedule']
+API_URL = "https://open.neis.go.kr/hub/schoolInfo"
 
 
-class AnnualFullScheduleCollector(BaseCollector):
-    # ----- 메타데이터 (클래스 변수) -----
-    description = "학사일정"
-    table_name = "schedule"
-    merge_script = "scripts/merge_schedule_dbs.py"
+class SchoolInfoCollector(BaseCollector):
+    description = "학교 기본정보 (학교알리미)"
+    table_name = "schools_info"
+    merge_script = "scripts/merge_school_info_dbs.py"
+    _cfg = config.get_collector_config("school_info")
 
-    _cfg = config.get_collector_config("schedule")
     timeout_seconds = _cfg.get("timeout_seconds", 3600)
     parallel_timeout_seconds = _cfg.get("parallel_timeout_seconds", 7200)
     merge_timeout_seconds = _cfg.get("merge_timeout_seconds", 3600)
-    parallel_script = _cfg.get("parallel_script", "scripts/run_pipeline.py")
-    modes = _cfg.get("modes", ["통합", "odd 샤드", "even 샤드", "병렬 실행"])
+
     metrics_config = _cfg.get("metrics_config", {"enabled": True})
-    parallel_config = _cfg.get("parallel_config", {
-        "max_workers": 4,
-        "cpu_factor": 1.0,
-        "max_by_api": 10,
-        "absolute_max": 16,
-    })
-    # ------------------------------------
+    parallel_config = _cfg.get("parallel_config", {"max_workers": 4})
 
-    def __init__(self, shard="none", school_range=None, debug_mode=False, **kwargs):
-        super().__init__("schedule", str(ACTIVE_DIR), shard, school_range, **kwargs)
-        self.api_context = 'schedule'
+    schema_name = "school_info"
+
+    def __init__(self, shard="none", school_range=None, debug_mode=False,
+                 quiet_mode=False, **kwargs):
+        super().__init__("school_info", str(MASTER_DIR), shard, school_range,
+                         quiet_mode=quiet_mode)
         self.debug_mode = debug_mode
-        self.run_ay = get_current_school_year(now_kst())
-        self.meta_vocab = self.register_resource(
-            MetaVocabManager(GLOBAL_VOCAB_DB_PATH, debug_mode)
-        )
-        self.event_cache = {}
-        self._load_event_cache()
-
-    def _load_event_cache(self):
-        try:
-            with get_db_connection(self.db_path) as conn:
-                cur = conn.execute("SELECT ev_id, ev_nm, ev_date FROM vocab_event")
-                for ev_id, ev_nm, ev_date in cur:
-                    cache_key = f"{ev_nm}|{ev_date}"
-                    self.event_cache[cache_key] = ev_id
-        except Exception:
-            pass
-
-    def _init_db(self):
-        with get_db_connection(self.db_path) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS vocab_event (
-                    ev_id   INTEGER PRIMARY KEY,
-                    ev_nm   TEXT NOT NULL,
-                    ev_date INTEGER,
-                    UNIQUE (ev_nm, ev_date)
-                )
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS schedule (
-                    school_id  INTEGER NOT NULL,
-                    ev_date    INTEGER NOT NULL,
-                    ev_id      INTEGER NOT NULL,
-                    ay         INTEGER NOT NULL,
-                    is_special INTEGER NOT NULL,
-                    grade_disp TEXT NOT NULL,
-                    grade_raw  TEXT NOT NULL,
-                    grade_code INTEGER NOT NULL,
-                    sub_yn     INTEGER NOT NULL,
-                    sub_code   TEXT,
-                    dn_yn      INTEGER NOT NULL,
-                    ev_content TEXT,
-                    load_dt    TEXT,
-                    PRIMARY KEY (school_id, ev_date, ev_id, grade_code)
-                ) WITHOUT ROWID
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_schedule_date ON schedule(ev_date)")
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS schedule_meta (
-                    school_id INTEGER NOT NULL,
-                    ev_date   INTEGER NOT NULL,
-                    ev_id     INTEGER NOT NULL,
-                    meta_id   INTEGER NOT NULL,
-                    PRIMARY KEY (school_id, ev_date, ev_id, meta_id)
-                )
-            """)
-            self._init_db_common(conn)
+        self.quiet_mode = quiet_mode
 
     def _get_target_key(self) -> str:
-        return str(self.run_ay)
+        return "school_code"
 
-    def fetch_region(self, region: str, **kwargs):
-        year = kwargs.get("year", self.run_ay)
-        self.fetch_year(region, year)
+    def fetch_region(self, region_code: str, year: Optional[int] = None,
+                     date: Optional[str] = None, limit: Optional[int] = None, **kwargs) -> int:
+        if year is None:
+            year = get_current_school_year(now_kst())
 
-    def fetch_year(self, region: str, year: int):
-        # ✅ 디버그 출력 추가
-        if self.debug_mode:
-            self.print(f"📡 [{region}] 학년도 {year} 학사일정 수집 시작", level="debug")
+        region_name = REGION_NAMES.get(region_code, region_code)
 
-        date_from = f"{year}0301"
-        date_to = (date(year + 1, 3, 1) - timedelta(days=1)).strftime("%Y%m%d")
-        self._fetch_schools_range(region, date_from, date_to)
+        if not self.quiet_mode:
+            self.print(f"📡 [{region_name}] 학년도 {year} 수집 시작", level="debug")
 
-    def _fetch_schools_range(self, region: str, date_from: str, date_to: str):
-        self.iterate_schools(
-            region,
-            lambda sch_code, _: self._fetch_school_schedule(region, sch_code, date_from, date_to)
-        )
-
-    def _fetch_school_schedule(self, region: str, school_code: str,
-                                date_from: str, date_to: str):
-        base_params = {
-            "ATPT_OFCDC_SC_CODE": region,
-            "SD_SCHUL_CODE": school_code,
-            "AA_YMD_FROM": date_from,
-            "AA_YMD_TO": date_to,
+        params = {
+            "ATPT_OFCDC_SC_CODE": region_code,
+            "pSize": 100,
+            "pIndex": 1,
+            "KEY": config.get_api_key('school_info'),
+            "Type": "json"
         }
+
         rows = self._fetch_paginated(
-            NEIS_URL, base_params, 'schoolSchedule', page_size=100,
-            region=region,
-            year=int(date_from[:4])
-        )
-        for r in rows:
-            items = self._process_item(r)
-            if items:
-                self.enqueue(items)
-
-    def _process_item(self, raw_item: dict) -> List[dict]:
-        sc_code = self._get_field(raw_item, 'school_code')
-        if not sc_code or not self._include_school(sc_code):
-            return []
-        school_info = self.get_school_info(sc_code)
-        if not school_info:
-            return []
-
-        parsed = parse_schedule_row(raw_item, school_info)
-        if not parsed:
-            return []
-
-        ev_id = parsed["ev_id"]
-        cache_key = f"{parsed['ev_nm']}|{parsed['ev_date']}"
-        self.event_cache[cache_key] = ev_id
-
-        results = []
-        for grade_code in parsed.get("grade_codes", [0]):
-            results.append({
-                "school_id":   school_info['school_id'],
-                "ev_date":     parsed["ev_date"],
-                "ev_id":       ev_id,
-                "ay":          parsed["ay"],
-                "is_special":  parsed["is_sp"],
-                "grade_disp":  parsed["grade_disp"],
-                "grade_raw":   parsed["grade_raw"],
-                "grade_code":  grade_code,
-                "sub_yn":      parsed["sub_yn"],
-                "sub_code":    parsed["sub_code"],
-                "dn_yn":       parsed["dn_yn"],
-                "ev_content":  parsed["content"],
-                "load_dt":     parsed["load_dt"],
-                "ev_nm":       parsed["ev_nm"],
-            })
-        return results
-
-    # ✅ BaseCollector의 저장 훅 구현
-    def _do_save_batch(self, conn, batch: List[dict]):
-        """실제 DB 저장 로직"""
-        # vocab_event 저장 (중복 무시)
-        vocab_data = list({it['ev_id']: (it['ev_id'], it['ev_nm'], it['ev_date'])
-                           for it in batch}.values())
-        conn.executemany(
-            "INSERT OR IGNORE INTO vocab_event VALUES (?,?,?)",
-            vocab_data
+            API_URL, params, "schoolInfo",
+            region=region_code, year=year
         )
 
-        # schedule 데이터 저장 (충돌 시 업데이트)
-        sched_data = [
-            (
-                it['school_id'], it['ev_date'], it['ev_id'], it['ay'],
-                it['is_special'], it['grade_disp'], it['grade_raw'], it['grade_code'],
-                it['sub_yn'], it['sub_code'], it['dn_yn'], it['ev_content'], it['load_dt']
-            )
-            for it in batch
-        ]
-        conn.executemany("""
-            INSERT INTO schedule VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT DO UPDATE SET
-                ev_content = excluded.ev_content,
-                sub_yn     = excluded.sub_yn,
-                sub_code   = excluded.sub_code,
-                dn_yn      = excluded.dn_yn,
-                load_dt    = excluded.load_dt
-        """, sched_data)
+        if not rows:
+            self.logger.warning(f"[{region_name}] 데이터 없음")
+            return 0
+
+        school_count = 0
+        for row in rows:
+            school_code = get_api_field(row, "school_code", "school_info")
+            if not school_code:
+                continue
+
+            if self.shard != "none" and not should_include_school(
+                self.shard, self.school_range, school_code
+            ):
+                continue
+
+            # 변환된 dict enqueue
+            self.enqueue([self._transform_row(row, region_code)])
+            school_count += 1
+
+            if limit and school_count >= limit:
+                break
+
+        return school_count
+
+    def _transform_row(self, row: Dict[str, Any], region_code: str) -> Dict[str, Any]:
+        now = now_kst().isoformat()
+        return {
+            "school_code": get_api_field(row, "school_code", "school_info", ""),
+            "school_name": get_api_field(row, "school_name", "school_info", ""),
+            "region_code": region_code,
+            "atpt_ofcdc_org_nm": get_api_field(row, "atpt_ofcdc_org_nm", "school_info", ""),
+            "atpt_ofcdc_org_code": get_api_field(row, "atpt_ofcdc_org_code", "school_info", ""),
+            "ju_org_nm": get_api_field(row, "ju_org_nm", "school_info", ""),
+            "ju_org_code": get_api_field(row, "ju_org_code", "school_info", ""),
+            "adrcd_nm": get_api_field(row, "adrcd_nm", "school_info", ""),
+            "adrcd_cd": get_api_field(row, "adrcd_cd", "school_info", ""),
+            "lctn_sc_code": get_api_field(row, "lctn_sc_code", "school_info", ""),
+            "schul_nm": get_api_field(row, "schul_nm", "school_info", ""),
+            "schul_knd_sc_code": get_api_field(row, "schul_knd_sc_code", "school_info", ""),
+            "fond_sc_code": get_api_field(row, "fond_sc_code", "school_info", ""),
+            "hs_knd_sc_nm": get_api_field(row, "hs_knd_sc_nm", "school_info", ""),
+            "bnhh_yn": get_api_field(row, "bnhh_yn", "school_info", ""),
+            "schul_fond_typ_code": get_api_field(row, "schul_fond_typ_code", "school_info", ""),
+            "dght_sc_code": get_api_field(row, "dght_sc_code", "school_info", ""),
+            "foas_memrd": get_api_field(row, "foas_memrd", "school_info", ""),
+            "fond_ymd": get_api_field(row, "fond_ymd", "school_info", ""),
+            "adres_brkdn": get_api_field(row, "adres_brkdn", "school_info", ""),
+            "dtlad_brkdn": get_api_field(row, "dtlad_brkdn", "school_info", ""),
+            "zip_code": get_api_field(row, "zip_code", "school_info", ""),
+            "schul_rdnzc": get_api_field(row, "schul_rdnzc", "school_info", ""),
+            "schul_rdnma": get_api_field(row, "schul_rdnma", "school_info", ""),
+            "schul_rdnda": get_api_field(row, "schul_rdnda", "school_info", ""),
+            "lttud": self._parse_float(get_api_field(row, "lttud", "school_info")),
+            "lgtud": self._parse_float(get_api_field(row, "lgtud", "school_info")),
+            "user_telno": get_api_field(row, "user_telno", "school_info", ""),
+            "user_telno_sw": get_api_field(row, "user_telno_sw", "school_info", ""),
+            "user_telno_ga": get_api_field(row, "user_telno_ga", "school_info", ""),
+            "perc_faxno": get_api_field(row, "perc_faxno", "school_info", ""),
+            "hmpg_adres": get_api_field(row, "hmpg_adres", "school_info", ""),
+            "coedu_sc_code": get_api_field(row, "coedu_sc_code", "school_info", ""),
+            "absch_yn": get_api_field(row, "absch_yn", "school_info", ""),
+            "absch_ymd": get_api_field(row, "absch_ymd", "school_info", ""),
+            "close_yn": get_api_field(row, "close_yn", "school_info", ""),
+            "schul_crse_sc_value": get_api_field(row, "schul_crse_sc_value", "school_info", ""),
+            "schul_crse_sc_value_nm": get_api_field(row, "schul_crse_sc_value_nm", "school_info", ""),
+            "collected_at": now,
+            "updated_at": now,
+            "is_active": 1,
+            "in_neis": 0,
+        }
+
+    def _parse_float(self, val: Any) -> Optional[float]:
+        try:
+            return float(val) if val is not None and val != "" else None
+        except (ValueError, TypeError):
+            return None
+
+    # ✅ _process_item 제거
 
 
 if __name__ == "__main__":
-    from core.collector_cli import run_collector
+    is_github_actions = os.getenv('GITHUB_ACTIONS') == 'true'
 
-    def _fetch(collector, region, **kwargs):
-        collector.fetch_year(region, kwargs['year'])
+    parser = argparse.ArgumentParser(description="학교알리미 정보 수집기")
+    parser.add_argument("--regions", default="ALL", help="수집할 지역")
+    parser.add_argument("--shard", choices=["none", "odd", "even"], default="none")
+    parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--limit", type=int, default=None)
+    args = parser.parse_args()
 
-    run_collector(
-        AnnualFullScheduleCollector,
-        _fetch,
-        "학사일정 수집기",
+    if is_github_actions and not args.quiet:
+        args.quiet = True
+
+    collector = SchoolInfoCollector(
+        shard=args.shard,
+        debug_mode=args.debug,
+        quiet_mode=args.quiet
     )
-    
+
+    print(f"📂 DB 경로: {collector.db_path}")
+
+    if args.regions == "ALL":
+        regions = ALL_REGIONS
+    else:
+        regions = [r.strip() for r in args.regions.split(",") if r.strip()]
+
+    for region in regions:
+        collector.fetch_region(region, limit=args.limit)
+        if args.limit:
+            break
+
+    collector.flush()
+    time.sleep(2)
+    collector.close()
+
+    if os.path.exists(collector.db_path):
+        count = sqlite3.connect(collector.db_path).execute(
+            "SELECT COUNT(*) FROM schools_info;"
+        ).fetchone()[0]
+        print(f"📊 DB 저장 완료: {count}건 (파일: {collector.db_path})")
+    else:
+        print(f"❌ DB 파일 없음: {collector.db_path}")
+        

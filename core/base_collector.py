@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # core/base_collector.py
-# 최종 수정: ABC 제거, 추상메서드 제거, 기본 _init_db, _process_item 기본 구현,
-#           배치 메트릭스 및 데이터 유효성 검증 추가
+# 최종 수정: ABC 제거, 추상메서드 제거, _process_item 제거,
+#           stats/validator 통합, config fallback, 로그 메시지 수정
 
 import os
 import sqlite3
@@ -24,8 +24,8 @@ from .shard import should_include_school
 from .kst_time import now_kst
 from .data_guard import DataGuard, DataDropException
 from .collect_log import CollectLog
-from .collector_stats import CollectorStats          # 신규
-from .data_validator import DataValidator            # 신규
+from .collector_stats import CollectorStats
+from .data_validator import DataValidator
 from constants.codes import NEIS_API_KEY
 from constants.paths import NEIS_INFO_DB_PATH as MASTER_DB, LOG_DIR
 from core.retry import RetryManager
@@ -49,7 +49,7 @@ class BaseCollector:
     # ------------------------------------------------
 
     schema_name = None          # constants.schema.py의 키
-    validate_data = False       # 데이터 유효성 검증 활성화 여부 (설정에서 오버라이드 가능)
+    validate_data = False       # 데이터 유효성 검증 활성화 여부
 
     def __init__(
         self,
@@ -103,13 +103,17 @@ class BaseCollector:
         self.collect_log = CollectLog()
         self.retry_mgr = RetryManager(db_path=str(FAILURES_DB_PATH))
 
-        # ✅ 배치 메트릭스 초기화
+        # 배치 메트릭스 초기화
         self.stats = CollectorStats(name, self.logger)
 
-        # 설정에서 validate_data 값 로드 (선택)
-        from core.config import config
-        collector_cfg = config.get_collector_config(name)
-        self.validate_data = collector_cfg.get("validate_data", False)
+        # 설정에서 validate_data 로드 (fallback 처리)
+        try:
+            from core.config import config
+            collector_cfg = config.get_collector_config(name)
+            self.validate_data = collector_cfg.get("validate_data", False)
+        except (ImportError, AttributeError, Exception) as e:
+            self.validate_data = False
+            self.logger.debug(f"config 로드 실패, validate_data=False: {e}")
 
         self._init_db()
         self.completed_items: set = set()
@@ -147,9 +151,9 @@ class BaseCollector:
         return resource
 
     def _load_school_cache(self):
-        # ✅ schools → schools_neis 로 수정
+        # ✅ MASTER_DB는 neis_info.db를 가리킴
         if not os.path.exists(MASTER_DB):
-            self.logger.warning("schools_neis.db 없음. 캐시 없이 동작")
+            self.logger.warning("neis_info.db 없음. 캐시 없이 동작")
             return
         try:
             with sqlite3.connect(str(MASTER_DB)) as conn:
@@ -365,32 +369,25 @@ class BaseCollector:
         """체크포인트 키로 사용할 컬럼명. None이면 체크포인트 미사용."""
         return None
 
-    def _process_item(self, raw_item: dict) -> List[dict]:
-        """데이터 변환 기본 구현: raw_item을 그대로 리스트에 담아 반환"""
-        return [raw_item]
-
     # ✅ 기본 _do_save_batch 구현 (schema_name 기반)
     def _do_save_batch(self, conn: sqlite3.Connection, batch: List[dict]) -> None:
         if not self.schema_name:
-            raise NotImplementedError(
-                f"{self.__class__.__name__}: 'schema_name' 클래스 변수가 정의되지 않았습니다. "
-                "직접 _do_save_batch를 오버라이드하거나 schema_name을 설정하세요."
-            )
+            raise NotImplementedError(...)
         schema = SCHEMAS.get(self.schema_name)
         if not schema:
-            raise ValueError(f"Schema '{self.schema_name}' not found in SCHEMAS")
+            raise ValueError(...)
 
         columns = [col[0].strip() for col in schema["columns"]]
+        pk_columns = schema.get("primary_key", [])   # ✅ PK 목록 가져오기
 
-        # ✅ 데이터 유효성 검증 (활성화된 경우)
         if self.validate_data:
-            valid, errors, warnings = DataValidator.validate_batch(batch, columns)
+            valid, errors, warnings = DataValidator.validate_batch(batch, columns, pk_columns)
             if warnings:
-                for w in warnings[:5]:  # 최대 5개만 로그
+                for w in warnings[:5]:
                     self.logger.warning(f"데이터 검증 경고: {w}")
             if not valid:
                 self.logger.error(f"데이터 유효성 검증 실패: {errors}")
-                return  # 저장 중단
+                return
 
         save_batch(conn, self.table_name, columns, batch)
 
@@ -405,7 +402,6 @@ class BaseCollector:
             success = True
         finally:
             elapsed = time.time() - start_time
-            # ✅ 배치 메트릭스 업데이트
             self.stats.update(len(batch), elapsed, success)
 
         if hasattr(self, 'debug_mode') and self.debug_mode and not self.quiet_mode:
@@ -440,4 +436,3 @@ class BaseCollector:
         self.logger.info(f"🔄 {self.name} flush 시작...")
         self.q.join()
         self.logger.info(f"✅ {self.name} flush 완료")
-        

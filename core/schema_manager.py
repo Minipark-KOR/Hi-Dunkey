@@ -1,6 +1,6 @@
 # core/schema_manager.py
 import sqlite3
-from typing import List, Dict
+from typing import List, Dict, Tuple
 
 from constants.schema import SCHEMAS
 
@@ -12,9 +12,9 @@ def create_table_from_schema(conn: sqlite3.Connection, schema_name: str):
     schema = SCHEMAS[schema_name]
     table_name = schema["table_name"]
     columns = schema["columns"]
+    primary_key = schema.get("primary_key", [])          # ✅ PK 목록 가져오기
     indexes = schema.get("indexes", [])
 
-    # ✅ 각 요소별 strip() 적용하여 공백 제거
     col_defs = []
     for col, typ, constraint in columns:
         col = col.strip()
@@ -23,6 +23,9 @@ def create_table_from_schema(conn: sqlite3.Connection, schema_name: str):
         col_def = f"{col} {typ}"
         if constraint:
             col_def += f" {constraint}"
+        # ✅ 컬럼 레벨 PRIMARY KEY 추가
+        if col in primary_key:
+            col_def += " PRIMARY KEY"
         col_defs.append(col_def)
 
     create_sql = f"CREATE TABLE IF NOT EXISTS {table_name} ({', '.join(col_defs)})"
