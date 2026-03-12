@@ -16,7 +16,8 @@
 ├── core/                        # 핵심 공통 모듈
 │   ├── base_collector.py        # 모든 수집기의 베이스 클래스
 │   ├── config.py                # 설정 파일 로더
-│   ├── database.py              # DB 연결 공통
+│   ├── database.py              # DB 연결 공통 (연결, PRAGMA, 체크포인트)
+│   ├── schema_manager.py        # 스키마 기반 테이블 생성 및 저장 유틸리티
 │   ├── kst_time.py              # 시간 처리
 │   ├── logger.py                # 로깅
 │   ├── network.py               # 네트워크 요청 (safe_json_request 등)
@@ -40,7 +41,7 @@
 │   ├── api_mappings.py          # API 응답 키 ↔ 내부 필드명 매핑 (중앙 관리)
 │   ├── codes.py                 # API 엔드포인트, 지역 코드 등
 │   ├── paths.py                 # 경로 상수 (설정 기반)
-│   ├── schema.py                # (선택) 테이블 스키마 중앙 정의
+│   ├── schema.py                # 테이블 스키마 중앙 정의
 │   └── errors.py                # API 오류 코드 중앙 관리
 ├── scripts/                      # 실행 스크립트
 │   ├── run_pipeline.py           # 병렬 실행 + 병합
@@ -72,23 +73,24 @@ from typing import List, Dict, Optional
 
 from core.base_collector import BaseCollector
 from core.database import get_db_connection
+from core.schema_manager import create_table_from_schema   # ✅ 스키마 기반 테이블 생성
 from core.shard import should_include_school
 from core.kst_time import now_kst
 from core.school_year import get_current_school_year
-from core.network import safe_json_request, build_session
 from core.config import config
 from constants.codes import REGION_NAMES
 from constants.paths import MASTER_DIR
-from constants.api_mappings import get_api_field   # ✅ 중앙 매핑 함수 임포트
+from constants.api_mappings import get_api_field   # ✅ 중앙 매핑 함수
 
 API_URL = "https://api.example.com/endpoint"
 
 class NewCollector(BaseCollector):
     # ----- 메타데이터 (클래스 변수) -----
     description = "새로운 수집기 설명"
-    table_name = "my_table"
-    merge_script = "scripts/merge_my_dbs.py"   # 병합 스크립트 (없으면 None)
-    api_context = "my_context"                  # api_mappings.py에서 사용할 컨텍스트
+    table_name = "my_table"                 # 실제 테이블명 (schema.py의 table_name과 일치)
+    schema_name = "new_collector"            # schema.py의 키 (create_table_from_schema에 전달)
+    api_context = "my_context"               # api_mappings.py에서 사용할 컨텍스트
+    merge_script = "scripts/merge_my_dbs.py" # 병합 스크립트 (없으면 None)
 
     # 설정 파일에서 값을 가져오되, 없으면 기본값 사용
     _cfg = config.get_collector_config("new_collector")
@@ -109,15 +111,8 @@ class NewCollector(BaseCollector):
 
     def _init_db(self):
         with get_db_connection(self.db_path) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS my_table (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    school_code TEXT,
-                    some_data TEXT,
-                    collected_at TEXT
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_school_code ON my_table(school_code)")
+            # constants/schema.py에 정의된 스키마를 사용하여 테이블 생성
+            create_table_from_schema(conn, self.schema_name)   # 스키마 이름 전달
             self._init_db_common(conn)
 
     def fetch_region(self, region_code: str, year: int = None, date: str = None, **kwargs):
@@ -141,18 +136,19 @@ class NewCollector(BaseCollector):
             self.enqueue([self._transform_row(row, region_code)])
 
     def _transform_row(self, row: dict, region_code: str) -> dict:
-        # get_api_field를 사용하여 API 키를 내부 필드명으로 변환
         return {
             "school_code": get_api_field(row, "school_code", self.api_context),
             "some_data": get_api_field(row, "some_data", self.api_context),
             "collected_at": now_kst().isoformat(),
         }
 
-    def _do_save_batch(self, conn, batch):
-        sql = "INSERT OR REPLACE INTO my_table (school_code, some_data, collected_at) VALUES (?, ?, ?)"
-        rows = [(r["school_code"], r["some_data"], r["collected_at"]) for r in batch]
-        conn.executemany(sql, rows)
-
+    # _do_save_batch는 schema_manager.save_batch를 사용할 경우 오버라이드하지 않아도 됨.
+    # 기본 저장 로직은 BaseCollector에서 schema_name을 이용해 처리할 수 있습니다.
+    # 만약 커스텀 저장이 필요하면 아래와 같이 오버라이드합니다.
+    # def _do_save_batch(self, conn, batch):
+    #     sql = "INSERT OR REPLACE INTO my_table (school_code, some_data, collected_at) VALUES (?, ?, ?)"
+    #     rows = [(r["school_code"], r["some_data"], r["collected_at"]) for r in batch]
+    #     conn.executemany(sql, rows)
 
 if __name__ == "__main__":
     from core.collector_cli import run_collector
@@ -233,28 +229,22 @@ master_dir = config.get('paths', 'master_dir', default='data/master')
 
 ---
 
-## 4. DB 초기화 (`_init_db`)
+## 4. DB 초기화 (`_init_db`) – 중앙 스키마 활용
 
-각 수집기는 자신의 데이터를 저장할 테이블을 생성해야 합니다.
+각 수집기는 더 이상 하드코딩된 `CREATE TABLE` 문을 사용하지 않고, **`core.schema_manager.create_table_from_schema`** 함수를 호출하여 테이블을 생성합니다.  
+이 함수는 `constants/schema.py`에 정의된 스키마를 읽어 테이블과 인덱스를 생성합니다.
 
 ```python
+from core.database import get_db_connection
+from core.schema_manager import create_table_from_schema
+
 def _init_db(self):
     with get_db_connection(self.db_path) as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS my_table (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                school_code TEXT,
-                some_data TEXT,
-                collected_at TEXT
-            )
-        """)
-        # 필요한 인덱스 생성
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_school_code ON my_table(school_code)")
-        # 공통 체크포인트 테이블 초기화 (필요시)
+        create_table_from_schema(conn, self.schema_name)   # 스키마 이름 (constants/schema.py의 키)
         self._init_db_common(conn)
 ```
 
-- **주의**: `get_db_connection`은 WAL 모드, 적절한 PRAGMA 설정을 자동으로 적용합니다.
+- `get_db_connection`은 WAL 모드, 적절한 PRAGMA 설정을 자동으로 적용합니다.
 - `_init_db_common(conn)`을 호출하면 `collection_checkpoint` 테이블이 생성됩니다 (선택 사항).
 
 ---
@@ -330,7 +320,9 @@ def _transform_row(self, row: dict, region_code: str) -> dict:
 ## 7. 배치 저장 (`_do_save_batch`)
 
 `BaseCollector`는 내부 writer 스레드가 일정 크기마다 `_do_save_batch`를 호출합니다.  
-이 메서드를 오버라이드하여 실제 INSERT/REPLACE 로직을 구현합니다.
+**기본 저장 로직**을 사용하려면 `_do_save_batch`를 오버라이드하지 않아도 됩니다.  
+`BaseCollector`는 `schema_name`을 통해 `core.schema_manager.save_batch` 함수를 호출하여 자동으로 저장합니다.  
+만약 커스텀 저장 로직이 필요하다면 아래와 같이 오버라이드합니다.
 
 ```python
 def _do_save_batch(self, conn, batch):
@@ -434,6 +426,7 @@ def run_new_collector():
 ### 13.1. API 키 및 환경변수
 - `constants.codes`에 정의된 API 키 상수를 사용합니다. (대부분 환경변수에서 로드)
 - 설정 파일(`config.yaml`)의 `api` 섹션에서 환경변수명을 지정할 수 있습니다.
+- `.env` 파일은 `core/__init__.py`에서 자동 로드됩니다.
 
 ### 13.2. 중앙 API 매핑 시스템 (`constants/api_mappings.py`)
 모든 수집기는 API 응답 키를 내부 필드명으로 변환할 때 **`get_api_field` 함수**를 사용해야 합니다.  
@@ -520,13 +513,10 @@ NEIS_ERRORS = {
 
 ---
 
-## 14. DB 마이그레이션 (통합 스크립트)
+## 14. 중앙 스키마 관리 (`constants/schema.py`)와 통합 마이그레이션
 
-기존에는 각 수집기별로 별도의 마이그레이션 스크립트를 작성했지만, 이제는 **루트 디렉토리의 `migrate.py` 하나로 통합**하여 관리합니다.  
-이 스크립트는 `constants.schema`(또는 `api_mappings.py`)에 정의된 테이블 스키마를 읽어 누락된 컬럼을 추가하고 인덱스를 생성합니다.
-
-### 14.1. 스키마 정의 (선택 사항: `constants/schema.py`)
-중앙에서 테이블 스키마를 관리하려면 `constants/schema.py`를 생성합니다.
+### 14.1. 스키마 정의
+모든 테이블의 스키마는 `constants/schema.py`에 중앙 정의됩니다.
 
 ```python
 # constants/schema.py
@@ -541,6 +531,7 @@ SCHEMAS = {
         ],
         "indexes": [
             ("idx_schools_region", "atpt_ofcdc_org_code"),
+            ("idx_schools_type", "schul_knd_sc_code"),
         ],
     },
     "neis_info": {
@@ -548,10 +539,12 @@ SCHEMAS = {
         "columns": [ ... ],
         "indexes": [ ... ],
     },
+    # 다른 수집기도 동일한 방식으로 추가
 }
 ```
 
-### 14.2. 통합 마이그레이션 스크립트 사용법
+### 14.2. 통합 마이그레이션 스크립트 (`migrate.py`)
+루트 디렉토리의 `migrate.py`는 `schema.py`를 읽어 누락된 컬럼을 추가하고 인덱스를 생성합니다.
 
 ```bash
 # 특정 스키마에 해당하는 모든 DB 파일 마이그레이션
@@ -559,24 +552,27 @@ python migrate.py school_info
 
 # 특정 DB 파일만 마이그레이션
 python migrate.py neis_info --db data/master/neis_info_odd.db
+
+# 대화형 모드 (인자 없이 실행)
+python migrate.py
 ```
 
-스크립트는 `MASTER_DIR` 내에서 `{schema}*.db` 패턴의 파일을 찾아 순회하며 누락된 컬럼을 추가합니다.  
-이미 존재하는 컬럼은 건너뛰므로 안전하게 여러 번 실행할 수 있습니다.
+스크립트는 `MASTER_DIR` 내에서 `{schema}*.db` 패턴의 파일을 찾아 순회하며 안전하게 컬럼을 추가합니다.  
+이미 존재하는 컬럼은 건너뛰므로 여러 번 실행해도 문제없습니다.
 
 ### 14.3. 새 컬럼 추가 시
-- `constants.schema`에 컬럼 정의를 추가합니다.
-- `migrate.py`를 실행하여 모든 관련 DB에 컬럼을 추가합니다.
-- 필요시 `api_mappings.py`에도 새 내부 필드명과 API 키 매핑을 추가합니다.
+1. `constants/schema.py`에 컬럼 정의를 추가합니다.
+2. `migrate.py`를 실행하여 모든 관련 DB에 컬럼을 추가합니다.
+3. 필요시 `api_mappings.py`에도 새 내부 필드명과 API 키 매핑을 추가합니다.
 
-이 방식을 통해 각 수집기별로 개별 마이그레이션 스크립트를 유지할 필요가 없어지며, 스키마 변경이 훨씬 간편해집니다.
+이 방식으로 각 수집기별 개별 마이그레이션 스크립트를 유지할 필요가 없어집니다.
 
 ---
 
 ## 15. 참고할 기존 Collector
 
-- **NEIS 학교정보** (`collectors/neis_info_collector.py`): 지오코딩 분리, 모든 API 필드 저장, `MetaVocabManager` 사용 예
-- **학교알리미** (`collectors/school_info_collector.py`): 기본 구조, 학년도 필터링, 좌표 포함 API
+- **NEIS 학교정보** (`collectors/neis_info_collector.py`): 지오코딩 분리, 모든 API 필드 저장, `MetaVocabManager` 사용 예, 중앙 스키마 적용
+- **학교알리미** (`collectors/school_info_collector.py`): 기본 구조, 학년도 필터링, 좌표 포함 API, 중앙 스키마 적용
 - **급식** (`collectors/meal_collector.py`): 일별 수집, `fetch_daily`, `BaseMealCollector` 상속
 - **학사일정** (`collectors/schedule_collector.py`): 연간 수집, `fetch_year`
 - **시간표** (`collectors/timetable_collector.py`): 추가 옵션(`--semester`), `fetch_year`

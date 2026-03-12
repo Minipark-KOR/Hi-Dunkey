@@ -60,16 +60,16 @@ def collect_global_db_metrics(global_dbs: List[Dict], base_dir: str) -> Dict[str
 
 
 def collect_school_geo_stats(school_db_path: str) -> Dict[str, Any]:
-    """학교 DB에서 전체 학교 수와 좌표 확보율 계산"""
+    """학교 DB에서 전체 학교 수와 좌표 확보율 계산 (schools_neis 테이블 기준)"""
     if not os.path.exists(school_db_path):
         return {"total": 0, "with_geo": 0, "percent": 0.0}
     try:
         with sqlite3.connect(school_db_path) as conn:
             total    = conn.execute(
-                "SELECT COUNT(*) FROM schools"
+                "SELECT COUNT(*) FROM schools_neis"          # ✅ schools → schools_neis
             ).fetchone()[0]
             with_geo = conn.execute(
-                "SELECT COUNT(*) FROM schools "
+                "SELECT COUNT(*) FROM schools_neis "
                 "WHERE longitude IS NOT NULL AND latitude IS NOT NULL"
             ).fetchone()[0]
             percent  = round(with_geo / total * 100, 1) if total > 0 else 0.0
@@ -234,3 +234,4 @@ def cleanup_old_metrics(metrics_dir: str, keep: int = 12):
     dated.sort()
     for _, fname in dated[:-keep] if len(dated) > keep else []:
         os.remove(os.path.join(metrics_dir, fname))
+        

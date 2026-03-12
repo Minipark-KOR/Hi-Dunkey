@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # core/base_collector.py
-# 개발 가이드: docs/developer_guide.md 참조
+# 최종 수정: ABC 제거, 추상메서드 제거, 기본 _init_db, _process_item 기본 구현,
+#           배치 메트릭스 및 데이터 유효성 검증 추가
 
 import os
 import sqlite3
@@ -12,7 +13,6 @@ import re
 import random
 import sys
 import traceback
-from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union, Callable
@@ -24,12 +24,17 @@ from .shard import should_include_school
 from .kst_time import now_kst
 from .data_guard import DataGuard, DataDropException
 from .collect_log import CollectLog
+from .collector_stats import CollectorStats          # 신규
+from .data_validator import DataValidator            # 신규
 from constants.codes import NEIS_API_KEY
 from constants.paths import NEIS_INFO_DB_PATH as MASTER_DB, LOG_DIR
 from core.retry import RetryManager
 from constants.paths import FAILURES_DB_PATH
+from constants.schema import SCHEMAS
+from core.schema_manager import create_table_from_schema, save_batch
 
-class BaseCollector(ABC):
+
+class BaseCollector:
     # ----- 메타데이터 (하위 클래스에서 오버라이드) -----
     description = None
     table_name = None
@@ -43,14 +48,17 @@ class BaseCollector(ABC):
     parallel_config = {}
     # ------------------------------------------------
 
+    schema_name = None          # constants.schema.py의 키
+    validate_data = False       # 데이터 유효성 검증 활성화 여부 (설정에서 오버라이드 가능)
+
     def __init__(
         self,
         name: str,
         base_dir: str,
         shard: str = "none",
         school_range: Optional[str] = None,
-        quiet_mode: bool = False,          # ✅ quiet_mode 추가
-        **kwargs                            # ✅ 추가 인자 수용
+        quiet_mode: bool = False,
+        **kwargs
     ):
         VALID_SHARDS = {"odd", "even", "none"}
         if shard not in VALID_SHARDS:
@@ -62,8 +70,7 @@ class BaseCollector(ABC):
         self.shard = shard
         self.school_range = school_range
         self.api_context = 'common'
-        self.quiet_mode = quiet_mode        # ✅ 저장
-        # kwargs는 필요시 self.kwargs = kwargs 로 저장하거나 무시
+        self.quiet_mode = quiet_mode
 
         if shard == "none":
             self.db_path = str(self.base_dir / f"{name}.db")
@@ -72,8 +79,7 @@ class BaseCollector(ABC):
             self.db_path = str(self.base_dir / f"{name}_{shard}{range_suffix}.db")
 
         self.total_db_path = str(self.base_dir / f"{name}_total.db")
-        
-        # ✅ 로그 파일은 LOG_DIR에 저장
+
         self.logger = build_logger(name, str(LOG_DIR / f"{name}.log"))
         if not self.quiet_mode:
             print(f"📝 로그 파일: {LOG_DIR / f'{name}.log'}")
@@ -97,6 +103,14 @@ class BaseCollector(ABC):
         self.collect_log = CollectLog()
         self.retry_mgr = RetryManager(db_path=str(FAILURES_DB_PATH))
 
+        # ✅ 배치 메트릭스 초기화
+        self.stats = CollectorStats(name, self.logger)
+
+        # 설정에서 validate_data 값 로드 (선택)
+        from core.config import config
+        collector_cfg = config.get_collector_config(name)
+        self.validate_data = collector_cfg.get("validate_data", False)
+
         self._init_db()
         self.completed_items: set = set()
         self._load_checkpoints()
@@ -105,6 +119,16 @@ class BaseCollector(ABC):
             f"🔥 {name} 초기화 완료 "
             f"(샤드: {shard}, 범위: {school_range}, 캐시: {len(self.school_cache)}개)"
         )
+
+    # ✅ 기본 _init_db 구현 (schema_name이 있으면 테이블 생성)
+    def _init_db(self):
+        if self.schema_name:
+            with get_db_connection(self.db_path) as conn:
+                create_table_from_schema(conn, self.schema_name)
+                self._init_db_common(conn)
+
+    def _init_db_common(self, conn):
+        init_checkpoint_table(conn)
 
     def record_collect_failure(
         self, region: str, year: Optional[int] = None, error: str = ""
@@ -123,8 +147,9 @@ class BaseCollector(ABC):
         return resource
 
     def _load_school_cache(self):
+        # ✅ schools → schools_neis 로 수정
         if not os.path.exists(MASTER_DB):
-            self.logger.warning("school_info.db 없음. 캐시 없이 동작")
+            self.logger.warning("schools_neis.db 없음. 캐시 없이 동작")
             return
         try:
             with sqlite3.connect(str(MASTER_DB)) as conn:
@@ -137,7 +162,7 @@ class BaseCollector(ABC):
                                 ELSE '기타' END as school_level,
                            CASE WHEN sc_kind LIKE '%특수%' THEN 1 ELSE 0 END as is_special,
                            status
-                    FROM schools WHERE status = '운영'
+                    FROM schools_neis WHERE status = '운영'
                 """)
                 for row in cur:
                     sc_code, atpt_code, school_id, sc_name, sc_kind, \
@@ -156,7 +181,6 @@ class BaseCollector(ABC):
             self.logger.error(f"학교 캐시 로드 실패: {e}")
 
     def get_school_info(self, school_code: str) -> Optional[Dict[str, Any]]:
-        """학교 코드로 학교 정보 조회"""
         return self.school_cache.get(school_code)
 
     def _get_field(self, raw_item: dict, field: str, default=None):
@@ -212,7 +236,6 @@ class BaseCollector(ABC):
                     if region:
                         self.record_collect_failure(region, year, str(e))
                     break
-                # 지터가 포함된 지수 백오프 (최대 30초)
                 sleep_time = min(2 ** retry_count, 30) + random.uniform(0, 1)
                 time.sleep(sleep_time)
 
@@ -250,7 +273,6 @@ class BaseCollector(ABC):
                         nxt = self.q.get_nowait()
                         if nxt is None:
                             self.q.task_done()
-                            # None을 다시 넣지 않음
                             break
                         items_processed += 1
                         batch.extend(self._flatten(nxt))
@@ -323,12 +345,6 @@ class BaseCollector(ABC):
                 continue
 
     def print(self, *args, level: str = "info", **kwargs):
-        """
-        통합 출력 메서드.
-        - quiet 모드면 모든 출력 차단.
-        - level이 'debug'면 debug 모드에서만 출력.
-        - 그 외는 항상 출력 (quiet 모드가 아니면).
-        """
         if self.quiet_mode:
             return
         if level == "debug" and not (hasattr(self, 'debug_mode') and self.debug_mode):
@@ -336,9 +352,6 @@ class BaseCollector(ABC):
         print(*args, **kwargs)
 
     def print_progress(self, current: int, total: int, prefix: str = "", bar_length: int = 20):
-        """
-        간단한 진행률 바 출력 (디버그 모드 아닐 때만, quiet 모드면 미출력).
-        """
         if self.quiet_mode:
             return
         percent = current / total
@@ -346,34 +359,57 @@ class BaseCollector(ABC):
         bar = '█' * filled + '░' * (bar_length - filled)
         print(f"\r{prefix} [{bar}] {current}/{total} ({percent*100:.1f}%)", end='', flush=True)
         if current == total:
-            print()  # 완료 시 줄바꿈
+            print()
 
-    @abstractmethod
-    def _init_db(self):
-        pass
+    def _get_target_key(self) -> Optional[str]:
+        """체크포인트 키로 사용할 컬럼명. None이면 체크포인트 미사용."""
+        return None
 
-    def _init_db_common(self, conn):
-        init_checkpoint_table(conn)
+    def _process_item(self, raw_item: dict) -> List[dict]:
+        """데이터 변환 기본 구현: raw_item을 그대로 리스트에 담아 반환"""
+        return [raw_item]
 
-    @abstractmethod
-    def _get_target_key(self) -> str:
-        pass
-
-    @abstractmethod
-    def _process_item(self, raw_item: dict) -> Union[dict, List[dict]]:
-        pass
-
-    @abstractmethod
+    # ✅ 기본 _do_save_batch 구현 (schema_name 기반)
     def _do_save_batch(self, conn: sqlite3.Connection, batch: List[dict]) -> None:
-        pass
+        if not self.schema_name:
+            raise NotImplementedError(
+                f"{self.__class__.__name__}: 'schema_name' 클래스 변수가 정의되지 않았습니다. "
+                "직접 _do_save_batch를 오버라이드하거나 schema_name을 설정하세요."
+            )
+        schema = SCHEMAS.get(self.schema_name)
+        if not schema:
+            raise ValueError(f"Schema '{self.schema_name}' not found in SCHEMAS")
+
+        columns = [col[0].strip() for col in schema["columns"]]
+
+        # ✅ 데이터 유효성 검증 (활성화된 경우)
+        if self.validate_data:
+            valid, errors, warnings = DataValidator.validate_batch(batch, columns)
+            if warnings:
+                for w in warnings[:5]:  # 최대 5개만 로그
+                    self.logger.warning(f"데이터 검증 경고: {w}")
+            if not valid:
+                self.logger.error(f"데이터 유효성 검증 실패: {errors}")
+                return  # 저장 중단
+
+        save_batch(conn, self.table_name, columns, batch)
 
     def _save_batch(self, batch: List[dict]):
+        start_time = time.time()
+        success = False
+        try:
+            if hasattr(self, 'debug_mode') and self.debug_mode and not self.quiet_mode:
+                print(f"🔍 [_save_batch] 저장 시도: {len(batch)}개, DB 경로: {self.db_path}")
+            with get_db_connection(self.db_path) as conn:
+                self._do_save_batch(conn, batch)
+            success = True
+        finally:
+            elapsed = time.time() - start_time
+            # ✅ 배치 메트릭스 업데이트
+            self.stats.update(len(batch), elapsed, success)
+
         if hasattr(self, 'debug_mode') and self.debug_mode and not self.quiet_mode:
-            print(f"🔍 [_save_batch] 저장 시도: {len(batch)}개, DB 경로: {self.db_path}")
-        with get_db_connection(self.db_path) as conn:
-            self._do_save_batch(conn, batch)
-        if hasattr(self, 'debug_mode') and self.debug_mode and not self.quiet_mode:
-            print(f"✅ [_save_batch] 저장 완료")
+            print(f"✅ [_save_batch] 저장 완료 (elapsed: {elapsed:.3f}s)")
 
     def _load_checkpoints(self):
         pass
@@ -395,6 +431,9 @@ class BaseCollector(ABC):
                 res.close()
             except Exception as e:
                 self.logger.warning(f"리소스 close 실패: {e}")
+
+        # ✅ 최종 통계 로그 출력
+        self.stats.log_summary()
         self.logger.info(f"✅ {self.name} 종료 완료")
 
     def flush(self, timeout: float = 60.0):

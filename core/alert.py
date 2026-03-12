@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# core/alert.py
 """
 알림 모듈 (Slack, 이메일 등 연동 스텁)
 """
