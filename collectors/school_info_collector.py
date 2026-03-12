@@ -55,7 +55,13 @@ class SchoolInfoCollector(BaseCollector):
         # --- 여기부터 임시 디버깅 코드 ---
         import requests
         api_key = config.get_api_key('school_info')
-        url = f"{API_URL}?apiKey={api_key}&apiType=json&pbanYr={year}"
+
+        url = (f"{API_URL}?apiKey={api_key}"
+               f"&apiType=json"
+               f"&pbanYr={year}"
+               f"&schulKndCode="          # 일단 빈 값으로 시도
+               f"&sidoCode={region_code}") # 지역 코드 추가
+
         print(f"📡 API URL: {url}")
         resp = requests.get(url)
         print(f"상태 코드: {resp.status_code}")
