@@ -60,13 +60,8 @@ class SchoolInfoCollector(BaseCollector):
         if not self.quiet_mode:
             self.print(f"📡 [{region_name}] 학년도 {year} 수집 시작", level="debug")
 
-        params = {
-            "ATPT_OFCDC_SC_CODE": region_code,
-            "pSize": 100,
-            "pIndex": 1,
-            "KEY": config.get_api_key('school_info'),
-            "Type": "json"
-        }
+        params = {"KEY": config.get_api_key('school_info')}
+
 
         rows = self._fetch_paginated(
             API_URL, params, "schoolInfo",
