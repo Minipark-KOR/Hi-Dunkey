@@ -55,7 +55,7 @@ class SchoolInfoCollector(BaseCollector):
         # --- 여기부터 임시 디버깅 코드 ---
         import requests
         api_key = config.get_api_key('school_info')
-        url = f"{API_URL}?apiKey={api_key}&apiType=json"
+        url = f"{API_URL}?apiKey={api_key}&apiType=json&pbanYr={year}"
         print(f"📡 API URL: {url}")
         resp = requests.get(url)
         print(f"상태 코드: {resp.status_code}")
