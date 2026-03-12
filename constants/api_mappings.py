@@ -126,4 +126,4 @@ def get_api_key(internal_field: str, context: str = 'common') -> str:
     내부 필드명에 해당하는 API 키를 반환합니다.
     """
     reverse_map = _REVERSE_MAPS.get(context, _REVERSE_MAPS['common'])
-    return reverse_map.get(internal_field, internal_field)\
+    return reverse_map.get(internal_field, internal_field)
