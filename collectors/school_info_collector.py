@@ -231,8 +231,8 @@ class SchoolInfoCollector(BaseCollector):
             return None
 
     def _do_save_batch(self, conn: sqlite3.Connection, batch: List[Dict[str, Any]]) -> None:
-        # 명시적으로 42개의 ?를 나열 (가독성을 위해 공백 추가)
-        placeholders = ', '.join(['?'] * 42)  # 42개 ? 생성
+        # placeholders 생성
+        placeholders = ', '.join(['?'] * 42)
         sql = f"""
             INSERT OR REPLACE INTO schools (
                 school_code,
@@ -250,9 +250,7 @@ class SchoolInfoCollector(BaseCollector):
                 collected_at, updated_at, is_active, in_neis
             ) VALUES ({placeholders})
         """
-        # 디버깅: 실제 placeholders 개수 출력 (필요시)
-        self.logger.debug(f"Placeholders count: {placeholders.count('?')}")
-
+        
         rows = []
         for r in batch:
             rows.append((
@@ -271,10 +269,27 @@ class SchoolInfoCollector(BaseCollector):
                 r["schul_crse_sc_value"], r["schul_crse_sc_value_nm"],
                 r["collected_at"], r["updated_at"], r["is_active"], r["in_neis"]
             ))
-        # 디버깅: rows 튜플 길이 확인 (첫 번째 행 기준)
-        self.logger.debug(f"Row values count: {len(rows[0]) if rows else 0}")
 
-        conn.executemany(sql, rows)
+        # 디버깅: 첫 번째 행의 값을 출력
+        if rows:
+            self.logger.debug(f"첫 번째 행: {rows[0]}")
+            # 각 값의 타입도 확인
+            self.logger.debug(f"첫 번째 행 타입: {[type(v).__name__ for v in rows[0]]}")
+
+        try:
+            cursor = conn.cursor()
+            cursor.executemany(sql, rows)
+            affected = cursor.rowcount  # 영향받은 행 수 (각 배치에 대해 -1일 수 있음)
+            self.logger.debug(f"executemany 후 rowcount: {affected}")
+            conn.commit()
+            # 저장 후 총 행 수 확인 (같은 커넥션)
+            count = conn.execute("SELECT COUNT(*) FROM schools").fetchone()[0]
+            self.logger.debug(f"저장 후 총 레코드 수: {count}")
+        except Exception as e:
+            self.logger.error(f"배치 저장 실패: {e}", exc_info=True)
+            # 실패한 배치의 일부를 로그에 남김
+            self.logger.error(f"실패한 배치 첫 행: {rows[0] if rows else '없음'}")
+            raise  # 예외를 다시 발생시켜 중단
 
     def _process_item(self, raw_item: dict) -> List[dict]:
         return [self._transform_row(raw_item, "")]
