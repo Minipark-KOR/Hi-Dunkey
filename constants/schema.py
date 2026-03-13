@@ -4,9 +4,9 @@ from typing import Dict, List, Tuple
 SCHEMAS = {
     "school_info": {
         "table_name": "schools_info",
-        "primary_key": ["school_code"],                     # ✅ 명시적 PK
+        "primary_key": ["school_code"],
         "columns": [
-            ("school_code", "TEXT", ""),                    # PRIMARY KEY 제거
+            ("school_code", "TEXT", ""),
             ("school_name", "TEXT", "NOT NULL"),
             ("region_code", "TEXT", "NOT NULL"),
             ("atpt_ofcdc_org_nm", "TEXT", ""),
@@ -57,9 +57,9 @@ SCHEMAS = {
     },
     "neis_info": {
         "table_name": "schools_neis",
-        "primary_key": ["sc_code"],                         # ✅ 명시적 PK
+        "primary_key": ["sc_code"],
         "columns": [
-            ("sc_code", "TEXT", ""),                        # PRIMARY KEY 제거
+            ("sc_code", "TEXT", ""),
             ("school_id", "INTEGER", ""),
             ("sc_name", "TEXT", ""),
             ("eng_name", "TEXT", ""),
@@ -114,5 +114,4 @@ SCHEMAS = {
             ("idx_neis_region", "atpt_code"),
         ],
     },
-    # 다른 스키마도 동일한 패턴으로 추가 (예: meal, timetable 등)
 }
