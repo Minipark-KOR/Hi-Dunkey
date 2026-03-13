@@ -80,7 +80,7 @@ class BaseCollector:
 
         self.total_db_path = str(self.base_dir / f"{name}_total.db")
 
-        elf.debug_mode = kwargs.get('debug_mode', False)
+        self.debug_mode = kwargs.get('debug_mode', False)
 
         self.logger = build_logger(name, str(LOG_DIR / f"{name}.log"))
         if self.debug_mode:
