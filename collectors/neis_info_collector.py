@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # collectors/neis_info_collector.py
 # 최종 수정: _init_db 제거, _process_item 제거, REGION_NAMES 직접 import
+# 2026-03-13: _safe_str 추가, org_rdnzc 안전 처리, debug_mode 전달
 
 import os
 import sys
@@ -57,12 +58,14 @@ class NeisInfoCollector(BaseCollector):
 
     def __init__(self, shard="none", school_range=None, incremental=False, full=False,
                  compare=False, debug_mode=False, quiet_mode=False):
-        super().__init__("neis_info", str(MASTER_DIR), shard, school_range, quiet_mode=quiet_mode)
+        # ✅ debug_mode를 super()에 전달
+        super().__init__("neis_info", str(MASTER_DIR), shard, school_range,
+                         quiet_mode=quiet_mode, debug_mode=debug_mode)
         self.api_context = 'school'
         self.incremental = incremental
         self.full = full
         self.compare = compare
-        self.debug_mode = debug_mode
+        # self.debug_mode는 base에서 관리하므로 별도 저장 불필요
         self.quiet_mode = quiet_mode
         self.run_date = now_kst().strftime("%Y%m%d")
 
@@ -78,6 +81,10 @@ class NeisInfoCollector(BaseCollector):
         if not quiet_mode:
             self.print(f"🏫 NeisInfoCollector 초기화 완료 (샤드: {shard})")
             self.logger.info(f"🏫 NeisInfoCollector 초기화 완료 (샤드: {shard})")
+
+    def _safe_str(self, value):
+        """None이면 빈 문자열 반환, 아니면 strip() 적용"""
+        return value.strip() if value else ""
 
     # ✅ _init_db 제거 (BaseCollector 기본 사용)
 
@@ -241,23 +248,23 @@ class NeisInfoCollector(BaseCollector):
                 "number_bit": addr_ids.get("number_bit", 0),
                 "jibun_address": meta.get("jibun_address"),
                 "kakao_address": None,
-                "atpt_ofcdc_sc_nm": row.get("ATPT_OFCDC_SC_NM", ""),
-                "lctn_sc_nm": row.get("LCTN_SC_NM", ""),
-                "ju_org_nm": row.get("JU_ORG_NM", ""),
-                "fond_sc_nm": row.get("FOND_SC_NM", ""),
-                "org_rdnzc": row.get("ORG_RDNZC", "").strip(),
-                "org_rdnda": row.get("ORG_RDNDA", ""),
-                "org_faxno": row.get("ORG_FAXNO", ""),
-                "coedu_sc_nm": row.get("COEDU_SC_NM", ""),
-                "hs_sc_nm": row.get("HS_SC_NM", ""),
-                "indst_specl_ccccl_exst_yn": row.get("INDST_SPECL_CCCCL_EXST_YN", ""),
-                "hs_gnrl_busns_sc_nm": row.get("HS_GNRL_BUSNS_SC_NM", ""),
-                "spcly_purps_hs_ord_nm": row.get("SPCLY_PURPS_HS_ORD_NM", ""),
-                "ene_bfe_sehf_sc_nm": row.get("ENE_BFE_SEHF_SC_NM", ""),
-                "dght_sc_nm": row.get("DGHT_SC_NM", ""),
-                "fond_ymd": row.get("FOND_YMD", ""),
-                "foas_memrd": row.get("FOAS_MEMRD", ""),
-                "load_dtm": row.get("LOAD_DTM", ""),
+                "atpt_ofcdc_sc_nm": self._safe_str(row.get("ATPT_OFCDC_SC_NM")),
+                "lctn_sc_nm": self._safe_str(row.get("LCTN_SC_NM")),
+                "ju_org_nm": self._safe_str(row.get("JU_ORG_NM")),
+                "fond_sc_nm": self._safe_str(row.get("FOND_SC_NM")),
+                "org_rdnzc": self._safe_str(row.get("ORG_RDNZC")),          # ✅ 수정
+                "org_rdnda": self._safe_str(row.get("ORG_RDNDA")),
+                "org_faxno": self._safe_str(row.get("ORG_FAXNO")),
+                "coedu_sc_nm": self._safe_str(row.get("COEDU_SC_NM")),
+                "hs_sc_nm": self._safe_str(row.get("HS_SC_NM")),
+                "indst_specl_ccccl_exst_yn": self._safe_str(row.get("INDST_SPECL_CCCCL_EXST_YN")),
+                "hs_gnrl_busns_sc_nm": self._safe_str(row.get("HS_GNRL_BUSNS_SC_NM")),
+                "spcly_purps_hs_ord_nm": self._safe_str(row.get("SPCLY_PURPS_HS_ORD_NM")),
+                "ene_bfe_sehf_sc_nm": self._safe_str(row.get("ENE_BFE_SEHF_SC_NM")),
+                "dght_sc_nm": self._safe_str(row.get("DGHT_SC_NM")),
+                "fond_ymd": self._safe_str(row.get("FOND_YMD")),
+                "foas_memrd": self._safe_str(row.get("FOAS_MEMRD")),
+                "load_dtm": self._safe_str(row.get("LOAD_DTM")),
             }])
 
             if time.time() - last_update >= 0.2 or i == total_items:
