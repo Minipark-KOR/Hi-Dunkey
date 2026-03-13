@@ -26,16 +26,16 @@ from core.school_year import get_current_school_year
 from collectors.neis_info_collector import NeisInfoCollector
 from collectors.school_info_collector import SchoolInfoCollector
 from collectors.meal_collector import MealCollector
-from collectors.schedule_collector import AnnualFullScheduleCollector
-from collectors.timetable_collector import AnnualFullTimetableCollector
+#from collectors.schedule_collector import AnnualFullScheduleCollector
+#from collectors.timetable_collector import AnnualFullTimetableCollector
 
 # collector_name -> collector_class 매핑
 COLLECTOR_MAP = {
     "neis_info": NeisInfoCollector,
     "school_info": SchoolInfoCollector,
     "meal_collector": MealCollector,
-    "schedule_collector": AnnualFullScheduleCollector,
-    "timetable_collector": AnnualFullTimetableCollector,
+    #"schedule_collector": AnnualFullScheduleCollector,
+    #"timetable_collector": AnnualFullTimetableCollector,
 }
 
 def build_common_parser(description: str) -> argparse.ArgumentParser:
