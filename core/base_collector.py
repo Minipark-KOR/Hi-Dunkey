@@ -191,7 +191,9 @@ class BaseCollector:
 
     def _get_field(self, raw_item: dict, field: str, default=None):
         from constants.api_mappings import get_api_field
-        return get_api_field(raw_item, field, context=self.api_context, default=default)
+        value = get_api_field(raw_item, field, context=self.api_context, default=default)
+        # None이면 빈 문자열 반환 (문자열 필드 안전 처리)
+        return "" if value is None else value
 
     def _include_school(self, school_code: str) -> bool:
         if not school_code:
