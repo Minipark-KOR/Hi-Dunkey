@@ -81,6 +81,8 @@ class BaseCollector:
         self.total_db_path = str(self.base_dir / f"{name}_total.db")
 
         self.logger = build_logger(name, str(LOG_DIR / f"{name}.log"))
+        if self.debug_mode:
+            self.logger.setLevel(logging.DEBUG)
         if not self.quiet_mode:
             print(f"📝 로그 파일: {LOG_DIR / f'{name}.log'}")
 
@@ -378,7 +380,7 @@ class BaseCollector:
             raise ValueError(...)
 
         columns = [col[0].strip() for col in schema["columns"]]
-        pk_columns = schema.get("primary_key", [])   # ✅ PK 목록 가져오기
+        pk_columns = schema.get("primary_key", [])
 
         if self.validate_data:
             valid, errors, warnings = DataValidator.validate_batch(batch, columns, pk_columns)
@@ -389,23 +391,25 @@ class BaseCollector:
                 self.logger.error(f"데이터 유효성 검증 실패: {errors}")
                 return
 
+        # ✅ 디버그: 저장할 컬럼과 데이터 수 로그
+        self.logger.debug(f"저장할 테이블: {self.table_name}, 컬럼 수: {len(columns)}")
         save_batch(conn, self.table_name, columns, batch)
 
     def _save_batch(self, batch: List[dict]):
         start_time = time.time()
         success = False
         try:
-            if hasattr(self, 'debug_mode') and self.debug_mode and not self.quiet_mode:
-                print(f"🔍 [_save_batch] 저장 시도: {len(batch)}개, DB 경로: {self.db_path}")
+            # ✅ 디버그: 저장 시도 전 배치 내용 샘플 로그
+            if len(batch) > 0:
+                self.logger.debug(f"저장 시도: 배치 크기 {len(batch)}, 첫 번째 항목: {batch[0]}")
             with get_db_connection(self.db_path) as conn:
                 self._do_save_batch(conn, batch)
             success = True
+        except Exception as e:
+            self.logger.error(f"배치 저장 예외: {e}", exc_info=True)  # ✅ traceback 추가
         finally:
             elapsed = time.time() - start_time
             self.stats.update(len(batch), elapsed, success)
-
-        if hasattr(self, 'debug_mode') and self.debug_mode and not self.quiet_mode:
-            print(f"✅ [_save_batch] 저장 완료 (elapsed: {elapsed:.3f}s)")
 
     def _load_checkpoints(self):
         pass
