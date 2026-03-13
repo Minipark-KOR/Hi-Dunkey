@@ -78,7 +78,7 @@ class ActionContext:
     last_args: Optional[List[str]] = None
     last_mode: Optional[str] = None
 
-ALLOWED_TABLES = {'schools', 'meals', 'timetable', 'schedule', 'staff'}
+ALLOWED_TABLES = {'schools', 'meals', 'timetable', 'schedule', 'staff', 'schools_neis', 'schools_info'}
 
 def cleanup_old_logs(days: int = 30) -> None:
     """30일 이상 된 로그 삭제"""
