@@ -574,8 +574,34 @@ def execute_merge(ctx: ActionContext) -> MenuResult:
     if merge_script and os.path.exists(merge_script):
         merge_timeout = collector.get('merge_timeout_seconds', 1800)
         print(f"\n{GREEN}🔗 병합 스크립트 실행{RESET}")
+        
+        # 병합할 연도 입력받기 (기본값: 현재 학년도)
+        from core.school_year import get_current_school_year
+        default_year = get_current_school_year()
+        year_input = input(f"병합할 연도를 입력하세요 (기본값: {default_year}): ").strip()
+        year = year_input if year_input else str(default_year)
+        
+        # 기본 DB 경로 (collector 정보에서 가져올 수 있음)
+        odd_path = collector.get('shard_odd')
+        even_path = collector.get('shard_even')
+        output_path = collector.get('db_path')
+        
+        cmd = [sys.executable, merge_script, "--year", year]
+        
+        # 경로 옵션 추가 (필요시)
+        if odd_path:
+            cmd.extend(["--odd", odd_path])
+        if even_path:
+            cmd.extend(["--even", even_path])
+        if output_path:
+            cmd.extend(["--output", output_path])
+        
+        # quiet 옵션 (선택)
+        if ctx.args and '--quiet' in ctx.args:
+            cmd.append("--quiet")
+        
         try:
-            subprocess.run([sys.executable, merge_script], check=True, timeout=merge_timeout)
+            subprocess.run(cmd, check=True, timeout=merge_timeout)
             logger.info("병합 스크립트 정상 종료")
             print(f"{GREEN}✅ 병합 완료{RESET}")
         except subprocess.TimeoutExpired:
