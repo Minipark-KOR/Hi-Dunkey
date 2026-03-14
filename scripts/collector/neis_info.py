@@ -11,7 +11,7 @@ from pathlib import Path
 # 프로젝트 루트를 sys.path에 추가
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
-from core.base_collector import BaseCollector
+from core.collector_engine import CollectorEngine
 from core.kst_time import now_kst
 from core.school_year import get_current_school_year
 from core.config import config
@@ -23,7 +23,7 @@ from constants.api_mappings import get_api_field
 API_URL = NEIS_ENDPOINTS['school']
 
 
-class NeisInfoCollector(BaseCollector):
+class NeisInfoCollector(CollectorEngine):
     """NEIS 학교 기본정보 수집기 (원시 데이터, 순차처리)"""
     
     description = "NEIS 학교 기본정보 (원시 데이터)"

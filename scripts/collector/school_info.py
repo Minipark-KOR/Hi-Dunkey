@@ -9,7 +9,7 @@ from typing import Dict, Optional, Any
 # 프로젝트 루트를 sys.path에 추가
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
-from core.base_collector import BaseCollector
+from core.collector_engine import CollectorEngine
 from core.shard import should_include_school
 from core.kst_time import now_kst
 from core.school_year import get_current_school_year
@@ -21,16 +21,14 @@ from constants.api_mappings import get_api_field
 API_URL = "http://www.schoolinfo.go.kr/openApi.do"
 
 
-class SchoolInfoCollector(BaseCollector):
+class SchoolInfoCollector(CollectorEngine):
     description = "학교 기본정보 (학교알리미)"
     table_name = "schools_info"
     merge_script = "scripts/merge_school_info_dbs.py"
     _cfg = config.get_collector_config("school_info")
     timeout_seconds = _cfg.get("timeout_seconds", 3600)
-    parallel_timeout_seconds = _cfg.get("parallel_timeout_seconds", 7200)
     merge_timeout_seconds = _cfg.get("merge_timeout_seconds", 3600)
     metrics_config = _cfg.get("metrics_config", {"enabled": True})
-    parallel_config = _cfg.get("parallel_config", {"max_workers": 4})
     schema_name = "school_info"
     api_context = "school_info"
 
@@ -68,7 +66,9 @@ class SchoolInfoCollector(BaseCollector):
             self.logger.warning(f"[{region_name}] 데이터 없음")
             return 0
 
+        # 순차 처리: API 페이지를 순서대로 읽고, 유효 데이터만 배치 저장
         school_count = 0
+        batch = []
         for row in rows:
             school_code = get_api_field(row, "school_code", self.api_context)
             if not school_code:
@@ -79,11 +79,14 @@ class SchoolInfoCollector(BaseCollector):
             ):
                 continue
 
-            self.enqueue([self._transform_row(row, region_code)])
+            batch.append(self._transform_row(row, region_code))
             school_count += 1
 
             if limit and school_count >= limit:
                 break
+
+        if batch:
+            self.enqueue(batch)
 
         return school_count
 
