@@ -39,3 +39,7 @@ NEIS_KEYS_JSON.json
 mesids_key.pem
 *.txt
 *.csv
+
+# 로컬 작업용 폴더
+/raw_data/
+/trash/

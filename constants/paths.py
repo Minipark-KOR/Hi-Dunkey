@@ -44,10 +44,11 @@ TIMETABLE_EVEN_DB_PATH = ACTIVE_DIR / "timetable_even.db"
 TIMETABLE_TOTAL_DB_PATH = ACTIVE_DIR / "timetable_total.db"
 SCHOOL_INFO_ODD_DB_PATH = MASTER_DIR / "school_info_odd.db"
 SCHOOL_INFO_EVEN_DB_PATH = MASTER_DIR / "school_info_even.db"
+ADDITIONAL_SCHOOL_INFO_DB_PATH = MASTER_DIR / "additional_school_info.db"
+SCHOOL_MASTER_DB_PATH = MASTER_DIR / "school_master.db"
 
 # 모든 디렉토리 생성
 for d in [ACTIVE_DIR, MASTER_DIR, LOG_DIR, METRICS_DIR, TEMP_DIR, CACHE_DIR,
           EXPORT_DIR, QUERIES_DIR, GA4_DIR, REPORTS_DIR, STATS_DIR, EXCEL_DIR,
           BASKETS_DIR, WARM_DIR]:
     d.mkdir(parents=True, exist_ok=True)
-    
