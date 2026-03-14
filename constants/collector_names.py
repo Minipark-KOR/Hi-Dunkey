@@ -3,3 +3,6 @@
 
 NEIS_INFO = "neis_info"
 SCHOOL_INFO = "school_info"
+MEAL = "meal"
+TIMETABLE = "timetable"
+SCHEDULE = "schedule"

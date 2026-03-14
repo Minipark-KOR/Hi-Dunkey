@@ -18,8 +18,10 @@ GA4_DIR = DATA_DIR / "ga4"
 REPORTS_DIR = DATA_DIR / "reports"
 STATS_DIR = REPORTS_DIR / "stats"
 EXCEL_DIR = REPORTS_DIR / "excel"
+ARCHIVE_DIR = DATA_DIR / "archive"
 BASKETS_DIR = DATA_DIR / "baskets"
 WARM_DIR = BASKETS_DIR / "warm"
+BACKUP_DIR = WARM_DIR  # 최근 날짜별 백업 (data/baskets/warm/)
 
 # DB 파일 경로
 NEIS_INFO_DB_PATH = MASTER_DIR / "neis_info.db"

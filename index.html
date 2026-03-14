@@ -1,0 +1,1095 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+    <title>Hi-Dunkey 학교정보</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css">
+    
+    <!-- FontAwesome 6.5.1 -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    
+    <!-- PWA 메타 태그 -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#4c6ef5">
+    
+    <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.js"></script>
+
+    <style>
+        /* ===== 공통 스타일 ===== */
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Pretendard', sans-serif;
+            background-color: #f0f2f5;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            transition: all 0.3s ease;
+            
+            /* 모바일 기본 */
+            padding: 16px 12px;
+            justify-content: center;
+        }
+
+        body.has-calendar {
+            justify-content: flex-start;
+        }
+
+        /* ===== 헤더 영역 ===== */
+        #main-header {
+            width: 100%;
+            max-width: 500px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 16px;
+            transition: all 0.3s ease;
+            padding: 0 8px;
+        }
+
+        .header-title-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            width: 100%;
+            justify-content: center;
+            position: relative;
+        }
+
+        #page-title {
+            font-size: clamp(1.8rem, 6vw, 2.2rem);
+            font-weight: 800;
+            color: #1a1a2e;
+            margin: 0;
+            text-align: center;
+            letter-spacing: -0.5px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.05);
+            transition: all 0.3s ease;
+        }
+        
+        #page-title i {
+            color: #4c6ef5;
+            margin-right: 8px;
+        }
+
+        #page-title.shrink {
+            font-size: clamp(1.4rem, 5vw, 1.8rem);
+        }
+
+        /* 학교 변경 버튼 */
+        .change-school-btn {
+            background: transparent;
+            border: none;
+            color: #4c6ef5;
+            font-size: 1rem;
+            cursor: pointer;
+            padding: 8px;
+            border-radius: 50%;
+            width: 36px;
+            height: 36px;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .change-school-btn:hover {
+            background: #eef2ff;
+        }
+
+        .change-school-btn i {
+            font-size: 1rem;
+        }
+
+        /* ===== 탭 메뉴 ===== */
+        .tab-menu {
+            display: none;
+            justify-content: center;
+            gap: 10px;
+            margin: 5px 0;
+            width: 100%;
+        }
+
+        body.has-calendar .tab-menu {
+            display: flex;
+        }
+
+        .tab-btn {
+            background: transparent;
+            border: none;
+            padding: 8px 16px;
+            font-size: 1rem;
+            font-weight: 600;
+            color: #888;
+            cursor: pointer;
+            border-radius: 20px;
+            transition: all 0.2s;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .tab-btn i {
+            margin-right: 6px;
+        }
+
+        .tab-btn.active {
+            background: #4c6ef5;
+            color: white;
+        }
+
+        .tab-btn.active i {
+            color: white;
+        }
+
+        /* ===== 검색 영역 ===== */
+        #search-container {
+            width: 100%;
+            position: relative;
+            transition: margin 0.3s ease;
+        }
+
+        /* 데스크탑에서 검색창 여백 */
+        @media (min-width: 768px) {
+            #search-container {
+                margin-top: 80px;
+            }
+            #search-container.with-calendar {
+                margin-top: 20px;
+            }
+        }
+
+        #school-search {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            background: white;
+            padding: 6px 12px;
+            border-radius: 50px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+        }
+
+        #school-input {
+            flex: 1;
+            padding: 10px 12px;
+            border: none;
+            font-family: 'Pretendard', sans-serif;
+            font-size: 0.95rem;
+            background: transparent;
+            outline: none;
+            min-width: 0;
+        }
+
+        #search-btn {
+            background: #4c6ef5;
+            color: white;
+            border: none;
+            border-radius: 30px;
+            padding: 8px 18px;
+            font-family: 'Pretendard', sans-serif;
+            font-size: 0.9rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.15s;
+            white-space: nowrap;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        #search-btn i {
+            margin-right: 6px;
+        }
+
+        #search-btn:hover {
+            background: #3b5bdb;
+        }
+
+        #search-results {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            z-index: 100;
+            width: 100%;
+            margin-top: 8px;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+            display: none;
+            overflow-y: auto;
+            max-height: 300px;
+        }
+
+        .school-item {
+            padding: 12px 16px;
+            border-bottom: 1px solid #eee;
+            cursor: pointer;
+            transition: background 0.1s;
+            font-size: 0.95rem;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .school-item:last-child {
+            border-bottom: none;
+        }
+
+        .school-item:hover,
+        .school-item.selected {
+            background: #f0f2f5;
+        }
+
+        .school-item small {
+            color: #666;
+            margin-left: 8px;
+            font-size: 0.8rem;
+        }
+
+        /* ===== 캘린더 영역 ===== */
+        #calendar-wrapper {
+            width: 100%;
+            margin: 20px auto 0;
+            background: white;
+            padding: 16px;
+            border-radius: 16px;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+            display: none;
+            
+            /* 모바일 기본 */
+            max-width: 500px;
+        }
+
+        /* 데스크탑에서 캘린더 확장 */
+        @media (min-width: 768px) {
+            #calendar-wrapper {
+                max-width: 960px;
+                padding: 24px;
+            }
+        }
+
+        #status-bar {
+            text-align: center;
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: #38a169;
+            margin-bottom: 16px;
+            padding: 0 8px;
+        }
+        #status-bar.error { color: #e53e3e; }
+        #status-bar.warn  { color: #f59f00; }
+
+        /* ===== FullCalendar 커스텀 ===== */
+        .fc {
+            /* 모바일 기본 */
+            font-size: 0.85rem !important;
+        }
+        
+        .fc-toolbar-title {
+            font-weight: 700 !important;
+            color: #1a1a2e;
+            
+            /* 모바일 */
+            font-size: 1.3rem !important;
+        }
+        
+        /* 데스크탑 */
+        @media (min-width: 768px) {
+            .fc-toolbar-title {
+                font-size: 1.6rem !important;
+                font-weight: 800 !important;
+            }
+        }
+        
+        .fc-button {
+            padding: 4px 8px !important;
+            font-size: 0.8rem !important;
+            background-color: #4c6ef5 !important;
+            border-color: #4c6ef5 !important;
+            font-family: 'Pretendard', sans-serif !important;
+        }
+        
+        .fc-button:hover {
+            background-color: #3b5bdb !important;
+            border-color: #3b5bdb !important;
+        }
+        
+        .fc-button-active {
+            background-color: #1a1a2e !important; 
+            border-color: #1a1a2e !important;
+        }
+        
+        .fc-event {
+            cursor: pointer;
+            border-radius: 4px;
+            border: none !important;
+            
+            /* 모바일 */
+            font-size: 0.7rem !important;
+            padding: 1px 3px !important;
+            margin: 1px !important;
+        }
+        
+        /* 데스크탑 */
+        @media (min-width: 768px) {
+            .fc-event {
+                font-size: 0.78rem !important;
+                padding: 1px 4px !important;
+            }
+        }
+        
+        .fc-daygrid-day-number {
+            font-size: 0.8rem;
+            padding: 4px !important;
+        }
+
+        .fc-theme-standard .fc-scrollgrid {
+            border: 1px solid #dde1f0 !important;
+        }
+        
+        @media (min-width: 768px) {
+            .fc-theme-standard .fc-scrollgrid {
+                border: 2px solid #dde1f0 !important;
+            }
+        }
+
+        .fc-day-sun .fc-daygrid-day-number,
+        .fc-col-header-cell.fc-day-sun .fc-col-header-cell-cushion {
+            color: #e53e3e !important;
+        }
+        
+        .fc-day-sat .fc-daygrid-day-number,
+        .fc-col-header-cell.fc-day-sat .fc-col-header-cell-cushion {
+            color: #4c6ef5 !important;
+        }
+
+        .fc-daygrid-event-dot { display: none; }
+
+        /* 오늘 날짜 강조 */
+        .fc-day-today {
+            background: rgba(76, 110, 245, 0.05) !important;
+        }
+        
+        .fc-day-today .fc-daygrid-day-number {
+            background: #4c6ef5;
+            color: white !important;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 2px;
+        }
+
+        /* ===== 팝업 ===== */
+        #popup-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 9998;
+        }
+        
+        #event-popup {
+            display: none;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+            padding: 24px 20px;
+            z-index: 9999;
+            width: 90%;
+            max-width: 420px;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+        
+        #event-popup h2 {
+            font-size: 1.2rem;
+            color: #1a1a2e;
+            margin-bottom: 16px;
+            padding-right: 20px;
+            line-height: 1.4;
+            word-break: break-word;
+        }
+        
+        #event-popup .popup-row {
+            font-size: 0.95rem;
+            color: #555;
+            margin-bottom: 10px;
+            line-height: 1.5;
+            word-break: break-word;
+        }
+        
+        #popup-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-bottom: 12px;
+        }
+        
+        #event-popup .tag {
+            display: inline-block;
+            background: #eef2ff;
+            color: #4c6ef5;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            padding: 4px 12px;
+            margin: 0;
+        }
+        
+        #event-popup .tag.red {
+            background: #fff0f0;
+            color: #e53e3e;
+        }
+        
+        #event-popup .tag.moon {
+            background: #f3f0ff;
+            color: #7950f2;
+        }
+        
+        #popup-close {
+            display: block;
+            margin-top: 20px;
+            background: #4c6ef5;
+            color: white;
+            border: none;
+            border-radius: 12px;
+            padding: 12px 0;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 500;
+            font-family: 'Pretendard', sans-serif;
+            width: 100%;
+            transition: background 0.15s;
+            -webkit-tap-highlight-color: transparent;
+        }
+        
+        #popup-close:hover {
+            background: #3b5bdb;
+        }
+
+        /* ===== 토스트 메시지 ===== */
+        #toast {
+            display: none;
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(26, 26, 46, 0.9);
+            color: white;
+            border-radius: 30px;
+            padding: 12px 24px;
+            font-size: 0.9rem;
+            z-index: 99999;
+            white-space: nowrap;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+            animation: fadeInUp 0.25s ease;
+            max-width: 90%;
+            text-align: center;
+        }
+
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateX(-50%) translateY(10px); }
+            to { opacity: 1; transform: translateX(-50%) translateY(0); }
+        }
+
+        /* 로딩 인디케이터 */
+        #loading {
+            display: none;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 30px;
+            z-index: 100000;
+        }
+    </style>
+</head>
+<body>
+    <div id="main-header">
+        <div class="header-title-wrapper">
+            <h1 id="page-title"><i class="fa-solid fa-school"></i> <span id="title-year"></span>학년도 학교정보</h1>
+            <button id="change-school-btn" class="change-school-btn" aria-label="학교 변경">
+                <i class="fa-solid fa-rotate-right"></i>
+            </button>
+        </div>
+        
+        <!-- 탭 메뉴 -->
+        <div class="tab-menu">
+            <button class="tab-btn active" data-tab="schedule"><i class="fa-regular fa-calendar"></i> 학사일정</button>
+            <button class="tab-btn" data-tab="meal"><i class="fa-solid fa-utensils"></i> 급식</button>
+            <button class="tab-btn" data-tab="timetable"><i class="fa-solid fa-table-list"></i> 시간표</button>
+        </div>
+        
+        <!-- 검색 영역 (항상 표시) -->
+        <div id="search-container">
+            <div id="school-search">
+                <input type="text" id="school-input" placeholder="학교명 또는 학교 코드를 입력하세요">
+                <button id="search-btn"><i class="fa-solid fa-magnifying-glass"></i> 검색</button>
+            </div>
+            <div id="search-results"></div>
+        </div>
+    </div>
+
+    <!-- 캘린더 영역 -->
+    <div id="calendar-wrapper">
+        <div id="status-bar">학교를 선택해주세요.</div>
+        <div id="calendar"></div>
+    </div>
+
+    <!-- 팝업 -->
+    <div id="popup-overlay"></div>
+    <div id="event-popup">
+        <h2 id="popup-title"></h2>
+        <div class="popup-row" id="popup-date"></div>
+        <div class="popup-row" id="popup-grade"></div>
+        <div id="popup-tags"></div>
+        <div class="popup-row" id="popup-content"></div>
+        <button id="popup-close">닫기</button>
+    </div>
+
+    <!-- 토스트 메시지 -->
+    <div id="toast"></div>
+    
+    <!-- 로딩 인디케이터 -->
+    <div id="loading">불러오는 중...</div>
+
+    <script>
+        // ===== 환경 설정 =====
+        const DEBOUNCE_DELAY = 300;
+        const MAX_RETRIES = 3;
+        
+        const host = window.location.hostname;
+        const isLocal = host === 'localhost' || host === '127.0.0.1' || host === '[::1]';
+        const API_BASE = isLocal ? 'http://158.179.168.109:8000/api' : '/api';
+
+        console.log(`현재 모드: ${isLocal ? '로컬 테스트' : 'Vercel 배포'}`);
+        console.log(`API 주소: ${API_BASE}`);
+
+        // ===== 개선된 fetchWithRetry (4xx/5xx 분기) =====
+        async function fetchWithRetry(url, retries = MAX_RETRIES) {
+            for (let i = 0; i < retries; i++) {
+                try {
+                    const res = await fetch(url);
+                    
+                    if (res.ok) {
+                        return await res.json();
+                    }
+                    
+                    // 4xx: 클라이언트 오류 → 재시도 없이 즉시 실패
+                    if (res.status >= 400 && res.status < 500) {
+                        throw new Error(`클라이언트 오류 HTTP ${res.status}: ${url}`);
+                    }
+                    
+                    // 5xx: 서버 오류 → 남은 재시도 횟수가 있으면 대기 후 재시도
+                    if (res.status >= 500 && i < retries - 1) {
+                        const delay = 1000 * (i + 1);
+                        console.warn(`서버 오류 ${res.status}, ${delay}ms 후 재시도 (${i+1}/${retries})`);
+                        await new Promise(r => setTimeout(r, delay));
+                        continue;
+                    }
+                    
+                    throw new Error(`HTTP ${res.status}: ${url}`);
+                    
+                } catch (e) {
+                    if (i === retries - 1) throw e;
+                    const delay = 1000 * (i + 1);
+                    console.warn(`요청 실패: ${e.message}, ${delay}ms 후 재시도`);
+                    await new Promise(r => setTimeout(r, delay));
+                }
+            }
+        }
+
+        // ===== 전역 변수 =====
+        let selectedSchool = null;
+        let selectedSchoolName = '';
+        let searchTimeout = null;
+        let calendar = null;
+        let currentTab = 'schedule';
+        let selectedIndex = -1;
+        let toastTimer = null;
+        
+        // 캐시 저장소
+        const scheduleCache = new Map();
+
+        // ===== 유틸리티 함수 =====
+        function getSchoolYear(date) {
+            const m = date.getMonth() + 1;
+            const y = date.getFullYear();
+            return m >= 3 ? y : y - 1;
+        }
+
+        function showToast(msg, duration = 3000) {
+            const el = document.getElementById('toast');
+            el.textContent = msg;
+            el.style.display = 'block';
+            if (toastTimer) clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => { el.style.display = 'none'; }, duration);
+        }
+
+        function showLoading() {
+            document.getElementById('loading').style.display = 'block';
+        }
+
+        function hideLoading() {
+            document.getElementById('loading').style.display = 'none';
+        }
+
+        // ===== 화면 크기에 따른 초기 뷰 설정 =====
+        function getInitialView() {
+            return window.innerWidth <= 768 ? 'listMonth' : 'dayGridMonth';
+        }
+
+        // ===== 타이틀 업데이트 =====
+        function updatePageTitle() {
+            const titleEl = document.getElementById('page-title');
+            if (!titleEl) return;
+            
+            if (!selectedSchool) {
+                const currentYear = getSchoolYear(new Date());
+                titleEl.innerHTML = `<i class="fa-solid fa-school"></i> ${currentYear}학년도 학교정보`;
+            } else {
+                let faIcon = 'fa-calendar-check';
+                let emoji = '📅';
+                
+                if (currentTab === 'meal') {
+                    faIcon = 'fa-utensils';
+                    emoji = '🍱';
+                } else if (currentTab === 'timetable') {
+                    faIcon = 'fa-table-list';
+                    emoji = '⏰';
+                }
+                
+                titleEl.innerHTML = `<i class="fa-solid ${faIcon}"></i> ${emoji} ${selectedSchoolName}`;
+            }
+        }
+
+        // ===== 탭 전환 =====
+        function switchTab(tab) {
+            currentTab = tab;
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.tab === tab);
+            });
+            
+            updatePageTitle();
+            
+            if (tab === 'schedule' && selectedSchool && calendar) {
+                calendar.refetchEvents();
+            } else if (tab === 'meal') {
+                showToast('🍱 급식 기능은 준비 중입니다');
+            } else if (tab === 'timetable') {
+                showToast('⏰ 시간표 기능은 준비 중입니다');
+            }
+        }
+
+        // ===== 학교 선택 해제 =====
+        function clearSchoolSelection() {
+            selectedSchool = null;
+            selectedSchoolName = '';
+            localStorage.removeItem('hi_dunkey_last_school');
+            
+            // UI 복원
+            searchInput.placeholder = '학교명 또는 학교 코드를 입력하세요';
+            searchInput.value = '';
+            document.getElementById('change-school-btn').style.display = 'none';
+            document.body.classList.remove('has-calendar');
+            document.getElementById('page-title').classList.remove('shrink');
+            document.getElementById('calendar-wrapper').style.display = 'none';
+            document.getElementById('search-container').classList.remove('with-calendar');
+            
+            // 캐시 초기화 (선택사항)
+            scheduleCache.clear();
+            
+            showToast('🔍 새로운 학교를 검색해보세요');
+        }
+
+        // ===== 팝업 =====
+        function showPopup(info) {
+            const e = info.event;
+            const p = e.extendedProps;
+
+            document.getElementById('popup-title').textContent = e.title;
+            document.getElementById('popup-date').textContent = `📆 ${e.startStr.replace(/-/g, '.')}`;
+            document.getElementById('popup-grade').textContent = p.grade_disp ? `👥 ${p.grade_disp}` : '';
+
+            const tagsEl = document.getElementById('popup-tags');
+            tagsEl.innerHTML = '';
+            if (p.sub_yn === 1) {
+                tagsEl.innerHTML += '<span class="tag red">🔴 휴업일</span>';
+            }
+            if (p.dn_yn === 1) {
+                tagsEl.innerHTML += '<span class="tag moon">🌙 야간 수업</span>';
+            }
+
+            document.getElementById('popup-content').textContent = p.ev_content || '';
+            document.getElementById('popup-overlay').style.display = 'block';
+            document.getElementById('event-popup').style.display = 'block';
+        }
+
+        function closePopup() {
+            document.getElementById('popup-overlay').style.display = 'none';
+            document.getElementById('event-popup').style.display = 'none';
+        }
+
+        // ===== 학교 검색 =====
+        const searchInput = document.getElementById('school-input');
+        const searchBtn = document.getElementById('search-btn');
+        const searchResults = document.getElementById('search-results');
+
+        function highlightSelectedItem() {
+            document.querySelectorAll('.school-item').forEach((item, index) => {
+                item.classList.toggle('selected', index === selectedIndex);
+            });
+            
+            if (selectedIndex >= 0) {
+                document.querySelectorAll('.school-item')[selectedIndex]?.scrollIntoView({ block: 'nearest' });
+            }
+        }
+
+        async function searchSchools(query) {
+            if (query.length < 2) {
+                searchResults.style.display = 'none';
+                selectedIndex = -1;
+                return;
+            }
+            
+            try {
+                showLoading();
+                const schools = await fetchWithRetry(`${API_BASE}/schools?query=${encodeURIComponent(query)}`);
+                const validSchools = schools.filter(s => s.sc_name && s.sc_name.trim() !== '');
+                displaySearchResults(validSchools);
+            } catch (e) {
+                console.error('검색 오류:', e);
+                showToast('검색 중 오류가 발생했습니다');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        function displaySearchResults(schools) {
+            const resultsDiv = document.getElementById('search-results');
+            resultsDiv.innerHTML = '';
+            selectedIndex = -1;
+            
+            if (!schools || schools.length === 0) {
+                resultsDiv.style.display = 'none';
+                showToast('검색 결과가 없습니다');
+                return;
+            }
+            
+            schools.forEach((s, index) => {
+                const div = document.createElement('div');
+                div.className = 'school-item';
+                div.dataset.index = index;
+                div.innerHTML = `${s.sc_name} <small>${s.sc_code}</small>`;
+                
+                div.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    
+                    if (selectedSchool && selectedSchool !== s.sc_code) {
+                        // 이미 선택된 학교가 있으면 변경 확인
+                        if (confirm(`${s.sc_name}(으)로 변경하시겠습니까?`)) {
+                            selectSchool(s.sc_code, s.sc_name);
+                        }
+                    } else {
+                        selectSchool(s.sc_code, s.sc_name);
+                    }
+                };
+                
+                div.onmouseenter = () => {
+                    selectedIndex = index;
+                    highlightSelectedItem();
+                };
+                
+                resultsDiv.appendChild(div);
+            });
+            
+            resultsDiv.style.display = 'block';
+        }
+
+        function selectSchool(code, name) {
+            selectedSchool = code;
+            selectedSchoolName = name;
+            
+            // localStorage에 저장
+            localStorage.setItem('hi_dunkey_last_school', JSON.stringify({code, name}));
+            
+            // 검색창 업데이트
+            searchInput.placeholder = '🔍 다른 학교 검색하기';
+            searchInput.value = '';
+            searchResults.style.display = 'none';
+            selectedIndex = -1;
+            
+            // UI 업데이트
+            document.getElementById('change-school-btn').style.display = 'flex';
+            document.getElementById('search-container').classList.add('with-calendar');
+            document.body.classList.add('has-calendar');
+            document.getElementById('page-title').classList.add('shrink');
+            document.getElementById('calendar-wrapper').style.display = 'block';
+            
+            showToast(`🏫 ${name} 선택됨`);
+            
+            switchTab('schedule');
+
+            if (!calendar) {
+                initCalendar();
+            } else {
+                calendar.refetchEvents();
+            }
+        }
+
+        // ===== 이벤트 리스너 =====
+        searchInput.addEventListener('input', function(e) {
+            if (searchTimeout) clearTimeout(searchTimeout);
+            const query = e.target.value.trim();
+            searchTimeout = setTimeout(() => searchSchools(query), DEBOUNCE_DELAY);
+        });
+
+        searchInput.addEventListener('focus', function() {
+            if (selectedSchool && !searchResults.style.display) {
+                // 학교 선택된 상태에서도 검색 결과 창을 보여줌
+                if (searchInput.value.trim().length >= 2) {
+                    searchResults.style.display = 'block';
+                }
+            }
+        });
+
+        searchInput.addEventListener('keydown', function(e) {
+            const items = document.querySelectorAll('.school-item');
+            
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                if (items.length > 0) {
+                    selectedIndex = (selectedIndex + 1) % items.length;
+                    highlightSelectedItem();
+                }
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (items.length > 0) {
+                    selectedIndex = selectedIndex <= 0 ? items.length - 1 : selectedIndex - 1;
+                    highlightSelectedItem();
+                }
+            } else if (e.key === 'Enter' && selectedIndex >= 0 && items[selectedIndex]) {
+                e.preventDefault();
+                const schoolCode = items[selectedIndex].querySelector('small').textContent;
+                const schoolName = items[selectedIndex].childNodes[0].nodeValue.trim();
+                
+                if (selectedSchool && selectedSchool !== schoolCode) {
+                    if (confirm(`${schoolName}(으)로 변경하시겠습니까?`)) {
+                        selectSchool(schoolCode, schoolName);
+                    }
+                } else {
+                    selectSchool(schoolCode, schoolName);
+                }
+            }
+        });
+
+        searchBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            searchSchools(searchInput.value.trim());
+        });
+
+        document.addEventListener('click', (e) => {
+            if (searchResults.style.display !== 'block') return;
+            
+            let target = e.target;
+            while (target) {
+                if (target === searchResults || target === searchInput) return;
+                target = target.parentNode;
+            }
+            
+            searchResults.style.display = 'none';
+            selectedIndex = -1;
+        });
+
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                switchTab(this.dataset.tab);
+            });
+        });
+
+        document.getElementById('popup-close').addEventListener('click', closePopup);
+        document.getElementById('popup-overlay').addEventListener('click', closePopup);
+        
+        document.getElementById('change-school-btn').addEventListener('click', clearSchoolSelection);
+
+        // ===== 캘린더 초기화 =====
+        function initCalendar() {
+            const statusEl = document.getElementById('status-bar');
+            let currentViewStart = null;
+            let currentViewEnd = null;
+            let isFirstLoad = true;
+
+            const calendarEl = document.getElementById('calendar');
+            calendar = new FullCalendar.Calendar(calendarEl, {
+                initialView: getInitialView(),
+                locale: 'ko',
+                fixedWeekCount: false,
+                height: 'auto',
+                contentHeight: 'auto',
+                headerToolbar: {
+                    left: 'prev,next',
+                    center: 'title',
+                    right: window.innerWidth <= 768 ? 'dayGridMonth,listMonth' : 'dayGridMonth,listMonth'
+                },
+                buttonText: {
+                    prev: '◀',
+                    next: '▶',
+                    dayGridMonth: '월간',
+                    listMonth: '목록'
+                },
+                dayCellContent: function (info) {
+                    return info.dayNumberText.replace('일', '');
+                },
+                events: async function(fetchInfo, successCallback, failureCallback) {
+                    if (!selectedSchool) {
+                        statusEl.textContent = '학교를 먼저 선택하세요';
+                        statusEl.className = 'warn';
+                        successCallback([]);
+                        return;
+                    }
+
+                    const year = getSchoolYear(fetchInfo.start);
+                    const cacheKey = `${selectedSchool}_${year}`;
+                    
+                    // 캐시 확인
+                    if (scheduleCache.has(cacheKey)) {
+                        const cachedData = scheduleCache.get(cacheKey);
+                        cachedData.forEach(item => {
+                            item.start = item.start + 'T00:00:00';
+                        });
+                        return successCallback(cachedData);
+                    }
+
+                    try {
+                        showLoading();
+                        const data = await fetchWithRetry(`${API_BASE}/schedule?school_code=${selectedSchool}&year=${year}`);
+                        
+                        // 캐시에 저장
+                        scheduleCache.set(cacheKey, data);
+                        
+                        data.forEach(item => {
+                            item.start = item.start + 'T00:00:00';
+                        });
+                        
+                        successCallback(data);
+                    } catch (e) {
+                        console.error('학사일정 오류:', e);
+                        failureCallback(e);
+                    } finally {
+                        hideLoading();
+                    }
+                },
+                datesSet: function (info) {
+                    currentViewStart = info.start;
+                    currentViewEnd = info.end;
+                    
+                    // 캘린더 제목에 학교명 표시
+                    const titleEl = document.querySelector('.fc-toolbar-title');
+                    if (titleEl && selectedSchoolName) {
+                        const year = getSchoolYear(info.view.currentStart);
+                        titleEl.textContent = `${selectedSchoolName} ${year}학년도`;
+                    }
+                },
+                eventsSet: function (events) {
+                    if (!selectedSchool) return;
+
+                    if (isFirstLoad) {
+                        isFirstLoad = false;
+                        statusEl.textContent = events.length > 0 ? `✅ 총 ${events.length}개 일정` : '일정이 없습니다';
+                        statusEl.className = events.length > 0 ? 'ok' : 'warn';
+                        return;
+                    }
+
+                    if (!currentViewStart) return;
+
+                    const inRange = events.filter(ev =>
+                        ev.start &&
+                        ev.start >= currentViewStart &&
+                        ev.start < currentViewEnd
+                    );
+
+                    if (inRange.length === 0) {
+                        showToast('📭 이 달에 일정이 없습니다');
+                        statusEl.textContent = '일정 없음';
+                        statusEl.className = 'warn';
+                    } else {
+                        statusEl.textContent = `✅ ${inRange.length}개 일정`;
+                        statusEl.className = 'ok';
+                    }
+                },
+                eventClick: showPopup,
+                eventDidMount: function (info) {
+                    const p = info.event.extendedProps;
+                    info.el.style.backgroundColor = p.sub_yn === 1 ? '#e53e3e' : '#4c6ef5';
+                    info.el.style.borderColor = p.sub_yn === 1 ? '#e53e3e' : '#4c6ef5';
+                    info.el.style.color = 'white';
+                }
+            });
+
+            calendar.render();
+            statusEl.textContent = '일정 로딩중...';
+        }
+
+        // ===== 리사이즈 이벤트 처리 =====
+        window.addEventListener('resize', () => {
+            if (calendar && selectedSchool) {
+                const newView = getInitialView();
+                if (calendar.view.type !== newView) {
+                    calendar.changeView(newView);
+                }
+            }
+        });
+
+        // ===== 페이지 언로드 시 타이머 정리 =====
+        window.addEventListener('beforeunload', () => {
+            if (searchTimeout) clearTimeout(searchTimeout);
+            if (toastTimer) clearTimeout(toastTimer);
+        });
+
+        // ===== 초기화 =====
+        document.getElementById('title-year').textContent = getSchoolYear(new Date());
+        updatePageTitle();
+
+        // 저장된 학교 정보 복원
+        (function restoreLastSchool() {
+            const saved = localStorage.getItem('hi_dunkey_last_school');
+            if (saved) {
+                try {
+                    const {code, name} = JSON.parse(saved);
+                    // 약간의 지연을 줘서 DOM이 완전히 로드된 후 실행
+                    setTimeout(() => {
+                        selectSchool(code, name);
+                        showToast(`🏫 이전에 선택한 ${name} 정보를 불러옵니다`);
+                    }, 100);
+                } catch (e) {
+                    console.error('저장된 학교 복원 실패:', e);
+                    localStorage.removeItem('hi_dunkey_last_school');
+                }
+            }
+        })();
+
+        // 파비콘 설정
+        const favicon = document.querySelector('link[rel="icon"]');
+        if (!favicon) {
+            const link = document.createElement('link');
+            link.rel = 'icon';
+            link.href = 'data:,';
+            document.head.appendChild(link);
+        }
+    </script>
+</body>
+</html>

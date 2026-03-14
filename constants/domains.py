@@ -25,7 +25,7 @@ DOMAIN_CONFIG = {
         "db_path": str(NEIS_INFO_DB_PATH),
         "table":        "schools_neis",
         "enabled":      True,
-        "merge_script": "merge_neis_info_dbs.py",            # 확장자 추가
+        "merge_script": "neis_info.py",
         "fetch_args":   lambda region, year: {"region": region},
         "aliases":      ["neis", "neis_info"],
     },
@@ -35,7 +35,7 @@ DOMAIN_CONFIG = {
         "db_path": str(NEIS_INFO_DB_PATH),
         "table":        "schools_info",
         "enabled":      True,
-        "merge_script": "merge_school_info_dbs.py",
+        "merge_script": "school_info.py",
         "fetch_args":   lambda region, year: {"region": region, "year": year},
         "aliases":      ["schoolinfo"],
     },
@@ -45,7 +45,7 @@ DOMAIN_CONFIG = {
         "db_path": str(MEAL_DB_PATH),
         "table":        "meal",
         "enabled":      True,
-        "merge_script": "merge_meal_dbs.py",                 # 확장자 추가
+        "merge_script": "meal.py",
         "fetch_args":   lambda region, year: {"region": region},
     },
     "timetable": {
@@ -54,7 +54,7 @@ DOMAIN_CONFIG = {
         "db_path": str(TIMETABLE_DB_PATH),
         "table":        "timetable",
         "enabled":      True,
-        "merge_script": "merge_timetable_dbs.py",            # 확장자 추가
+        "merge_script": None,  # TODO: timetable 병합 스크립트 미이식
         "fetch_args":   lambda region, year: [
             {"region": region, "year": year, "semester": 1},
             {"region": region, "year": year, "semester": 2},
@@ -66,7 +66,7 @@ DOMAIN_CONFIG = {
         "db_path": str(SCHEDULE_DB_PATH),
         "table":        "schedule",
         "enabled":      True,
-        "merge_script": "merge_schedule_dbs.py",             # 확장자 추가
+        "merge_script": None,  # TODO: schedule 병합 스크립트 미이식
         "fetch_args":   lambda region, year: {"region": region, "year": year},
     },
 }

@@ -11,14 +11,14 @@ from pathlib import Path
 # 프로젝트 루트를 sys.path에 추가
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
-from core.entry_collector import CollectorEngine
+from core.engine.entry_collector import CollectorEngine
 from core.kst_time import now_kst
-from core.school_year import get_current_school_year
+from core.school.year import get_current_school_year
 from core.config import config
-from core.shard import should_include_school
+from core.engine.shard import should_include_school
 from constants.codes import NEIS_ENDPOINTS, ALL_REGIONS, REGION_NAMES
 from constants.paths import MASTER_DIR
-from constants.api_mappings import get_api_field
+from constants.map_apis import get_api_field
 from constants.collector_names import NEIS_INFO
 
 API_URL = NEIS_ENDPOINTS['school']

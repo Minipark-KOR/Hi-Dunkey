@@ -1,4 +1,4 @@
-## 📘 **Hi-Dunkey NEIS 데이터 수집 및 제공 시스템**
+## 📘 Hi-Dunkey NEIS 데이터 수집 및 제공 시스템
 
 ### 프로젝트 개요
 이 프로젝트는 NEIS(나이스) 교육청 API를 활용하여 **급식, 학사일정, 시간표, 학교 기본정보** 데이터를 자동으로 수집하고, 백업/아카이브하며, 웹 API를 통해 프론트엔드에 제공하는 통합 시스템입니다.  
@@ -28,7 +28,7 @@ graph TD
     D --> E[API 서버 FastAPI]
     E --> F[프론트엔드 index.html]
     D --> G[백업/아카이브 스크립트]
-    G --> H[(data/backup/)]
+  G --> H[(data/baskets/warm/)]
     H --> I[(data/archive/)]
     I --> J[10년 통합본 생성]
 ```
@@ -36,24 +36,28 @@ graph TD
 ### 디렉토리 구조
 ```
 project/
+├── core/                         # 공통 라이브러리
+│   ├── engine/                   # 수집 실행 인프라
+│   ├── data/                     # DB/검증/파싱
+│   ├── school/                   # 학교 도메인 (id/year/address)
+│   └── util/                     # 공통 유틸 (로깅/메트릭/통계)
 ├── scripts/                      # 실행 스크립트
-│   ├── core/                     # 공통 모듈 (백업, DB, 로깅, 필터, ID 생성, 시간, 샤딩 등)
-│   ├── parsers/                   # 도메인별 파서 (급식, 학사일정, 시간표, 학년)
-│   ├── constants/                 # 상수 (API 키, 엔드포인트, 지역 코드, 학년 코드)
-│   ├── collectors/                # 수집기 (meal, schedule, timetable, school_master)
-│   ├── baskets/                    # 캐시 관리 (Hot50, Warm 클러스터)
-│   ├── api_server.py               # FastAPI 서버
-│   ├── run_daily.py                 # 매일 수집 (Hot50 위주)
-│   ├── run_feb20.py                 # 2월 20일 전체 수집
-│   ├── run_feb22.py                 # 2월 22일 백업/아카이브
-│   └── run_april15.py               # 4월 15일 정리
-├── data/                          # 데이터 저장소
-│   ├── active/                     # 현재 학년도 데이터 (샤딩)
-│   ├── backup/                      # 지난 3개 학년도 데이터
-│   ├── archive/                     # 10년 블록 통합본
-│   └── baskets/                     # Hot/Warm 캐시
-│       └── warm/
-├── logs/                           # 로그 파일
+│   ├── collector/                # 수집기
+│   ├── run/                      # 운영 실행
+│   ├── merge/                    # 병합
+│   ├── analysis/                 # 분석
+│   ├── misc/                     # 일회성/운영 보조
+│   └── util/                     # 운영 유틸
+├── constants/                    # 상수 (코드/경로/스키마)
+├── parsers/                      # 도메인별 파서
+├── data/                         # 데이터 저장소
+│   ├── active/                  # 현재 학년도 데이터 (샤딩)
+│   ├── baskets/warm/            # 날짜별 백업
+│   ├── archive/                 # 10년 블록 통합본
+│   ├── logs/                    # 실행 로그 (표준)
+│   └── temp/                    # 임시 파일
+├── exporters/                      # 내보내기 도구
+├── migrate.py                      # DB 마이그레이션
 ├── index.html                      # 프론트엔드
 ├── requirements.txt                # 의존성 패키지
 └── README.md                       # 프로젝트 설명서
@@ -71,9 +75,9 @@ cd hi-dunkey
 
 ### 2. Python 가상환경 생성 및 활성화 (선택)
 ```bash
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-venv\Scripts\activate     # Windows
+python -m venv .venv
+source .venv/bin/activate  # Linux/Mac
+.venv\Scripts\activate     # Windows
 ```
 
 ### 3. 의존성 설치
@@ -89,14 +93,14 @@ pip install -r requirements.txt
     ```
   - GitHub Actions: Repository Secrets에 `NEIS_API_KEY` 등록
 
-### 5. 디렉토리 생성 (자동 생성되지만 확인)
+### 5. 디렉토리 확인
 ```bash
-mkdir -p data/active data/backup data/archive data/baskets/warm logs
+mkdir -p data/active data/master data/baskets/warm data/archive data/temp data/logs
 ```
 
 ---
 
-## 🔧 설정 파일 (`scripts/constants/codes.py`)
+## 🔧 설정 파일 (`constants/codes.py`)
 
 주요 상수들이 정의되어 있습니다. 필요에 따라 수정하세요.
 
@@ -112,39 +116,47 @@ mkdir -p data/active data/backup data/archive data/baskets/warm logs
 
 ## 🏃 실행 방법
 
+모든 실행 명령은 **프로젝트 루트**에서 `python scripts/...` 형식으로 수행하는 것을 기준으로 합니다.
+
 ### 1. 수집기 실행 (매일)
 ```bash
-# 전체 수집 스크립트 (Hot50 위주)
-python scripts/run_daily.py
+# 파이프라인 실행
+python scripts/run/pipeline.py neis_info --year 2026 --regions B10,J10
 ```
 
 ### 2. 2월 20일 전체 수집 (학년도 마감)
 ```bash
-python scripts/run_feb20.py
+# 도메인별 수집 예시
+python scripts/collector/meal.py --regions B10 --date $(date +%Y%m%d) --shard odd --incremental
 ```
 
 ### 3. 2월 22일 백업/아카이브
 ```bash
-python scripts/run_feb22.py
+python scripts/misc/run_feb22.py
 ```
 
 ### 4. 4월 15일 정리
 ```bash
-python scripts/run_april15.py
+python scripts/misc/run_april15.py
 ```
 
-### 5. API 서버 실행
+### 5. 연간 백업 실행
+```bash
+python scripts/run/backup.py --year 2026
+```
+
+### 6. API 서버 실행
 ```bash
 # 개발 서버 (자동 리로드)
-uvicorn scripts.api_server:app --reload --host 0.0.0.0 --port 8000
+uvicorn scripts.misc.api_server:app --reload --host 0.0.0.0 --port 8000
 
 # 프로덕션 (워커 4개)
-uvicorn scripts.api_server:app --host 0.0.0.0 --port 8000 --workers 4
+uvicorn scripts.misc.api_server:app --host 0.0.0.0 --port 8000 --workers 4
 # 또는 Gunicorn 사용
-gunicorn scripts.api_server:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
+gunicorn scripts.misc.api_server:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
 ```
 
-### 6. 프론트엔드 열기
+### 7. 프론트엔드 열기
 `index.html` 파일을 웹 서버(예: Live Server)로 열어 학교 검색 및 학사일정을 확인합니다.
 
 ---
@@ -158,24 +170,23 @@ gunicorn scripts.api_server:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0
 | **매월 1,10,20일** | 전체 수집 | 급식/학사일정 전체 학교 수집 |
 | **매월 1일** | 학교정보 수집 | 전체 학교 정보 수집 (변경분만) |
 | **2월 20일** | 학년도 마감 | 모든 봇이 전체 학교 데이터를 수집 (full) + 날짜 백업 생성 |
-| **2월 22일** | 연간 백업 | active DB → backup/ (VACUUM INTO) + 3년 초과 파일 archive 이동 + 통합본 갱신 |
-| **4월 15일** | 정리 | backup → archive 이동, 1년 지난 파일 삭제, 4년 주기로 10년 통합본 생성 |
+| **2월 22일** | 연간 백업 | active DB → baskets/warm/ (VACUUM INTO) + 3년 초과 파일 archive 이동 + 메트릭/임시파일 정리 |
+| **4월 15일** | 정리 | baskets/warm → archive 이동, 1년 지난 파일 삭제, 4년 주기로 10년 통합본 생성 |
 
 ---
 
-## 💾 캐시 시스템 (Baskets)
+## 💾 캐시 시스템 (현재 구현 기준)
 
 ### L1: Personal Slot (브라우저)
 - 개인 즐겨찾기 3개 학교 (localStorage)
 
 ### L2: Hot Basket (서버)
-- `data/baskets/hot.json`에 저장
-- 일간/월간/학기간/연간 가장 많이 검색된 50개 학교
-- 매일 GA4 데이터로 갱신 (`scripts/baskets/update_hot.py`)
+- 현재 기본 저장소에는 `hot.json` 생성 로직이 포함되어 있지 않음
+- 운영 환경에서 `baskets.update_hot` 모듈을 연결해 사용할 수 있는 확장 영역
 
 ### L3: Warm Cluster
-- `data/baskets/warm/`에 학교별 연관 검색어 저장
-- 월 1회 GA4 로그 기반으로 생성 (`scripts/baskets/build_warm.py`)
+- `data/baskets/warm/`은 현재 연간 백업 파일 저장소로 사용 (`BACKUP_DIR`)
+- 연관 검색어 기반 warm cache를 도입할 경우 별도 하위 경로 분리 권장 (예: `data/baskets/warm_cache/`)
 
 ### L4: Service Worker (브라우저)
 - 최근 7일간 조회한 학교 캐싱 (별도 구현)
@@ -215,7 +226,7 @@ gunicorn scripts.api_server:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0
 ### 1. 수집기 단위 테스트
 ```bash
 # 특정 지역만 수집 (예: 서울 B10)
-python scripts/collectors/meal.py --regions B10 --date $(date +%Y%m%d) --shard odd --incremental
+python scripts/collector/meal.py --regions B10 --date $(date +%Y%m%d) --shard odd --incremental
 ```
 
 ### 2. API 서버 테스트
@@ -232,7 +243,7 @@ curl "http://localhost:8000/api/schedule?school_code=7012345&year=2026"
 ## 🚢 배포 시 고려사항
 
 ### CORS 설정
-`api_server.py`에서 `allow_origins`를 실제 프론트엔드 도메인으로 변경하세요.
+`scripts/misc/api_server.py`에서 `allow_origins`를 실제 프론트엔드 도메인으로 변경하세요.
 ```python
 allow_origins=["https://your-frontend-domain.com"]
 ```
@@ -240,11 +251,11 @@ allow_origins=["https://your-frontend-domain.com"]
 ### 워커 수 조정
 트래픽에 따라 uvicorn 또는 gunicorn 워커 수를 늘리세요.
 ```bash
-uvicorn scripts.api_server:app --workers 4
+uvicorn scripts.misc.api_server:app --workers 4
 ```
 
 ### GitHub Actions 자동화
-`.github/workflows/` 디렉토리에 다음 워크플로우 파일을 추가하여 자동화할 수 있습니다:
+`.github/workflows/` 디렉토리의 워크플로우로 주기 실행을 자동화할 수 있습니다.
 - `daily.yml`: 매일 실행
 - `feb20.yml`: 2월 20일 실행
 - `feb22.yml`: 2월 22일 실행
@@ -255,9 +266,13 @@ uvicorn scripts.api_server:app --workers 4
 ## 🔍 문제 해결
 
 ### 로그 확인
-모든 스크립트는 `logs/` 디렉토리에 로그 파일을 생성합니다.
+모든 스크립트는 `data/logs/` 디렉토리에 로그 파일을 생성합니다.
+
+- 표준 파일명: `<domain>.log`
+- 스크립트 기반 prefix 적용 시: `<parent>.<domain>.log` (예: `engine.meal.log`, `run.pipeline.neis_info_B10_odd.log`)
+
 ```bash
-tail -f logs/run_daily.log
+tail -f data/logs/*.log
 ```
 
 ### 자주 발생하는 오류
@@ -265,7 +280,7 @@ tail -f logs/run_daily.log
 |------|----------|
 | `NEIS_API_KEY 환경변수가 없습니다.` | 환경 변수 설정 또는 `.env` 파일 생성 |
 | `sqlite3.OperationalError: database is locked` | WAL 모드 활성화 확인 (`PRAGMA journal_mode=WAL`) |
-| `No module named 'core'` | 실행 위치 확인 (`scripts/` 디렉토리에서 실행) |
+| `No module named 'core'` | 프로젝트 루트에서 실행하고 `.venv` 활성화 상태를 확인 |
 | CORS 오류 | API 서버 CORS 설정 확인 |
 
 ---
@@ -279,5 +294,3 @@ tail -f logs/run_daily.log
 버그 리포트, 기능 제안, 풀 리퀘스트는 언제나 환영합니다.
 
 ---
-
-**Happy Coding!** 🎉

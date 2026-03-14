@@ -52,7 +52,7 @@ else:
     NEIS_DAILY_LIMITS = []
 
 # 키 매니저 인스턴스 생성 (싱글톤)
-from core.api_key_manager import APIKeyManager
+from core.engine.manage_api_keys import APIKeyManager
 if NEIS_KEYS:
     neis_key_manager = APIKeyManager(NEIS_KEYS, NEIS_RATE_LIMITS, NEIS_DAILY_LIMITS)
 else:
