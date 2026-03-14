@@ -6,7 +6,7 @@ import re
 from typing import List, Optional
 import sqlite3
 
-from core.base_collector import BaseCollector
+from core.collector_engine import CollectorEngine
 from core.database import get_db_connection
 from core.vocab import VocabManager
 from core.meta_vocab import MetaVocabManager
@@ -17,12 +17,12 @@ from constants.paths import GLOBAL_VOCAB_DB_PATH, UNKNOWN_DB_PATH
 from core.kst_time import now_kst
 
 
-class BaseMealCollector(BaseCollector):
+class BaseMealCollector(CollectorEngine):
     """급식 수집기 공통 베이스"""
 
     def __init__(self, name: str, base_dir: str, shard: str, school_range,
                  debug_mode: bool, **kwargs):
-        # BaseCollector에 quiet_mode 등 kwargs 전달
+        # CollectorEngine에 quiet_mode 등 kwargs 전달
         super().__init__(name, base_dir, shard, school_range, **kwargs)
         self.api_context = 'meal'
         self.debug_mode = debug_mode

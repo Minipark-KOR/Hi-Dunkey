@@ -176,7 +176,15 @@ if __name__ == "__main__":
     parser.add_argument("--regions", type=str, default="ALL", help="지역 코드")
     
     args = parser.parse_args()
-    
+
+    # 이름 정규화: collector name을 받는 모든 인자는 여기서 일괄 해석
+    from constants.domains import resolve_collector_name
+    _collectors = get_registered_collectors()
+    if args.stats:
+        args.stats = resolve_collector_name(args.stats, _collectors)
+    if args.run:
+        args.run = resolve_collector_name(args.run, _collectors)
+
     if args.list:
         list_collectors()
     elif args.dashboard:

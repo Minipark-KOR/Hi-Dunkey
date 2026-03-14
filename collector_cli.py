@@ -11,15 +11,18 @@ sys.path.append(str(Path(__file__).parent))
 
 from scripts.collector import get_registered_collectors
 from constants.codes import ALL_REGIONS
+from constants.domains import resolve_collector_name
 
 
 def get_collector(name: str):
     """수집기 클래스 조회"""
     collectors = get_registered_collectors()
-    if name not in collectors:
+    resolved_name = resolve_collector_name(name, collectors)
+
+    if resolved_name not in collectors:
         available = ", ".join(sorted(collectors.keys()))
         raise ValueError(f"❌ 수집기 '{name}' 을 찾을 수 없습니다.\n   사용 가능: {available}")
-    return collectors[name]
+    return collectors[resolved_name]
 
 
 def run_collector_cli(name: str, regions=None, shard="none", **kwargs):

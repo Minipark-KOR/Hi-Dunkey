@@ -709,6 +709,45 @@ collectors:
 
 ---
 
+## 21. 수집기 이름 해석 규칙 (신규)
+
+CLI/대시보드에서 수집기를 지정할 때는 **수집기명, 도메인명, alias를 모두 허용**합니다.
+
+### 21.1. 허용 입력
+
+| 입력 유형 | 예시 | 해석 결과 |
+|-----------|------|-----------|
+| 수집기명 | `neis_info` | `neis_info` |
+| 도메인명 | `school` | `neis_info` |
+| alias | `neis`, `schoolinfo` | 각 도메인의 `collector_name` |
+
+### 21.2. 정규화 규칙
+
+입력값은 비교 전에 아래 규칙으로 정규화합니다.
+
+1. 앞뒤 공백 제거 (`strip`)
+2. 소문자 변환 (`lower`)
+3. 하이픈(`-`)을 언더스코어(`_`)로 변환
+
+예시:
+
+- `NEIS-INFO` -> `neis_info`
+- ` SchoolInfo ` -> `schoolinfo`
+
+### 21.3. 적용 위치
+
+- `collector_cli.py`: 수집기 실행 이름 해석
+- `master_collectors.py`: `--run`, `--stats` 인자 해석
+- `constants/domains.py`: `resolve_collector_name()` 단일 진입점
+
+### 21.4. 운영 규칙
+
+- 새 도메인을 추가할 때는 `DOMAIN_CONFIG`에 `collector_name`을 명시합니다.
+- 사용자 입력 호환이 필요하면 `aliases`에 별칭을 추가합니다.
+- 이름 해석 로직은 반드시 `resolve_collector_name()`만 사용합니다.
+
+---
+
 이 가이드를 따라 새로운 수집기를 만들면 **자동 등록 시스템**과 **중앙 대시보드**의 혜택을 모두 받을 수 있으며, 프로젝트 전체의 일관성을 유지할 수 있습니다.
 
 궁금한 점이 있으면 기존 코드를 참조하거나 팀 리더에게 문의하세요. 😊
