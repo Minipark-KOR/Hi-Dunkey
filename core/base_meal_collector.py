@@ -6,7 +6,7 @@ import re
 from typing import List, Optional
 import sqlite3
 
-from core.collector_engine import CollectorEngine
+from core.entry_collector import CollectorEngine
 from core.database import get_db_connection
 from core.vocab import VocabManager
 from core.meta_vocab import MetaVocabManager

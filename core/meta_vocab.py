@@ -10,7 +10,7 @@ import json
 import os
 from typing import Optional, Dict, List, Tuple, Set
 from core.id_generator import IDGenerator, IDHelper
-from core.text_filter import TextFilter
+from core.filters import TextFilter
 
 
 class MetaVocabManager:
@@ -133,7 +133,7 @@ class MetaVocabManager:
             return meta_id
         
         meta_id = self._generate_meta_id(domain, meta_type, meta_key)
-        display_value = TextFilter.normalize(raw_value)
+        display_value = TextFilter.normalize(raw_value, strip_html=True)
         
         self.pending_inserts.add((meta_id, domain, meta_type, meta_key, raw_value, display_value, parent_id))
         

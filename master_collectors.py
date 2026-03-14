@@ -129,8 +129,8 @@ def test_all_collectors():
     
     for name, cls in sorted(collectors.items()):
         try:
-            # 클래스 인스턴스화 테스트
-            collector = cls(name, str(MASTER_DIR), shard="none", quiet_mode=True)
+            # 현재 CollectorEngine 기반 생성자 규약으로 인스턴스화
+            collector = cls(shard="none", quiet_mode=True)
             
             # 필수 속성 확인
             assert hasattr(cls, 'schema_name'), "schema_name 없음"
@@ -178,8 +178,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # 이름 정규화: collector name을 받는 모든 인자는 여기서 일괄 해석
-    from constants.domains import resolve_collector_name
+    from constants.domains import resolve_collector_name, validate_name_resolution_map
     _collectors = get_registered_collectors()
+    validate_name_resolution_map(_collectors)
     if args.stats:
         args.stats = resolve_collector_name(args.stats, _collectors)
     if args.run:

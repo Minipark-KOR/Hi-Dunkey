@@ -11,12 +11,13 @@ sys.path.append(str(Path(__file__).parent))
 
 from scripts.collector import get_registered_collectors
 from constants.codes import ALL_REGIONS
-from constants.domains import resolve_collector_name
+from constants.domains import resolve_collector_name, validate_name_resolution_map
 
 
 def get_collector(name: str):
     """수집기 클래스 조회"""
     collectors = get_registered_collectors()
+    validate_name_resolution_map(collectors)
     resolved_name = resolve_collector_name(name, collectors)
 
     if resolved_name not in collectors:
@@ -75,7 +76,7 @@ if __name__ == "__main__":
     parser.add_argument("--limit", type=int, help="수집 제한 (테스트용)")
     
     args = parser.parse_args()
-    
+    validate_name_resolution_map(get_registered_collectors())
     # 목록 표시
     if args.list or args.collector is None:
         collectors = get_registered_collectors()

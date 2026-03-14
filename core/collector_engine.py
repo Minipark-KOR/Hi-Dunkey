@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Union, Callable
 
 from core.database import get_db_connection, init_checkpoint_table
-from core.logger import build_logger
+from core.util.manage_log import build_logger
 from core.network import build_session, safe_json_request
 from core.shard import should_include_school
 from core.kst_time import now_kst
@@ -32,7 +32,7 @@ from constants.paths import NEIS_INFO_DB_PATH as MASTER_DB, LOG_DIR
 from core.retry import RetryManager
 from constants.paths import FAILURES_DB_PATH
 from constants.schema import SCHEMAS
-from core.schema_manager import create_table_from_schema, save_batch
+from core.manage_schema import create_table_from_schema, save_batch
 
 
 class CollectorEngine:
@@ -95,6 +95,8 @@ class CollectorEngine:
         self.writer_thread = threading.Thread(
             target=self._writer_loop, daemon=True, name=f"{name}_writer"
         )
+        self._writer_failed = False
+        self._writer_error: Optional[Exception] = None
         self.writer_thread.start()
         if not self.quiet_mode:
             print(f"🔁 writer_thread 시작: {self.writer_thread.name}")
@@ -295,15 +297,21 @@ class CollectorEngine:
                     if batch:
                         self._save_batch(batch)
                 except DataDropException as e:
+                    self._writer_failed = True
+                    self._writer_error = e
                     print(f"🚨 데이터 급감: {e}")
                     self.logger.error(f"🚨 데이터 급감 감지: {e}")
                 except Exception as e:
+                    self._writer_failed = True
+                    self._writer_error = e
                     print(f"❌ 배치 저장 예외: {e}")
                     self.logger.error(f"배치 저장 실패: {e}", exc_info=True)
                 finally:
                     for _ in range(items_processed):
                         self.q.task_done()
         except Exception as e:
+            self._writer_failed = True
+            self._writer_error = e
             if not self.quiet_mode:
                 print(f"💥 writer_loop 치명적 예외: {e}")
             traceback.print_exc()
@@ -363,12 +371,27 @@ class CollectorEngine:
     def print_progress(self, current: int, total: int, prefix: str = "", bar_length: int = 20):
         if self.quiet_mode:
             return
+        if total <= 0:
+            print(f"\r{prefix} [{'░' * bar_length}] {current}/0 (0.0%)", end='', flush=True)
+            return
         percent = current / total
         filled = int(bar_length * percent)
         bar = '█' * filled + '░' * (bar_length - filled)
         print(f"\r{prefix} [{bar}] {current}/{total} ({percent*100:.1f}%)", end='', flush=True)
         if current == total:
             print()
+
+    def _wait_for_queue_drain(self, timeout: float) -> bool:
+        """큐가 비워질 때까지 대기. writer 비정상 종료 시 무한 대기를 피합니다."""
+        deadline = time.time() + max(timeout, 0.0)
+        while True:
+            if self.q.unfinished_tasks == 0:
+                return True
+            if not self.writer_thread.is_alive():
+                return False
+            if timeout > 0 and time.time() >= deadline:
+                return False
+            time.sleep(0.1)
 
     def _get_target_key(self) -> Optional[str]:
         """체크포인트 키로 사용할 컬럼명. None이면 체크포인트 미사용."""
@@ -423,9 +446,13 @@ class CollectorEngine:
 
     def close(self, timeout: float = 60.0):
         self.logger.info(f"🔒 {self.name} 종료 시작...")
-        self.q.join()
-        self.q.put(None)
-        self.writer_thread.join(timeout=timeout)
+        drained = self._wait_for_queue_drain(timeout)
+        if not drained:
+            self.logger.warning("⚠️ queue drain timeout 또는 writer 비정상 종료 감지")
+
+        if self.writer_thread.is_alive():
+            self.q.put(None)
+            self.writer_thread.join(timeout=timeout)
         if self.writer_thread.is_alive():
             self.logger.warning("⚠️ writer_thread가 정상 종료되지 않았습니다.")
         for res in self._closeable_resources:
@@ -434,9 +461,14 @@ class CollectorEngine:
             except Exception as e:
                 self.logger.warning(f"리소스 close 실패: {e}")
         self.stats.log_summary()
+        if self._writer_failed:
+            err = f" ({self._writer_error})" if self._writer_error else ""
+            raise RuntimeError(f"writer_loop에서 저장 실패가 발생했습니다{err}")
         self.logger.info(f"✅ {self.name} 종료 완료")
 
     def flush(self, timeout: float = 60.0):
         self.logger.info(f"🔄 {self.name} flush 시작...")
-        self.q.join()
+        drained = self._wait_for_queue_drain(timeout)
+        if not drained:
+            self.logger.warning("⚠️ flush 중 queue drain timeout 또는 writer 비정상 종료 감지")
         self.logger.info(f"✅ {self.name} flush 완료")

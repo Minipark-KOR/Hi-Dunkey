@@ -11,7 +11,7 @@ from pathlib import Path
 # 프로젝트 루트를 sys.path에 추가
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
-from core.collector_engine import CollectorEngine
+from core.entry_collector import CollectorEngine
 from core.kst_time import now_kst
 from core.school_year import get_current_school_year
 from core.config import config
@@ -19,27 +19,29 @@ from core.shard import should_include_school
 from constants.codes import NEIS_ENDPOINTS, ALL_REGIONS, REGION_NAMES
 from constants.paths import MASTER_DIR
 from constants.api_mappings import get_api_field
+from constants.collector_names import NEIS_INFO
 
 API_URL = NEIS_ENDPOINTS['school']
 
 
 class NeisInfoCollector(CollectorEngine):
     """NEIS 학교 기본정보 수집기 (원시 데이터, 순차처리)"""
-    
+
+    collector_name = NEIS_INFO
     description = "NEIS 학교 기본정보 (원시 데이터)"
     table_name = "schools_neis"
     schema_name = "neis_info"
     api_context = "school"
-    
+
     # 설정 로딩 (config.yaml의 collectors.neis_info 섹션)
-    _cfg = config.get_collector_config("neis_info")
+    _cfg = config.get_collector_config(collector_name)
     timeout_seconds = _cfg.get("timeout_seconds", 3600)
     
     # 통계 수집 활성화 (선택)
     metrics_config = _cfg.get("metrics_config", {"enabled": True})
 
     def __init__(self, shard="none", school_range=None, debug_mode=False, quiet_mode=False, **kwargs):
-        super().__init__("neis_info", str(MASTER_DIR), shard, school_range,
+        super().__init__(self.collector_name, str(MASTER_DIR), shard, school_range,
                          quiet_mode=quiet_mode, debug_mode=debug_mode)
         self.run_date = now_kst().strftime("%Y%m%d")
         if not quiet_mode:

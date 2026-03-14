@@ -9,7 +9,7 @@ import sqlite3
 import re
 from typing import Optional, Dict, List, Tuple, Set, Callable
 from core.id_generator import IDGenerator, IDHelper
-from core.text_filter import TextFilter
+from core.filters import TextFilter
 
 
 class VocabManager:
@@ -124,7 +124,7 @@ class VocabManager:
         
         # 3. ID 생성
         item_id = self._generate_id(name_key)
-        display_name = TextFilter.normalize(name)
+        display_name = TextFilter.normalize(name, strip_html=True)
         
         # 4. 배치 저장을 위해 pending
         self.pending_inserts.add((item_id, name_key, name, display_name))
@@ -166,7 +166,7 @@ class VocabManager:
         for name in need_create:
             name_key = self.normalize(name) or "empty"
             item_id = self._generate_id(name_key)
-            display_name = TextFilter.normalize(name)
+            display_name = TextFilter.normalize(name, strip_html=True)
             
             self.pending_inserts.add((item_id, name_key, name, display_name))
             self.cache[name] = item_id

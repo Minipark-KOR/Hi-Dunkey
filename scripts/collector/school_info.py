@@ -9,7 +9,7 @@ from typing import Dict, Optional, Any
 # 프로젝트 루트를 sys.path에 추가
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
-from core.collector_engine import CollectorEngine
+from core.entry_collector import CollectorEngine
 from core.shard import should_include_school
 from core.kst_time import now_kst
 from core.school_year import get_current_school_year
@@ -17,15 +17,17 @@ from core.config import config
 from constants.codes import REGION_NAMES
 from constants.paths import MASTER_DIR
 from constants.api_mappings import get_api_field
+from constants.collector_names import SCHOOL_INFO
 
 API_URL = "http://www.schoolinfo.go.kr/openApi.do"
 
 
 class SchoolInfoCollector(CollectorEngine):
+    collector_name = SCHOOL_INFO
     description = "학교 기본정보 (학교알리미)"
     table_name = "schools_info"
     merge_script = "scripts/merge_school_info_dbs.py"
-    _cfg = config.get_collector_config("school_info")
+    _cfg = config.get_collector_config(collector_name)
     timeout_seconds = _cfg.get("timeout_seconds", 3600)
     merge_timeout_seconds = _cfg.get("merge_timeout_seconds", 3600)
     metrics_config = _cfg.get("metrics_config", {"enabled": True})
@@ -34,7 +36,7 @@ class SchoolInfoCollector(CollectorEngine):
 
     def __init__(self, shard="none", school_range=None, debug_mode=False,
                  quiet_mode=False, **kwargs):
-        super().__init__("school_info", str(MASTER_DIR), shard, school_range,
+        super().__init__(self.collector_name, str(MASTER_DIR), shard, school_range,
                          quiet_mode=quiet_mode)
         self.debug_mode = debug_mode
 

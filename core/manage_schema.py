@@ -1,4 +1,4 @@
-# core/schema_manager.py
+# core/manage_schema.py
 import sqlite3
 from typing import List, Dict, Tuple
 

@@ -6,7 +6,7 @@ from typing import Optional, List, Dict, Any
 from pathlib import Path
 from contextlib import contextmanager
 from core.kst_time import now_kst
-from core.logger import build_logger
+from core.util.manage_log import build_logger
 from constants.paths import FAILURES_DB_PATH
 
 logger = build_logger("retry", "logs/retry.log")

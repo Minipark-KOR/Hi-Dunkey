@@ -38,12 +38,15 @@ def get_collector_map() -> Dict[str, Type]:
                 
                 # CollectorEngine 상속 클래스만 필터링
                 # (schema_name, table_name 이 있는 클래스 = 수집기)
-                if (isinstance(obj, type) and 
-                    hasattr(obj, 'schema_name') and 
+                if (isinstance(obj, type) and
+                    obj.__module__ == module.__name__ and
+                    hasattr(obj, 'schema_name') and
                     hasattr(obj, 'table_name')):
-                    
-                    # 모듈명을 키로 사용 (예: neis_info → NeisInfoCollector)
-                    key = module_info.name
+
+                    # collector_name이 있으면 우선 사용 (중앙 이름 관리), 없으면 모듈명 fallback
+                    key = getattr(obj, 'collector_name', None) or module_info.name
+                    if key in collector_map and collector_map[key] is not obj:
+                        print(f"⚠️ 수집기 키 중복 감지: {key} (모듈: {module_info.name})")
                     collector_map[key] = obj
                     
         except Exception as e:

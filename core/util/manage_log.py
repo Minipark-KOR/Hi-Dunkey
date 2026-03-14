@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# core/logger.py
+# core/util/manage_log.py
 import logging
 from logging.handlers import RotatingFileHandler
 import os

@@ -13,6 +13,10 @@ from typing import Dict, Any
 from constants.paths import NEIS_INFO_DB_PATH, MEAL_DB_PATH, TIMETABLE_DB_PATH, SCHEDULE_DB_PATH
 from constants.paths import GLOBAL_VOCAB_DB_PATH, UNKNOWN_DB_PATH
 
+
+def _normalize_name(name: str) -> str:
+    return str(name).strip().lower().replace("-", "_")
+
 DOMAIN_CONFIG = {
     "school": {
         "description":  "학교 기본정보",
@@ -72,6 +76,9 @@ GLOBAL_DBS = [
    {"name": "unknown_patterns.db", "path": str(UNKNOWN_DB_PATH), "table": "unknown_patterns"},
 ]
 
+# 리빌딩 단계에서는 canonical/domain 이름만 허용하고 legacy alias 해석은 비활성화합니다.
+ENABLE_LEGACY_ALIAS_RESOLUTION = False
+
 
 def get_runtime_domain_config(collectors: Dict[str, type]) -> Dict[str, Dict[str, Any]]:
     """
@@ -119,12 +126,14 @@ def get_runtime_domain_config(collectors: Dict[str, type]) -> Dict[str, Dict[str
 def resolve_collector_name(name: str, collectors: Dict[str, type]) -> str:
     """
     입력 이름(수집기명/도메인명/alias)을 실제 수집기 모듈명으로 해석합니다.
+
+    리빌딩 단계에서는 legacy alias 해석을 비활성화하여 이름 변경 충돌을 조기에 노출합니다.
     """
     # CLI/대시보드 입력은 대소문자, 하이픈 표기 차이가 날 수 있으므로 정규화
-    normalized = name.strip().lower().replace("-", "_")
+    normalized = _normalize_name(name)
 
     normalized_collectors = {
-        k.strip().lower().replace("-", "_"): k for k in collectors.keys()
+        _normalize_name(k): k for k in collectors.keys()
     }
 
     if normalized in normalized_collectors:
@@ -136,13 +145,13 @@ def resolve_collector_name(name: str, collectors: Dict[str, type]) -> str:
     runtime_cfg = get_runtime_domain_config(collectors)
 
     normalized_domains = {
-        k.strip().lower().replace("-", "_"): k for k in runtime_cfg.keys()
+        _normalize_name(k): k for k in runtime_cfg.keys()
     }
 
     if normalized in normalized_domains:
         domain_key = normalized_domains[normalized]
         collector_name = runtime_cfg[domain_key].get("collector_name", domain_key)
-        normalized_collector_name = collector_name.strip().lower().replace("-", "_")
+        normalized_collector_name = _normalize_name(collector_name)
         if normalized_collector_name in normalized_collectors:
             return normalized_collectors[normalized_collector_name]
 
@@ -151,17 +160,66 @@ def resolve_collector_name(name: str, collectors: Dict[str, type]) -> str:
         if collector_name in collectors:
             return collector_name
 
-    for _, meta in runtime_cfg.items():
-        for alias in meta.get("aliases", []):
-            normalized_alias = str(alias).strip().lower().replace("-", "_")
-            if normalized_alias == normalized:
-                collector_name = meta.get("collector_name")
-                if not collector_name:
-                    continue
-                normalized_collector_name = collector_name.strip().lower().replace("-", "_")
-                if normalized_collector_name in normalized_collectors:
-                    return normalized_collectors[normalized_collector_name]
-                if collector_name in collectors:
-                    return collector_name
+    if ENABLE_LEGACY_ALIAS_RESOLUTION:
+        for _, meta in runtime_cfg.items():
+            for alias in meta.get("aliases", []):
+                normalized_alias = _normalize_name(alias)
+                if normalized_alias == normalized:
+                    collector_name = meta.get("collector_name")
+                    if not collector_name:
+                        continue
+                    normalized_collector_name = _normalize_name(collector_name)
+                    if normalized_collector_name in normalized_collectors:
+                        return normalized_collectors[normalized_collector_name]
+                    if collector_name in collectors:
+                        return collector_name
 
     return name
+
+
+def validate_name_resolution_map(collectors: Dict[str, type]) -> None:
+    """collector/domain/alias 이름 해석 충돌을 검증합니다.
+
+    동일 입력 토큰이 서로 다른 수집기로 매핑되면 예외를 발생시켜
+    실행 초기에 충돌을 탐지합니다.
+    """
+    runtime_cfg = get_runtime_domain_config(collectors)
+    token_to_targets: Dict[str, set] = {}
+    token_to_sources: Dict[str, set] = {}
+
+    def add_mapping(raw_token: str, target_collector: str, source: str) -> None:
+        token = _normalize_name(raw_token)
+        if not token:
+            return
+        token_to_targets.setdefault(token, set()).add(target_collector)
+        token_to_sources.setdefault(token, set()).add(source)
+
+    # collector 이름 자체는 항상 자기 자신으로 매핑
+    for collector_name in collectors.keys():
+        add_mapping(collector_name, collector_name, f"collector:{collector_name}")
+
+    # domain/alias는 domain이 가리키는 collector_name에 매핑
+    for domain_name, meta in runtime_cfg.items():
+        collector_name = meta.get("collector_name", domain_name)
+        if collector_name not in collectors:
+            continue
+        add_mapping(domain_name, collector_name, f"domain:{domain_name}")
+        if ENABLE_LEGACY_ALIAS_RESOLUTION:
+            for alias in meta.get("aliases", []):
+                add_mapping(str(alias), collector_name, f"alias:{domain_name}:{alias}")
+
+    collisions = []
+    for token, targets in sorted(token_to_targets.items()):
+        if len(targets) > 1:
+            sources = ", ".join(sorted(token_to_sources.get(token, set())))
+            collisions.append(
+                f"- '{token}' -> {sorted(targets)} (sources: {sources})"
+            )
+
+    if collisions:
+        details = "\n".join(collisions)
+        raise ValueError(
+            "수집기 이름 해석 충돌 감지:\n"
+            f"{details}\n"
+            "constants/domains.py의 collector_name/aliases를 조정하세요."
+        )

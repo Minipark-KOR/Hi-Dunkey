@@ -18,7 +18,7 @@
 │   ├── collector_engine.py      # ✅ 모든 수집기의 베이스 클래스 (v2)
 │   ├── config.py                # 설정 파일 로더
 │   ├── database.py              # DB 연결 공통
-│   ├── schema_manager.py        # 스키마 기반 테이블 생성
+│   ├── manage_schema.py         # 스키마 기반 테이블 생성
 │   ├── collector_stats.py       # 배치 처리 통계
 │   ├── data_validator.py        # 데이터 유효성 검증
 │   ├── kst_time.py              # 시간 처리
@@ -697,7 +697,7 @@ collectors:
 |------|------|------|
 | Collector | `{도메인}.py` | `neis_info.py` |
 | Engine | `{기능}_engine.py` | `collector_engine.py` |
-| Utility | `{기능}.py` | `schema_manager.py` |
+| Utility | `{기능}.py` | `manage_schema.py` |
 
 ### 20.3. 함수명
 
