@@ -45,6 +45,8 @@ TIMETABLE_TOTAL_DB_PATH = ACTIVE_DIR / "timetable_total.db"
 SCHOOL_INFO_ODD_DB_PATH = MASTER_DIR / "school_info_odd.db"
 SCHOOL_INFO_EVEN_DB_PATH = MASTER_DIR / "school_info_even.db"
 ADDITIONAL_SCHOOL_INFO_DB_PATH = MASTER_DIR / "additional_school_info.db"
+NEIS_ENRICHED_DB_PATH = MASTER_DIR / "neis_enriched.db"
+SCHOOL_ENRICHED_DB_PATH = MASTER_DIR / "school_enriched.db"
 SCHOOL_MASTER_DB_PATH = MASTER_DIR / "school_master.db"
 
 # 모든 디렉토리 생성
