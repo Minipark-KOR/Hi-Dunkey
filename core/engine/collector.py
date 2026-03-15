@@ -98,8 +98,6 @@ class CollectorEngine:
         self._writer_failed = False
         self._writer_error: Optional[Exception] = None
         self.writer_thread.start()
-        if not self.quiet_mode:
-            print(f"🔁 writer_thread 시작: {self.writer_thread.name}")
 
         self.school_cache: Dict[str, Any] = {}
         self.school_by_id: Dict[str, Any] = {}
@@ -126,8 +124,8 @@ class CollectorEngine:
         self.completed_items: set = set()
         self._load_checkpoints()
 
-        self.logger.info(
-            f"🔥 {name} 초기화 완료 "
+        self.logger.debug(
+            f"{name} 초기화 완료 "
             f"(샤드: {shard}, 범위: {school_range}, 캐시: {len(self.school_cache)}개)"
         )
 
@@ -267,8 +265,6 @@ class CollectorEngine:
         raise NotImplementedError
 
     def _writer_loop(self):
-        if not self.quiet_mode:
-            print("🔁 [writer_loop] started")
         try:
             while True:
                 item = self.q.get()
